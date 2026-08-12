@@ -1,0 +1,1794 @@
+import { useState, useCallback, useRef, useEffect } from "react"
+
+const API = import.meta.env.VITE_API_BASE_URL || ""  // relative /api by default; override in production if needed
+
+// ─── Design tokens ────────────────────────────────────────────────────────────
+// Clean pharmacy/operations UI, optimized for desktop and phone camera use.
+const css = `
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:        #fafafa;
+    --surface:   #ffffff;
+    --surface2:  #f6f6f6;
+    --border:    #e8e8e8;
+    --border2:   #d4d4d4;
+    --text:      #171717;
+    --text2:     #525252;
+    --text3:     #8a8a8a;
+    --accent:    #171717;
+    --accent2:   #000000;
+    --green:     #087f5b;
+    --red:       #d92d20;
+    --blue:      #2563eb;
+    --font:      Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    --mono:      'SFMono-Regular', Consolas, 'Liberation Mono', monospace;
+    --radius:    8px;
+    --radius-lg: 12px;
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font);
+    font-size: 14px;
+    line-height: 1.6;
+    min-height: 100vh;
+  }
+
+  /* Layout */
+  .shell     { display: flex; flex-direction: column; min-height: 100vh; }
+  .topbar    { border-bottom: 1px solid var(--border); padding: 0 32px;
+               display: flex; align-items: center; gap: 12px; height: 68px;
+               background: rgba(255,255,255,.96); z-index: 5; }
+  .topbar-logo { font-size: 19px; font-weight: 750; letter-spacing: -0.5px; color: var(--text); }
+  .topbar-logo span { color: var(--green); }
+  .topbar-sub  { font-size: 12px; color: var(--text3); margin-left: 4px; }
+  .module-nav { display: flex; gap: 4px; margin-left: 22px; padding: 3px;
+                background: var(--surface2); border-radius: 9px; }
+  .module-nav button { border: 0; background: transparent; color: var(--text2); padding: 7px 12px;
+                       border-radius: 8px; font-family: var(--font); font-size: 12px;
+                       font-weight: 650; cursor: pointer; transition: .15s ease; }
+  .module-nav button:hover { color: var(--text); }
+  .module-nav button.active { color: var(--text); background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.08); }
+  .backend-status { margin-left: auto; display: flex; align-items: center; gap: 7px;
+                    font-size: 11px; color: var(--text3); font-family: var(--mono); }
+  .status-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+  .status-dot.ok   { background: var(--green); box-shadow: 0 0 6px var(--green); }
+  .status-dot.warn { background: var(--accent); }
+  .status-dot.err  { background: var(--red); }
+  .main      { flex: 1; display: grid; grid-template-columns: 340px minmax(0, 1fr);
+               gap: 0; height: calc(100vh - 68px); overflow: hidden; }
+  .sidebar   { border-right: 1px solid var(--border); overflow-y: auto;
+               padding: 24px 20px; display: flex; flex-direction: column; gap: 16px;
+               background: #fff; }
+  .content   { overflow-y: auto; padding: 28px 32px 48px; }
+  .main.expiration-mode { grid-template-columns: 1fr; }
+  .main.expiration-mode .sidebar { display: none; }
+  .main.expiration-mode .content { width: 100%; max-width: 1120px; margin: 0 auto; }
+  .main.expiration-mode .content > :not(.expiration-card) { display: none; }
+  .main.ctkm-mode .expiration-card { display: none; }
+  .main.ctkm-mode .tem-r-card { display: none; }
+  .main.temr-mode { display: block; height: calc(100vh - 68px); overflow-y: auto; }
+  .main.temr-mode .content { display: none; }
+  .main.temr-mode .sidebar { width: 100%; max-width: 620px; margin: 0 auto; border: 0;
+                            background: transparent; overflow: visible; padding: 32px 20px; }
+  .main.temr-mode .sidebar > :not(.tem-r-card) { display: none; }
+
+  /* Cards */
+  .card      { background: var(--surface); border: 1px solid var(--border);
+               border-radius: var(--radius-lg); padding: 20px; box-shadow: none; }
+  .card-title { font-size: 13px; font-weight: 650; letter-spacing: -.01em;
+                color: var(--text2); margin-bottom: 16px; }
+
+  /* File drop zone */
+  .dropzone  { border: 1px dashed var(--border2); border-radius: var(--radius);
+               padding: 20px 16px; text-align: center; cursor: pointer;
+               transition: all .15s; background: var(--surface2); }
+  .dropzone:hover, .dropzone.over { border-color: var(--text); background: #fafafa; }
+  .dropzone.filled { border-style: solid; border-color: var(--green); }
+  .dropzone-icon { font-size: 24px; margin-bottom: 6px; }
+  .dropzone-label { font-size: 13px; font-weight: 500; color: var(--text); }
+  .dropzone-sub   { font-size: 11px; color: var(--text3); margin-top: 3px; }
+  .dropzone-file  { font-size: 12px; color: var(--green); font-family: var(--mono);
+                    margin-top: 6px; word-break: break-all; }
+
+  /* Month picker */
+  .month-input { width: 100%; background: var(--surface2); border: 1px solid var(--border2);
+                 border-radius: var(--radius); padding: 9px 12px; color: var(--text);
+                 font-family: var(--mono); font-size: 14px; outline: none;
+                 transition: border-color .15s; }
+  .month-input:focus { border-color: var(--accent); }
+  .entry-input { width: 100%; min-height: 132px; resize: vertical; background: var(--surface2);
+                 border: 1px solid var(--border2); border-radius: var(--radius); padding: 11px 12px;
+                 color: var(--text); font-family: var(--mono); font-size: 13px; outline: none;
+                 line-height: 1.65; }
+  .entry-input:focus { border-color: var(--accent); }
+  .expiration-grid { display: grid; grid-template-columns: minmax(250px, .75fr) minmax(340px, 1.25fr);
+                     gap: 16px; align-items: start; }
+  .result-status { display: inline-flex; padding: 2px 8px; border-radius: 999px;
+                   font-size: 11px; font-weight: 600; white-space: nowrap; }
+  .result-status.matched { color: #067647; background: #ecfdf3; }
+  .result-status.related { color: #1d4ed8; background: #eff6ff; }
+  .result-status.invalid, .result-status.not_found,
+  .result-status.batch_mismatch, .result-status.date_mismatch { color: #b42318; background: #fef3f2; }
+  .camera-wrap { position: relative; overflow: hidden; border: 1px solid var(--border2);
+                 border-radius: var(--radius); background: #050608; margin-top: 10px; }
+  .camera-video { display: block; width: 100%; max-height: 320px; object-fit: cover; }
+  .camera-guide { position: absolute; inset: 22% 10%; border: 2px solid var(--accent);
+                  border-radius: 10px; box-shadow: 0 0 0 999px rgba(0,0,0,.3); pointer-events: none; }
+  .camera-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
+
+  .sheet-select {
+    width: 100%; background: var(--surface2); border: 1px solid var(--border2);
+    border-radius: var(--radius); padding: 9px 12px; color: var(--text);
+    font-family: var(--font); font-size: 13px; outline: none;
+    transition: border-color .15s; margin-top: 10px;
+  }
+  .sheet-select:focus { border-color: var(--accent); }
+  .mapping-row { display: grid; grid-template-columns: 130px minmax(0, 1fr); gap: 10px;
+                 align-items: center; margin-bottom: 8px; }
+  .mapping-field { color: var(--text2); font-size: 12px; }
+  .mapping-row .sheet-select { width: 100%; min-width: 0; }
+  .sheet-hint { font-size: 11px; color: var(--text3); margin-top: 6px; }
+
+  /* Button */
+  .btn { display: flex; align-items: center; justify-content: center; gap: 8px;
+         width: 100%; min-height: 44px; padding: 11px 14px; border-radius: var(--radius); border: none;
+         font-family: var(--font); font-size: 14px; font-weight: 600;
+         cursor: pointer; transition: all .15s; }
+  .btn-primary { background: var(--accent); color: #fff; box-shadow: none; }
+  .btn-primary:hover:not(:disabled) { background: var(--accent2); }
+  .btn-primary:disabled { opacity: .4; cursor: not-allowed; }
+  .btn-ghost { background: var(--surface2); color: var(--text);
+               border: 1px solid var(--border2); }
+  .btn-ghost:hover { border-color: var(--accent); color: var(--accent); }
+
+  /* Spinner */
+  .spinner { width: 16px; height: 16px; border: 2px solid rgba(255,255,255,.35);
+             border-top-color: #fff; border-radius: 50%; animation: spin .6s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* Status strip */
+  .status-strip { display: flex; align-items: center; gap: 10px; padding: 10px 14px;
+                  border-radius: var(--radius); font-size: 13px; font-weight: 500; }
+  .status-strip.info    { background: #eff6ff; color: #1d4ed8; border: 1px solid #dbeafe; }
+  .status-strip.success { background: #ecfdf3; color: #067647; border: 1px solid #abefc6; }
+  .status-strip.warn    { background: #fffaeb; color: #b54708; border: 1px solid #fedf89; }
+  .status-strip.error   { background: #fef3f2; color: #b42318; border: 1px solid #fecdca; }
+  .expiration-card { padding: 20px 0; border: 0; background: transparent; box-shadow: none; }
+  .expiration-header { display: flex; align-items: flex-start; justify-content: space-between;
+                       gap: 16px; margin-bottom: 22px; }
+  .expiration-kicker { color: var(--green); font-size: 11px; font-weight: 750;
+                       letter-spacing: .08em; text-transform: uppercase; margin-bottom: 5px; }
+  .expiration-title { font-size: 30px; line-height: 1.15; letter-spacing: -.8px; font-weight: 720; }
+  .expiration-subtitle { margin-top: 7px; color: var(--text2); font-size: 13px; }
+  .format-pill { padding: 7px 10px; border-radius: 7px; border: 1px solid var(--border);
+                 background: #fff; color: var(--text2); font-family: var(--mono); font-size: 11px; white-space: nowrap; }
+  .ctkm-mode .sidebar .card { border: 0; border-bottom: 1px solid var(--border);
+                              border-radius: 0; padding: 16px 2px 22px; background: transparent; }
+  .advanced-card.hidden { display: none !important; }
+  .advanced-toggle { background: transparent; border: 0; color: var(--text2); font-family: var(--font);
+                     font-size: 12px; font-weight: 650; cursor: pointer; text-align: left;
+                     padding: 2px 2px 10px; }
+  .advanced-toggle:hover { color: var(--text); }
+
+  /* Summary grid */
+  .summary-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .stat-box { background: var(--surface2); border: 1px solid var(--border);
+              border-radius: var(--radius); padding: 14px 16px; }
+  .stat-num  { font-size: 26px; font-weight: 600; font-family: var(--mono);
+               color: var(--accent); letter-spacing: -1px; line-height: 1; }
+  .stat-label { font-size: 11px; color: var(--text2); margin-top: 4px; }
+  .stat-sub   { font-size: 10px; color: var(--text3); margin-top: 2px; }
+
+  /* Tab bar */
+  .tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border);
+          margin-bottom: 20px; overflow-x: auto; }
+  .tab  { padding: 9px 16px; font-size: 13px; font-weight: 500; cursor: pointer;
+          border-bottom: 2px solid transparent; color: var(--text2); white-space: nowrap;
+          background: none; border-top: none; border-left: none; border-right: none;
+          font-family: var(--font); transition: all .12s; }
+  .tab:hover  { color: var(--text); }
+  .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+  .tab-badge  { display: inline-flex; align-items: center; justify-content: center;
+                background: var(--border2); color: var(--text2); border-radius: 10px;
+                font-size: 10px; padding: 1px 6px; margin-left: 6px; font-family: var(--mono); }
+  .tab.active .tab-badge { background: var(--accent); color: #0f1117; }
+
+  /* Table */
+  .table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius); }
+  table { border-collapse: collapse; width: 100%; min-width: 600px; font-size: 12.5px; }
+  thead th { background: var(--surface2); padding: 9px 12px; text-align: left;
+             font-size: 11px; font-weight: 600; color: var(--text2); white-space: nowrap;
+             border-bottom: 1px solid var(--border2); letter-spacing: .04em; }
+  tbody td { padding: 8px 12px; border-bottom: 1px solid var(--border);
+             color: var(--text); max-width: 220px; overflow: hidden;
+             text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono);
+             font-size: 12px; }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr:hover td { background: var(--surface2); }
+
+  /* Warnings */
+  .warn-list { display: flex; flex-direction: column; gap: 8px; }
+  .warn-item { background: var(--surface2); border-left: 3px solid var(--accent);
+               border-radius: 0 var(--radius) var(--radius) 0;
+               padding: 10px 14px; font-size: 12.5px; color: var(--text2); }
+
+  /* Empty */
+  .empty { text-align: center; padding: 60px 20px; color: var(--text3); }
+  .empty-icon { font-size: 40px; margin-bottom: 12px; }
+  .empty-title { font-size: 15px; font-weight: 500; color: var(--text2); margin-bottom: 6px; }
+
+  /* Download bar */
+  .download-bar { display: flex; align-items: center; gap: 12px; padding: 14px 18px;
+                  background: var(--surface); border: 1px solid var(--border);
+                  border-radius: var(--radius-lg); margin-bottom: 24px; }
+  .download-info { flex: 1; }
+  .download-name { font-size: 13px; font-weight: 600; color: var(--text); }
+  .download-meta { font-size: 11px; color: var(--text3); margin-top: 2px; font-family: var(--mono); }
+
+  /* Progress */
+  .progress-wrap { margin: 16px 0; }
+  .progress-bar  { height: 3px; background: var(--border); border-radius: 99px; overflow: hidden; }
+  .progress-fill { height: 100%; background: var(--accent);
+                   animation: progress-pulse 1.5s ease-in-out infinite; }
+  @keyframes progress-pulse { 0%,100%{opacity:.4} 50%{opacity:1} }
+  .progress-label { font-size: 11px; color: var(--text3); margin-top: 6px; font-family: var(--mono); }
+
+  /* Section title */
+  .section-title { font-size: 15px; font-weight: 600; margin-bottom: 16px; color: var(--text); }
+  .section-title span { color: var(--text3); font-weight: 400; font-size: 13px; margin-left: 8px; }
+
+  /* Row count */
+  .row-count { font-size: 11px; color: var(--text3); margin-bottom: 10px; font-family: var(--mono); }
+
+  .output-field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 12px; }
+
+  /* Responsive */
+  @media (max-width: 768px) {
+    body { font-size: 13px; }
+    .topbar { height: auto; min-height: 56px; padding: 10px 16px; flex-wrap: wrap; }
+    .topbar-logo { font-size: 16px; }
+    .topbar-sub { display: none; }
+    .module-nav { order: 3; width: 100%; margin: 2px 0 0; }
+    .module-nav button { flex: 1; min-height: 38px; }
+    .backend-status { font-size: 10px; }
+    .main { display: flex; flex-direction: column; height: auto; overflow: visible; }
+    .sidebar { border-right: none; border-bottom: 1px solid var(--border);
+               max-height: none; overflow: visible; padding: 16px 12px; gap: 16px; order: 2; }
+    .content { overflow: visible; padding: 16px 12px 28px; order: 1; }
+    .card { padding: 16px 12px; border-radius: 10px; }
+    .expiration-card { padding: 20px 16px; border-radius: 16px; }
+    .expiration-header { display: block; margin-bottom: 18px; }
+    .expiration-title { font-size: 21px; }
+    .format-pill { display: inline-flex; margin-top: 12px; }
+    .summary-grid, .output-field-grid { grid-template-columns: 1fr; }
+    .download-bar { align-items: stretch; flex-direction: column; }
+    .download-bar .btn { width: 100% !important; }
+    .empty { padding: 36px 12px; }
+
+    /* Mapping is a form on mobile, so cards are easier to use than a wide table. */
+    .mapping-table { overflow: visible !important; max-height: none !important; border: 0; }
+    .mapping-table table,
+    .mapping-table tbody,
+    .mapping-table tr,
+    .mapping-table td { display: block; width: 100%; min-width: 0; }
+    .mapping-table thead { display: none; }
+    .mapping-table tbody { display: grid; gap: 10px; }
+    .mapping-table tr { padding: 12px; background: var(--surface2);
+                        border: 1px solid var(--border); border-radius: var(--radius); }
+    .mapping-table tbody td { max-width: none; white-space: normal; overflow: visible;
+                              border: 0; padding: 3px 0; font-family: var(--font); }
+    .mapping-table tbody td:first-child { font-family: var(--mono); font-weight: 600;
+                                          overflow-wrap: anywhere; color: var(--text); }
+    .mapping-table tbody td:nth-child(2),
+    .mapping-table tbody td:nth-child(3) { display: inline; color: var(--text2); font-size: 11px; }
+    .mapping-table tbody td:nth-child(2)::before { content: "Gợi ý: "; color: var(--text3); }
+    .mapping-table tbody td:nth-child(3)::before { content: " · Tin cậy: "; color: var(--text3); }
+    .mapping-table tbody td:last-child { margin-top: 8px; }
+    .mapping-table .sheet-select { min-width: 0 !important; width: 100%; min-height: 44px; }
+    .mapping-row { grid-template-columns: 1fr; gap: 5px; padding: 8px 0; }
+  }
+
+  @media (max-width: 380px) {
+    .topbar { align-items: flex-start; }
+    .backend-status { width: 100%; margin-left: 0; }
+    .stat-num { font-size: 22px; }
+  }
+  @media (max-width: 900px) { .expiration-grid { grid-template-columns: 1fr; } }
+`
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+function useDropzone(onFile) {
+  const [over, setOver] = useState(false)
+  const ref = useRef()
+  const onDrop = useCallback(e => {
+    e.preventDefault(); setOver(false)
+    const f = e.dataTransfer.files[0]
+    if (f?.name.endsWith(".xlsx")) onFile(f)
+  }, [onFile])
+  const onDrag = useCallback(e => { e.preventDefault(); setOver(true) }, [])
+  const onLeave = useCallback(() => setOver(false), [])
+  const onClick = () => ref.current?.click()
+  const onChange = e => { const f = e.target.files[0]; if (f) onFile(f) }
+  return { ref, over, onDrop, onDrag, onLeave, onClick, onChange }
+}
+
+function expirationTime(value) {
+  const [day, month, year] = String(value || "").split("/").map(Number)
+  return day && month && year ? new Date(year, month - 1, day).getTime() : 0
+}
+
+function expirationDisplayRows(result, filter, sort) {
+  const rows = (result?.results || []).flatMap(query => {
+    if (!query.related_rows?.length) return [{...query, rowKey:`${query.line}-input`, exact:query.status === "matched"}]
+    return query.related_rows.map((related, index) => ({
+      ...query, ...related,
+      rowKey: `${query.line}-${related.batch_number}-${related.exp_date}-${index}`,
+      exact: query.status === "matched" && related.batch_number === query.batch_number && related.exp_date === query.exp_date,
+      status: query.status === "matched" && related.batch_number === query.batch_number && related.exp_date === query.exp_date ? "matched" : "related",
+      message: related.batch_number === query.batch_number && related.exp_date === query.exp_date ? query.message : "Cùng mã P · lô/hạn dùng khác",
+    }))
+  }).filter(row => filter === "all" || (filter === "matched" ? row.exact : !row.exact))
+  return rows.sort((a, b) => {
+    if (sort === "expiry_asc") return expirationTime(a.exp_date) - expirationTime(b.exp_date)
+    if (sort === "item") return String(a.item_id || "").localeCompare(String(b.item_id || "")) || expirationTime(b.exp_date) - expirationTime(a.exp_date)
+    if (sort === "input") return a.line - b.line
+    return expirationTime(b.exp_date) - expirationTime(a.exp_date)
+  })
+}
+
+function fmt(n) { return typeof n === "number" ? n.toLocaleString("vi-VN") : n ?? "—" }
+
+function normalizeColumn(text) {
+  return String(text ?? "").trim().toLowerCase().replace(/\s+/g, " ")
+}
+
+function buildColumnSignature(columns) {
+  return (columns || []).map(normalizeColumn).sort().join("|")
+}
+
+function readJsonStorage(key, fallback) {
+  try {
+    if (typeof window === "undefined") return fallback
+    const raw = window.localStorage.getItem(key)
+    if (!raw) return fallback
+    return JSON.parse(raw)
+  } catch {
+    return fallback
+  }
+}
+
+function writeJsonStorage(key, value) {
+  try {
+    if (typeof window === "undefined") return
+    window.localStorage.setItem(key, JSON.stringify(value))
+  } catch {
+    // ignore storage failures
+  }
+}
+
+// ─── Sub-components ───────────────────────────────────────────────────────────
+function Dropzone({ label, sub, file, onFile }) {
+  const dz = useDropzone(onFile)
+  return (
+    <div
+      className={`dropzone${file ? " filled" : ""}${dz.over ? " over" : ""}`}
+      onDrop={dz.onDrop}
+      onDragOver={dz.onDrag}
+      onDragLeave={dz.onLeave}
+      onClick={dz.onClick}
+    >
+      <input ref={dz.ref} type="file" accept=".xlsx" style={{display:"none"}} onChange={dz.onChange} />
+      <div className="dropzone-icon">{file ? "✓" : "↑"}</div>
+      <div className="dropzone-label">{label}</div>
+      <div className="dropzone-sub">{sub}</div>
+      {file && <div className="dropzone-file">{file.name}</div>}
+    </div>
+  )
+}
+
+function StatBox({ num, label, sub, accent }) {
+  return (
+    <div className="stat-box">
+      <div className="stat-num" style={accent ? {color: accent} : {}}>{fmt(num)}</div>
+      <div className="stat-label">{label}</div>
+      {sub && <div className="stat-sub">{sub}</div>}
+    </div>
+  )
+}
+
+function DataTable({ headers, rows, totalRows }) {
+  if (!headers?.length) return <p style={{color:"var(--text3)",fontSize:13}}>Không có dữ liệu.</p>
+  return (
+    <>
+      <div className="row-count">
+        Hiển thị {rows.length} / {totalRows} dòng
+      </div>
+      <div className="table-wrap">
+        <table>
+          <thead>
+            <tr>{headers.map((h,i) => <th key={i} title={h}>{h}</th>)}</tr>
+          </thead>
+          <tbody>
+            {rows.map((row,ri) => (
+              <tr key={ri}>
+                {row.map((cell,ci) => <td key={ci} title={cell}>{cell || "—"}</td>)}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </>
+  )
+}
+
+// ─── Main App ─────────────────────────────────────────────────────────────────
+const STEPS = { idle: "idle", running: "running", done: "done", error: "error" }
+const STEP_LABELS = [
+  "Đọc và chuẩn hoá file…",
+  "Phân loại sheet CTKM…",
+  "Gemini nhận diện cột…",
+  "Lọc theo tháng…",
+  "Ghép CTKM ↔ POG…",
+  "Soát lệch & xuất file…",
+]
+const FACT_FIELDS = [
+  "item_id",
+  "item_name",
+  "campaign_name",
+  "campaign_detail",
+  "promo_from",
+  "promo_to",
+  "channel",
+  "normal_price",
+  "promo_price",
+  "product_type",
+]
+const POG_FIELDS = [
+  "item_id",
+  "item_name",
+  "store_id",
+  "pog_code",
+  "location_id",
+  "facing",
+]
+const OUTPUT_FIELDS = [
+  "item_id",
+  "item_name",
+  "campaign_name",
+  "campaign_detail",
+  "promo_from",
+  "promo_to",
+  "channel",
+  "normal_price",
+  "promo_price",
+  "product_type",
+  "store_id",
+  "pog_code",
+  "location_id",
+  "facing",
+]
+const OUTPUT_PRESET_KEY = "ctkm.output.columns.v1"
+const MAPPING_PRESET_PREFIX = "ctkm.mapping.preset.v1"
+const TEM_R_REQUIRED_COLUMNS = ["STOREID", "POGCODE", "FIXELID", "LOCATIONID", "ITEMID", "ITEMNAME"]
+
+export default function App() {
+  const [activeModule, setActiveModule] = useState("expiration")
+  const [ctkmAdvanced, setCtkmAdvanced] = useState(false)
+  const [ctkmFile, setCtkmFile]   = useState(null)
+  const [pogFile, setPogFile]     = useState(null)
+  const [month, setMonth]         = useState(() => {
+    const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`
+  })
+  const [strict, setStrict]       = useState(false)
+  const [ctkmSheetOptions, setCtkmSheetOptions] = useState([])
+  const [ctkmSheetName, setCtkmSheetName] = useState("")
+  const [ctkmSheetLoading, setCtkmSheetLoading] = useState(false)
+  const [ctkmSheetError, setCtkmSheetError] = useState("")
+  const [pogSnapshotMonth, setPogSnapshotMonth] = useState("")
+  const [pogInspectError, setPogInspectError] = useState("")
+  const [mappingPreview, setMappingPreview] = useState(null)
+  const [mappingLoading, setMappingLoading] = useState(false)
+  const [mappingError, setMappingError] = useState("")
+  const [mappingSaving, setMappingSaving] = useState(false)
+  const [mappingSaved, setMappingSaved] = useState("")
+  const [savedOnly, setSavedOnly] = useState(false)
+  const [ctkmMappingOverride, setCtkmMappingOverride] = useState({})
+  const [pogMappingOverride, setPogMappingOverride] = useState({})
+  const [selectedOutputColumns, setSelectedOutputColumns] = useState([])
+  const [savedPresets, setSavedPresets] = useState([])
+  const [presetLoading, setPresetLoading] = useState(false)
+  const [presetError, setPresetError] = useState("")
+  const [temRFile, setTemRFile] = useState(null)
+  const [temRLoading, setTemRLoading] = useState(false)
+  const [temRResult, setTemRResult] = useState(null)
+  const [temRError, setTemRError] = useState("")
+  const [temRColumns, setTemRColumns] = useState([])
+  const [temRSheetOptions, setTemRSheetOptions] = useState([])
+  const [temRSheetName, setTemRSheetName] = useState("")
+  const [temRItemColumn, setTemRItemColumn] = useState("")
+  const [temRStockColumn, setTemRStockColumn] = useState("")
+  const [temRColumnMapping, setTemRColumnMapping] = useState({})
+  const [temRInspecting, setTemRInspecting] = useState(false)
+  const [temRInspectInfo, setTemRInspectInfo] = useState(null)
+  const [expirationFile, setExpirationFile] = useState(null)
+  const [expirationEntries, setExpirationEntries] = useState("")
+  const [expirationLoading, setExpirationLoading] = useState(false)
+  const [expirationResult, setExpirationResult] = useState(null)
+  const [expirationError, setExpirationError] = useState("")
+  const [expirationFilter, setExpirationFilter] = useState("all")
+  const [expirationSort, setExpirationSort] = useState("expiry_desc")
+  const [cameraActive, setCameraActive] = useState(false)
+  const [cameraMessage, setCameraMessage] = useState("")
+  const [cameraError, setCameraError] = useState("")
+  const cameraVideoRef = useRef(null)
+  const cameraStreamRef = useRef(null)
+  const cameraFrameRef = useRef(null)
+  const cameraBusyRef = useRef(false)
+  const cameraLastScanRef = useRef({ value: "", at: 0 })
+  const [step, setStep]           = useState(STEPS.idle)
+  const [stepIdx, setStepIdx]     = useState(0)
+  const [jobId, setJobId]         = useState(null)
+  const [result, setResult]       = useState(null)   // {summary, warnings}
+  const [preview, setPreview]     = useState(null)   // {sheets:{...}}
+  const [activeSheet, setActiveSheet] = useState(null)
+  const [error, setError]         = useState(null)
+  const [backendStatus, setBackendStatus] = useState("checking") // checking | ok | offline
+
+  useEffect(() => {
+    const stored = readJsonStorage(OUTPUT_PRESET_KEY, [])
+    if (Array.isArray(stored)) {
+      setSelectedOutputColumns(stored.filter(x => typeof x === "string" && x.trim()))
+    }
+  }, [])
+
+  const refreshPresets = useCallback(async () => {
+    setPresetLoading(true)
+    setPresetError("")
+    try {
+      const res = await fetch(`${API}/api/presets`)
+      const data = await res.json()
+      if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : "Không tải được preset")
+      setSavedPresets(data.items || [])
+    } catch (e) {
+      setPresetError(e.message)
+    } finally {
+      setPresetLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    refreshPresets()
+  }, [refreshPresets])
+
+  const canRun = ctkmFile && pogFile && month && step !== STEPS.running
+    && backendStatus === "ok"
+    && (!ctkmSheetOptions.length || !!ctkmSheetName)
+
+  useEffect(() => {
+    let cancelled = false
+    const check = async () => {
+      try {
+        const res = await fetch(`${API}/api/health`, { signal: AbortSignal.timeout(5000) })
+        if (!cancelled) setBackendStatus(res.ok ? "ok" : "offline")
+      } catch {
+        if (!cancelled) setBackendStatus("offline")
+      }
+    }
+    check()
+    const iv = setInterval(check, 30000)
+    return () => { cancelled = true; clearInterval(iv) }
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    const inspect = async () => {
+      if (!ctkmFile || backendStatus !== "ok") {
+        setCtkmSheetOptions([])
+        setCtkmSheetName("")
+        setCtkmSheetError("")
+        setCtkmSheetLoading(false)
+        return
+      }
+      setCtkmSheetLoading(true)
+      setCtkmSheetError("")
+      try {
+        const fd = new FormData()
+        fd.append("ctkm_file", ctkmFile)
+        const res = await fetch(`${API}/api/inspect-ctkm`, { method: "POST", body: fd })
+        const data = await res.json()
+        if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : "Không đọc được sheet CTKM")
+        if (!cancelled) {
+          const sheets = data.sheet_names || []
+          setCtkmSheetOptions(sheets)
+          setCtkmSheetName(data.suggested_sheet || sheets[0] || "")
+        }
+      } catch (e) {
+        if (!cancelled) {
+          setCtkmSheetOptions([])
+          setCtkmSheetName("")
+          setCtkmSheetError(e.message)
+        }
+      } finally {
+        if (!cancelled) setCtkmSheetLoading(false)
+      }
+    }
+    inspect()
+    return () => { cancelled = true }
+  }, [ctkmFile, backendStatus])
+
+  useEffect(() => {
+    let cancelled = false
+    const inspect = async () => {
+      if (!pogFile || backendStatus !== "ok") {
+        setPogSnapshotMonth("")
+        setPogInspectError("")
+        return
+      }
+      setPogInspectError("")
+      try {
+        const fd = new FormData()
+        fd.append("pog_file", pogFile)
+        const res = await fetch(`${API}/api/inspect-pog`, { method: "POST", body: fd })
+        const data = await res.json()
+        if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : "Không đọc được snapshot POG")
+        if (!cancelled) setPogSnapshotMonth(data.snapshot_month || "")
+      } catch (e) {
+        if (!cancelled) {
+          setPogSnapshotMonth("")
+          setPogInspectError(e.message)
+        }
+      }
+    }
+    inspect()
+    return () => { cancelled = true }
+  }, [pogFile, backendStatus])
+
+  useEffect(() => {
+    let cancelled = false
+    const inspect = async () => {
+      setTemRColumns([])
+      setTemRStockColumn("")
+      setTemRItemColumn("")
+      setTemRSheetOptions([])
+      setTemRSheetName("")
+      setTemRColumnMapping({})
+      setTemRResult(null)
+      setTemRInspectInfo(null)
+      if (!temRFile || backendStatus !== "ok") return
+      setTemRInspecting(true)
+      setTemRError("")
+      try {
+        const fd = new FormData()
+        fd.append("tem_r_file", temRFile)
+        const res = await fetch(`${API}/api/inspect-tem-r`, { method: "POST", body: fd })
+        const data = await res.json()
+        if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : "Không đọc được cột trong file")
+        if (!cancelled) {
+          setTemRColumns(data.columns || [])
+          setTemRSheetOptions(data.sheet_options || [])
+          setTemRSheetName(data.sheet_name || "")
+          setTemRItemColumn(data.suggested_item_column || "")
+          setTemRStockColumn(data.suggested_stock_column || "")
+          setTemRColumnMapping(data.suggested_mapping || {})
+          setTemRInspectInfo({sheetName:data.sheet_name, headerRow:data.header_row})
+        }
+      } catch (e) {
+        if (!cancelled) setTemRError(e.message)
+      } finally {
+        if (!cancelled) setTemRInspecting(false)
+      }
+    }
+    inspect()
+    return () => { cancelled = true }
+  }, [temRFile, backendStatus])
+
+  useEffect(() => {
+    setMappingPreview(null)
+    setMappingError("")
+    setCtkmMappingOverride({})
+    setPogMappingOverride({})
+  }, [ctkmFile, ctkmSheetName, pogFile])
+
+  useEffect(() => {
+    writeJsonStorage(OUTPUT_PRESET_KEY, selectedOutputColumns)
+  }, [selectedOutputColumns])
+
+  useEffect(() => {
+    if (!mappingPreview) return
+    const ctkmSig = buildColumnSignature(mappingPreview.ctkm_preview?.columns || [])
+    const pogSig = buildColumnSignature(mappingPreview.pog_preview?.columns || [])
+    if (!ctkmSig && !pogSig) return
+    const key = `${MAPPING_PRESET_PREFIX}:${ctkmSig}::${pogSig}`
+    const payload = {
+      ctkm: ctkmMappingOverride,
+      pog: pogMappingOverride,
+      output: selectedOutputColumns,
+      savedAt: new Date().toISOString(),
+    }
+    writeJsonStorage(key, payload)
+  }, [mappingPreview, ctkmMappingOverride, pogMappingOverride, selectedOutputColumns])
+
+  const deletePreset = async (key) => {
+    try {
+      const res = await fetch(`${API}/api/presets?key=${encodeURIComponent(key)}`, { method: "DELETE" })
+      const data = await res.json()
+      if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : "Không xoá được preset")
+      await refreshPresets()
+    } catch (e) {
+      setPresetError(e.message)
+    }
+  }
+
+  // Simulate progress steps during API call
+  const simulateProgress = useCallback(() => {
+    setStepIdx(0)
+    let i = 0
+    const iv = setInterval(() => {
+      i++; setStepIdx(i)
+      if (i >= STEP_LABELS.length - 1) clearInterval(iv)
+    }, 1800)
+    return iv
+  }, [])
+
+  const handleRun = async () => {
+    setStep(STEPS.running); setError(null); setResult(null)
+    setPreview(null); setJobId(null); setActiveSheet(null)
+    const iv = simulateProgress()
+    const fd = new FormData()
+    fd.append("ctkm_file", ctkmFile)
+    fd.append("pog_file",  pogFile)
+    fd.append("month",     month)
+    fd.append("strict_month", strict)
+    fd.append("mapping_mode", savedOnly ? "saved_only" : "auto")
+    if (ctkmSheetName) fd.append("ctkm_sheet_name", ctkmSheetName)
+    if (Object.keys(ctkmMappingOverride).length > 0) {
+      fd.append("ctkm_mapping_override", JSON.stringify(ctkmMappingOverride))
+    }
+    if (Object.keys(pogMappingOverride).length > 0) {
+      fd.append("pog_mapping_override", JSON.stringify(pogMappingOverride))
+    }
+    if (selectedOutputColumns.length > 0) {
+      fd.append("selected_output_columns", JSON.stringify(selectedOutputColumns))
+    }
+    try {
+      const res = await fetch(`${API}/api/run`, { method: "POST", body: fd })
+      clearInterval(iv); setStepIdx(STEP_LABELS.length)
+      if (!res.ok) {
+        const err = await res.json()
+        if (res.status === 429) {
+          // Rate limit — thông báo thân thiện hơn
+          const detail = err.detail || {}
+          const msg = typeof detail === "object"
+            ? (detail.suggestion || detail.message || "Gemini free tier bị quá tải.")
+            : detail
+          throw new Error("⏳ " + msg)
+        }
+        const detail = err.detail || "Lỗi không xác định từ server."
+        throw new Error(typeof detail === "object" ? JSON.stringify(detail) : detail)
+      }
+      const data = await res.json()
+      setJobId(data.job_id)
+      setResult({ summary: data.summary, warnings: data.warnings })
+      setStep(STEPS.done)
+      refreshPresets()
+      // Load preview
+      const pres = await fetch(`${API}/api/preview/${data.job_id}?rows=100`)
+      if (pres.ok) {
+        const pdata = await pres.json()
+        setPreview(pdata)
+        setActiveSheet(Object.keys(pdata.sheets)[0])
+      }
+    } catch (e) {
+      clearInterval(iv)
+      setError(e.message); setStep(STEPS.error)
+    }
+  }
+
+  const handleDownload = () => {
+    window.open(`${API}/api/download/${jobId}`, "_blank")
+  }
+
+  const handleTemR = async () => {
+    if (!temRFile || !temRItemColumn || !temRStockColumn || backendStatus !== "ok") return
+    setTemRLoading(true)
+    setTemRError("")
+    setTemRResult(null)
+    try {
+      const fd = new FormData()
+      fd.append("tem_r_file", temRFile)
+      fd.append("max_location_distance", "1")
+      fd.append("stock_column", temRStockColumn)
+      fd.append("column_mapping", JSON.stringify({...temRColumnMapping, ITEMID:temRItemColumn}))
+      fd.append("sheet_name", temRSheetName)
+      if (temRInspectInfo?.headerRow) fd.append("header_row", String(temRInspectInfo.headerRow))
+      const res = await fetch(`${API}/api/tem-r`, { method: "POST", body: fd })
+      const data = await res.json()
+      if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : "Khong the xu ly Tem R")
+      setTemRResult(data)
+    } catch (e) {
+      setTemRError(e.message)
+    } finally {
+      setTemRLoading(false)
+    }
+  }
+
+  const downloadTemR = () => {
+    if (temRResult?.job_id) window.open(`${API}/api/download/${temRResult.job_id}`, "_blank")
+  }
+
+  const handleExpirationCheck = async () => {
+    if (!expirationFile || !expirationEntries.trim() || backendStatus !== "ok") return
+    setExpirationLoading(true)
+    setExpirationError("")
+    setExpirationResult(null)
+    try {
+      const fd = new FormData()
+      fd.append("expiration_file", expirationFile)
+      fd.append("entries", expirationEntries)
+      const res = await fetch(`${API}/api/check-expiration`, { method: "POST", body: fd })
+      const data = await res.json()
+      if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : "Không thể kiểm tra dữ liệu")
+      setExpirationResult(data)
+    } catch (e) {
+      setExpirationError(e.message)
+    } finally {
+      setExpirationLoading(false)
+    }
+  }
+
+  const appendScannedEntry = useCallback((rawValue) => {
+    const value = String(rawValue || "").trim()
+    const parts = value.split(";").map(part => part.trim())
+    if (parts.length !== 3 || !/^P\w+$/i.test(parts[0]) || !/^\d{2}\/\d{2}\/\d{4}$/.test(parts[2])) {
+      setCameraMessage(`Đã đọc “${value}” nhưng không đúng mẫu MÃ_P;SỐ_LÔ;DD/MM/YYYY`)
+      return false
+    }
+    const normalized = `${parts[0].toUpperCase()};${parts[1]};${parts[2]}`
+    let added = false
+    setExpirationEntries(previous => {
+      const existing = previous.split(/\r?\n/).map(line => line.trim().toUpperCase())
+      if (existing.includes(normalized.toUpperCase())) return previous
+      added = true
+      return previous.trim() ? `${previous.trim()}\n${normalized}` : normalized
+    })
+    setExpirationResult(null)
+    setCameraMessage(added ? `Đã thêm: ${normalized}` : `Đã có trong danh sách: ${normalized}`)
+    if (added && navigator.vibrate) navigator.vibrate(100)
+    return added
+  }, [])
+
+  const stopCamera = useCallback(() => {
+    if (cameraFrameRef.current) cancelAnimationFrame(cameraFrameRef.current)
+    cameraFrameRef.current = null
+    cameraStreamRef.current?.getTracks().forEach(track => track.stop())
+    cameraStreamRef.current = null
+    cameraBusyRef.current = false
+    if (cameraVideoRef.current) cameraVideoRef.current.srcObject = null
+    setCameraActive(false)
+  }, [])
+
+  const startCamera = async () => {
+    setCameraError("")
+    setCameraMessage("")
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setCameraError("Trình duyệt không hỗ trợ truy cập camera.")
+      return
+    }
+    if (!("BarcodeDetector" in window)) {
+      setCameraError("Trình duyệt này chưa hỗ trợ quét QR/barcode. Hãy dùng Chrome hoặc Edge phiên bản mới.")
+      return
+    }
+    try {
+      const formats = await window.BarcodeDetector.getSupportedFormats()
+      const preferred = ["qr_code", "data_matrix", "code_128", "code_39"]
+      const enabled = preferred.filter(format => formats.includes(format))
+      const detector = new window.BarcodeDetector(enabled.length ? { formats: enabled } : undefined)
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } },
+        audio: false,
+      })
+      cameraStreamRef.current = stream
+      setCameraActive(true)
+      requestAnimationFrame(async () => {
+        const video = cameraVideoRef.current
+        if (!video) return stopCamera()
+        video.srcObject = stream
+        await video.play()
+        const scan = async () => {
+          if (!cameraStreamRef.current) return
+          if (!cameraBusyRef.current && video.readyState >= 2) {
+            cameraBusyRef.current = true
+            try {
+              const codes = await detector.detect(video)
+              const now = Date.now()
+              for (const code of codes) {
+                const value = code.rawValue?.trim()
+                const last = cameraLastScanRef.current
+                if (value && (value !== last.value || now - last.at > 2500)) {
+                  cameraLastScanRef.current = { value, at: now }
+                  appendScannedEntry(value)
+                  break
+                }
+              }
+            } catch {
+              // A frame may fail while the camera is focusing; continue scanning.
+            } finally {
+              cameraBusyRef.current = false
+            }
+          }
+          cameraFrameRef.current = requestAnimationFrame(scan)
+        }
+        scan()
+      })
+    } catch (e) {
+      stopCamera()
+      const denied = e?.name === "NotAllowedError"
+      setCameraError(denied ? "Bạn chưa cấp quyền sử dụng camera." : `Không mở được camera: ${e.message}`)
+    }
+  }
+
+  useEffect(() => () => stopCamera(), [stopCamera])
+
+  const handlePreviewMapping = async (manualOnly = false) => {
+    if (!ctkmFile || !pogFile || !ctkmSheetName || backendStatus !== "ok") return
+    setMappingLoading(true)
+    setMappingError("")
+    setMappingSaved("")
+    try {
+      const fd = new FormData()
+      fd.append("ctkm_file", ctkmFile)
+      fd.append("pog_file", pogFile)
+      fd.append("ctkm_sheet_name", ctkmSheetName)
+      fd.append("manual_only", String(manualOnly))
+      const res = await fetch(`${API}/api/preview-mapping`, { method: "POST", body: fd })
+      const data = await res.json()
+      if (!res.ok) {
+        throw new Error(typeof data.detail === "string" ? data.detail : "Không lấy được mapping preview")
+      }
+      setMappingPreview(data)
+      if ((data.mapping_warnings || []).length > 0) {
+        setMappingError(
+          "Gemini không khả dụng. Bạn vẫn có thể chọn mapping thủ công bên dưới. " +
+          data.mapping_warnings.join(" · ")
+        )
+      }
+      const sharedPreset = data?.stored_preset || null
+      const ctkmCols = data?.ctkm_preview?.columns || []
+      const pogCols = data?.pog_preview?.columns || []
+      const presetKey = `${MAPPING_PRESET_PREFIX}:${buildColumnSignature(ctkmCols)}::${buildColumnSignature(pogCols)}`
+      const storedPreset = sharedPreset || readJsonStorage(presetKey, null)
+      const storedCtkm = storedPreset?.ctkm_mapping || storedPreset?.ctkm
+      const storedPog = storedPreset?.pog_mapping || storedPreset?.pog
+      const storedOutput = storedPreset?.output_columns || storedPreset?.output
+
+      const nextCtkm = {}
+      Object.entries(data?.ctkm_mapping?.mapping || {}).forEach(([src, dst]) => {
+        nextCtkm[src] = dst
+      })
+      const nextPog = {}
+      Object.entries(data?.pog_mapping?.mapping || {}).forEach(([src, dst]) => {
+        nextPog[src] = dst
+      })
+
+      if (storedCtkm) {
+        setCtkmMappingOverride({ ...nextCtkm, ...storedCtkm })
+      } else {
+        setCtkmMappingOverride(nextCtkm)
+      }
+
+      if (storedPog) {
+        setPogMappingOverride({ ...nextPog, ...storedPog })
+      } else {
+        setPogMappingOverride(nextPog)
+      }
+
+      if (Array.isArray(storedOutput)) {
+        setSelectedOutputColumns(storedOutput.filter(x => typeof x === "string" && x.trim()))
+      }
+
+      if (!sharedPreset && storedPreset) {
+        writeJsonStorage(presetKey, storedPreset)
+      }
+    } catch (e) {
+      setMappingPreview(null)
+      setMappingError(e.message)
+    } finally {
+      setMappingLoading(false)
+    }
+  }
+
+  const updateCtkmMapping = (sourceColumn, canonicalField) => {
+    setCtkmMappingOverride(prev => {
+      const next = { ...prev }
+      if (canonicalField) next[sourceColumn] = canonicalField
+      else delete next[sourceColumn]
+      return next
+    })
+  }
+
+  const updatePogMapping = (sourceColumn, canonicalField) => {
+    setPogMappingOverride(prev => {
+      const next = { ...prev }
+      if (canonicalField) next[sourceColumn] = canonicalField
+      else delete next[sourceColumn]
+      return next
+    })
+  }
+
+  const saveApprovedMapping = async () => {
+    if (!mappingPreview) return
+    setMappingSaving(true)
+    setMappingError("")
+    setMappingSaved("")
+    try {
+      const fd = new FormData()
+      fd.append("ctkm_columns", JSON.stringify(mappingPreview.ctkm_preview?.columns || []))
+      fd.append("pog_columns", JSON.stringify(mappingPreview.pog_preview?.columns || []))
+      fd.append("ctkm_mapping", JSON.stringify(ctkmMappingOverride))
+      fd.append("pog_mapping", JSON.stringify(pogMappingOverride))
+      fd.append("selected_output_columns", JSON.stringify(selectedOutputColumns))
+      const res = await fetch(`${API}/api/presets`, { method: "POST", body: fd })
+      const data = await res.json()
+      if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : "Khong luu duoc mapping")
+      setMappingSaved("Đã lưu mapping. Lần sau có thể bật chế độ chỉ dùng mapping đã lưu.")
+      refreshPresets()
+    } catch (e) {
+      setMappingError(e.message)
+    } finally {
+      setMappingSaving(false)
+    }
+  }
+
+  const toggleOutputColumn = (field) => {
+    setSelectedOutputColumns(prev => (
+      prev.includes(field) ? prev.filter(x => x !== field) : [...prev, field]
+    ))
+  }
+
+  // ── Summary stats from result.summary dict ─────────────────────────────────
+  const S = result?.summary ?? {}
+  const matched   = S["So dong khop (Matched)"]         ?? "—"
+  const itemMatch = S["So item duy nhat khop"]           ?? "—"
+  const ctkmMiss  = S["So dong CTKM thieu vi tri ke"]    ?? "—"
+  const pogMiss   = S["So dong len ke thieu CTKM"]       ?? "—"
+  const overlapW  = S["So canh bao trung thoi gian"]     ?? "—"
+  const hoaDon    = S["  Trong do CTKM theo hoa don"]    ?? 0
+
+  const warnings  = result?.warnings ?? []
+
+  return (
+    <>
+      <style>{css}</style>
+      <div className="shell">
+
+        {/* Topbar */}
+        <div className="topbar">
+          <div className="topbar-logo">Pharma<span>Ops</span></div>
+          <div className="topbar-sub">Kiểm tra hạn dùng và vận hành khuyến mãi</div>
+          <nav className="module-nav" aria-label="Chọn chức năng">
+            <button
+              className={activeModule === "expiration" ? "active" : ""}
+              onClick={() => setActiveModule("expiration")}
+            >
+              Kiểm tra hạn dùng
+            </button>
+            <button
+              className={activeModule === "ctkm" ? "active" : ""}
+              onClick={() => { stopCamera(); setActiveModule("ctkm") }}
+            >
+              Công cụ CTKM
+            </button>
+            <button
+              className={activeModule === "temr" ? "active" : ""}
+              onClick={() => { stopCamera(); setActiveModule("temr") }}
+            >
+              Phân bổ Tem R
+            </button>
+          </nav>
+          <div className="backend-status">
+            <span className={`status-dot ${
+              backendStatus === "ok" ? "ok" : backendStatus === "checking" ? "warn" : "err"
+            }`} />
+            {backendStatus === "ok" && "Backend kết nối"}
+            {backendStatus === "checking" && "Đang kiểm tra backend…"}
+            {backendStatus === "offline" && "Backend chưa chạy — chạy start.bat hoặc start.sh"}
+          </div>
+        </div>
+
+        <div className={`main ${activeModule}-mode`}>
+
+          {/* ── Sidebar ─────────────────────────────────────────────────────── */}
+          <div className="sidebar">
+
+            {/* File CTKM */}
+            <div className="card">
+              <div className="card-title">1 · File chương trình KM</div>
+              <Dropzone
+                label="File CTKM (.xlsx)"
+                sub="Kéo thả hoặc click để chọn"
+                file={ctkmFile}
+                onFile={setCtkmFile}
+              />
+              {ctkmFile && (
+                <>
+                  {ctkmSheetLoading && (
+                    <div className="sheet-hint">Đang đọc sheet CTKM…</div>
+                  )}
+                  {!ctkmSheetLoading && ctkmSheetOptions.length > 0 && (
+                    <>
+                      <select
+                        className="sheet-select"
+                        value={ctkmSheetName}
+                        onChange={e => setCtkmSheetName(e.target.value)}
+                      >
+                        {ctkmSheetOptions.map(sn => (
+                          <option key={sn} value={sn}>{sn}</option>
+                        ))}
+                      </select>
+                      <div className="sheet-hint">
+                        Chọn sheet CTKM cần tổng hợp trước khi chạy.
+                      </div>
+                    </>
+                  )}
+                  {ctkmSheetError && (
+                    <div className="sheet-hint" style={{color:"var(--red)"}}>
+                      {ctkmSheetError}
+                    </div>
+                  )}
+                  {ctkmAdvanced && ctkmSheetName && pogFile && (
+                    <>
+                      <button
+                        className="btn btn-ghost"
+                        style={{marginTop:12}}
+                        onClick={() => handlePreviewMapping(false)}
+                        disabled={mappingLoading}
+                      >
+                        {mappingLoading ? "Đang lấy mapping…" : "Xem / duyệt mapping"}
+                      </button>
+                      <button
+                        className="btn btn-ghost"
+                        style={{marginTop:8}}
+                        onClick={() => handlePreviewMapping(true)}
+                        disabled={mappingLoading}
+                      >
+                        Mapping thủ công (không gọi Gemini)
+                      </button>
+                    </>
+                  )}
+                  {mappingError && (
+                    <div className="sheet-hint" style={{color:"var(--red)"}}>
+                      {mappingError}
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+
+            {ctkmAdvanced && mappingPreview && (
+              <div className="card">
+                {(mappingPreview.mapping_warnings || []).length > 0 && (
+                  <div className="sheet-hint" style={{color:"var(--accent)", marginBottom:12}}>
+                    Không lấy được gợi ý từ Gemini. Hãy chọn các cột thủ công rồi bấm “Lưu mapping đã xác nhận”.
+                  </div>
+                )}
+                <div className="card-title">Mapping CTKM cần duyệt</div>
+                <div className="sheet-hint" style={{marginBottom:12}}>
+                  Sheet: <b>{mappingPreview.ctkm_sheet_name}</b>. Sửa các cột mơ hồ trước khi chạy.
+                </div>
+                <div className="table-wrap mapping-table" style={{maxHeight:420, overflowY:"auto"}}>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Cột gốc</th>
+                        <th>Gợi ý</th>
+                        <th>Confidence</th>
+                        <th>Chốt lại</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(Object.entries(mappingPreview.ctkm_mapping?.mapping || {})).map(([src, dst]) => (
+                        <tr key={src}>
+                          <td title={src}>{src}</td>
+                          <td>{dst}</td>
+                          <td>{fmt(mappingPreview.ctkm_mapping?.confidence?.[src])}</td>
+                          <td>
+                            <select
+                              className="sheet-select"
+                              style={{marginTop:0, minWidth:190}}
+                              value={ctkmMappingOverride[src] || dst || ""}
+                              onChange={e => updateCtkmMapping(src, e.target.value)}
+                            >
+                              <option value="">(không map)</option>
+                              {FACT_FIELDS.map(f => <option key={f} value={f}>{f}</option>)}
+                            </select>
+                          </td>
+                        </tr>
+                      ))}
+                      {(mappingPreview.ctkm_mapping?.unmapped || []).map(src => (
+                        <tr key={src}>
+                          <td title={src}>{src}</td>
+                          <td>(KHÔNG MAP)</td>
+                          <td>—</td>
+                          <td>
+                            <select
+                              className="sheet-select"
+                              style={{marginTop:0, minWidth:190}}
+                              value={ctkmMappingOverride[src] || ""}
+                              onChange={e => updateCtkmMapping(src, e.target.value)}
+                            >
+                              <option value="">(không map)</option>
+                              {FACT_FIELDS.map(f => <option key={f} value={f}>{f}</option>)}
+                            </select>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="sheet-hint" style={{marginTop:10}}>
+                  Mapping đã duyệt sẽ được gửi vào backend, nên lần chạy sau có thể dùng cache thay vì gọi Gemini lại.
+                </div>
+                <div className="card-title" style={{marginTop:20}}>Mapping POG cần duyệt</div>
+                <div className="sheet-hint" style={{marginBottom:12}}>
+                  Sheet: <b>{mappingPreview.pog_sheet_name}</b>. Kiểm tra kỹ các cột `item_id`, `store_id`, `pog_code` nếu có.
+                </div>
+                <div className="table-wrap mapping-table" style={{maxHeight:320, overflowY:"auto"}}>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Cột gốc</th>
+                        <th>Gợi ý</th>
+                        <th>Confidence</th>
+                        <th>Chốt lại</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(Object.entries(mappingPreview.pog_mapping?.mapping || {})).map(([src, dst]) => (
+                        <tr key={src}>
+                          <td title={src}>{src}</td>
+                          <td>{dst}</td>
+                          <td>{fmt(mappingPreview.pog_mapping?.confidence?.[src])}</td>
+                          <td>
+                            <select
+                              className="sheet-select"
+                              style={{marginTop:0, minWidth:190}}
+                              value={pogMappingOverride[src] || dst || ""}
+                              onChange={e => updatePogMapping(src, e.target.value)}
+                            >
+                              <option value="">(không map)</option>
+                              {POG_FIELDS.map(f => <option key={f} value={f}>{f}</option>)}
+                            </select>
+                          </td>
+                        </tr>
+                      ))}
+                      {(mappingPreview.pog_mapping?.unmapped || []).map(src => (
+                        <tr key={src}>
+                          <td title={src}>{src}</td>
+                          <td>(KHÔNG MAP)</td>
+                          <td>—</td>
+                          <td>
+                            <select
+                              className="sheet-select"
+                              style={{marginTop:0, minWidth:190}}
+                              value={pogMappingOverride[src] || ""}
+                              onChange={e => updatePogMapping(src, e.target.value)}
+                            >
+                              <option value="">(không map)</option>
+                              {POG_FIELDS.map(f => <option key={f} value={f}>{f}</option>)}
+                            </select>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <button
+                  className="btn btn-primary"
+                  style={{marginTop:16}}
+                  onClick={saveApprovedMapping}
+                  disabled={mappingSaving}
+                >
+                  {mappingSaving ? <><div className="spinner" /> Đang lưu mapping…</> : "Lưu mapping đã xác nhận"}
+                </button>
+                {mappingSaved && <div className="sheet-hint" style={{color:"var(--green)"}}>{mappingSaved}</div>}
+              </div>
+            )}
+
+            {/* File POG */}
+            <div className="card">
+              <div className="card-title">2 · File vị trí kệ (POG)</div>
+              <Dropzone
+                label="File POG (.xlsx)"
+                sub="Snapshot tháng tương ứng"
+                file={pogFile}
+                onFile={setPogFile}
+              />
+              {pogFile && pogSnapshotMonth && (
+                <div className="sheet-hint">
+                  Snapshot POG đọc được: <b>{pogSnapshotMonth}</b>
+                </div>
+              )}
+              {pogFile && pogInspectError && (
+                <div className="sheet-hint" style={{color:"var(--red)"}}>
+                  {pogInspectError}
+                </div>
+              )}
+            </div>
+
+            {/* Tháng + options */}
+            <div className="card">
+              <div className="card-title">3 · Tháng báo cáo</div>
+              <input
+                type="month"
+                className="month-input"
+                value={month}
+                onChange={e => setMonth(e.target.value)}
+              />
+              {pogSnapshotMonth && month && pogSnapshotMonth !== month && (
+                <div className="sheet-hint" style={{color:"var(--accent)"}}>
+                  POG đang là {pogSnapshotMonth}, còn tháng báo cáo là {month}.
+                </div>
+              )}
+              {ctkmSheetOptions.length > 1 && !ctkmSheetName && (
+                <div className="sheet-hint" style={{color:"var(--accent)"}}>
+                  Hãy chọn sheet CTKM để tiếp tục.
+                </div>
+              )}
+              {ctkmAdvanced && (
+                <>
+                  <label style={{
+                    display:"flex", alignItems:"center", gap:8,
+                    marginTop:14, fontSize:12.5, color:"var(--text2)", cursor:"pointer"
+                  }}>
+                    <input type="checkbox" checked={strict} onChange={e => setStrict(e.target.checked)} />
+                    Dừng nếu tháng POG không khớp
+                  </label>
+                  <label style={{
+                    display:"flex", alignItems:"center", gap:8,
+                    marginTop:10, fontSize:12.5, color:"var(--text2)", cursor:"pointer"
+                  }}>
+                    <input type="checkbox" checked={savedOnly} onChange={e => setSavedOnly(e.target.checked)} />
+                    Chỉ dùng mapping đã lưu (không gọi Gemini)
+                  </label>
+                </>
+              )}
+            </div>
+
+            <button className="advanced-toggle" onClick={() => setCtkmAdvanced(value => !value)}>
+              {ctkmAdvanced ? "− Ẩn thiết lập nâng cao" : "+ Thiết lập nâng cao"}
+            </button>
+
+            <div className={`card advanced-card ${ctkmAdvanced ? "" : "hidden"}`}>
+              <div className="card-title">4 · Cột output mong muốn</div>
+              <div className="sheet-hint">
+                Chọn cột cần giữ trong file kết quả. Để trống nghĩa là dùng mặc định toàn bộ cột.
+              </div>
+              <div className="output-field-grid">
+                {OUTPUT_FIELDS.map(field => (
+                  <label key={field} style={{display:"flex", gap:8, alignItems:"center", fontSize:12.5, color:"var(--text2)", cursor:"pointer"}}>
+                    <input
+                      type="checkbox"
+                      checked={selectedOutputColumns.includes(field)}
+                      onChange={() => toggleOutputColumn(field)}
+                      style={{accentColor:"var(--accent)"}}
+                    />
+                    {field}
+                  </label>
+                ))}
+              </div>
+              <div className="sheet-hint" style={{marginTop:10}}>
+                Nếu không chọn gì, hệ thống sẽ xuất theo cấu trúc mặc định hiện tại.
+              </div>
+            </div>
+
+            <div className={`card advanced-card ${ctkmAdvanced ? "" : "hidden"}`}>
+              <div className="card-title">5 · Preset đã lưu</div>
+              <div className="sheet-hint">
+                Các mapping và output đã chốt sẽ được lưu ở backend theo signature workbook.
+              </div>
+              <button className="btn btn-ghost" style={{marginTop:12}} onClick={refreshPresets} disabled={presetLoading}>
+                {presetLoading ? "Đang tải…" : "Làm mới preset"}
+              </button>
+              {presetError && (
+                <div className="sheet-hint" style={{color:"var(--red)", marginTop:8}}>{presetError}</div>
+              )}
+              <div style={{display:"flex", flexDirection:"column", gap:10, marginTop:12}}>
+                {savedPresets.length === 0 && !presetLoading && (
+                  <div className="sheet-hint">Chưa có preset nào.</div>
+                )}
+                {savedPresets.map(item => (
+                  <div key={item.key} style={{
+                    border: "1px solid var(--border)", borderRadius: "var(--radius)", padding: "10px 12px",
+                    background: "var(--surface2)",
+                  }}>
+                    <div style={{fontSize:12, color:"var(--text)", fontFamily:"var(--mono)", wordBreak:"break-all"}}>
+                      {item.key.slice(0, 36)}{item.key.length > 36 ? "…" : ""}
+                    </div>
+                    <div className="sheet-hint">
+                      {item.updated_at ? `Cập nhật: ${item.updated_at}` : "Chưa rõ thời gian"}
+                      {item.has_ctkm_mapping ? " · CTKM" : ""}
+                      {item.has_pog_mapping ? " · POG" : ""}
+                      {item.has_output_columns ? " · Output" : ""}
+                    </div>
+                    <button
+                      className="btn btn-ghost"
+                      style={{marginTop:8, padding:"8px 12px"}}
+                      onClick={() => deletePreset(item.key)}
+                    >
+                      Xoá preset
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="card tem-r-card">
+              <div className="card-title">Tem R · phân bổ theo tồn và vị trí kệ</div>
+              <Dropzone
+                label="File Tem R (.xlsx)"
+                sub="Tải file lên rồi chọn các cột dùng để phân bổ"
+                file={temRFile}
+                onFile={setTemRFile}
+              />
+              {temRInspecting && <div className="sheet-hint">Đang đọc danh sách cột…</div>}
+              {temRFile && !temRInspecting && !temRError && temRColumns.length === 0 && (
+                <div className="status-strip warn" style={{marginTop:10}}>Không đọc được cột nào trong file Tem R.</div>
+              )}
+              {temRFile && !temRInspecting && temRColumns.length > 0 && (
+                <>
+                  {temRInspectInfo && (
+                    <div className="sheet-hint" style={{color:"var(--green)"}}>
+                      Đã đọc sheet “{temRInspectInfo.sheetName}”, tiêu đề tại dòng {temRInspectInfo.headerRow}: {temRColumns.length} cột.
+                    </div>
+                  )}
+                  <label className="sheet-hint" style={{display:"block", marginTop:12}}>Sheet chứa mã P và tồn kho</label>
+                  <select className="sheet-select" value={temRSheetName} onChange={e => {
+                    const option = temRSheetOptions.find(item => item.sheet_name === e.target.value)
+                    setTemRSheetName(e.target.value)
+                    setTemRColumns(option?.columns || [])
+                    setTemRItemColumn(option?.suggested_item_column || "")
+                    setTemRStockColumn(option?.suggested_stock_column || "")
+                    setTemRColumnMapping(option?.suggested_mapping || {})
+                    setTemRInspectInfo(option ? {sheetName:option.sheet_name, headerRow:option.header_row} : null)
+                    setTemRResult(null)
+                  }}>
+                    {temRSheetOptions.map(option => <option key={option.sheet_name} value={option.sheet_name}>{option.sheet_name}</option>)}
+                  </select>
+                  <label className="sheet-hint" style={{display:"block", marginTop:12}}>Cột nào chứa mã P?</label>
+                  <select className="sheet-select" value={temRItemColumn} onChange={e => { setTemRItemColumn(e.target.value); setTemRResult(null) }}>
+                    <option value="">— Chọn cột mã P —</option>
+                    {temRColumns.map(column => <option key={column} value={column}>{column}</option>)}
+                  </select>
+                  <label className="sheet-hint" style={{display:"block", marginTop:12}}>
+                    Cột nào chứa số lượng tồn kho?
+                  </label>
+                  <select
+                    className="sheet-select"
+                    value={temRStockColumn}
+                    onChange={e => { setTemRStockColumn(e.target.value); setTemRResult(null) }}
+                  >
+                    <option value="">— Chọn cột tồn kho —</option>
+                    {temRColumns.map(column => <option key={column} value={column}>{column}</option>)}
+                  </select>
+                  <div className="sheet-hint">
+                    Hệ thống chỉ gợi ý; hãy kiểm tra và xác nhận trước khi phân bổ.
+                  </div>
+                </>
+              )}
+              <button
+                className="btn btn-primary"
+                style={{marginTop:12}}
+                disabled={!temRFile || !temRItemColumn || !temRStockColumn || temRInspecting || temRLoading || backendStatus !== "ok"}
+                onClick={handleTemR}
+              >
+                {temRLoading ? <><div className="spinner" /> Đang phân bổ Tem R…</> : "Phân bổ Tem R"}
+              </button>
+              {temRError && <div className="sheet-hint" style={{color:"var(--red)"}}>{temRError}</div>}
+              {temRResult && (
+                <>
+                  <div className="sheet-hint" style={{color:"var(--green)"}}>
+                    Đã thay {fmt(temRResult.summary?.tem_r_replaced_rows)} vị trí; ngoại lệ {fmt(temRResult.summary?.tem_r_exceptions)}.
+                  </div>
+                  <button className="btn btn-ghost" style={{marginTop:10}} onClick={downloadTemR}>
+                    Tải file Tem R kết quả
+                  </button>
+                </>
+              )}
+            </div>
+
+            {backendStatus === "offline" && (
+              <div className="status-strip error">
+                ⚠ Backend chưa sẵn sàng. Mở terminal tại thư mục dự án và chạy <code>start.bat</code> (Windows) hoặc <code>bash start.sh</code>.
+              </div>
+            )}
+
+            {/* Run button */}
+            <button
+              className="btn btn-primary"
+              disabled={!canRun}
+              onClick={handleRun}
+            >
+              {step === STEPS.running
+                ? <><div className="spinner" /> Đang xử lý…</>
+                : "▶ Chạy pipeline"}
+            </button>
+
+            {/* Progress */}
+            {step === STEPS.running && (
+              <div className="progress-wrap">
+                <div className="progress-bar">
+                  <div className="progress-fill"
+                    style={{width:`${Math.round((stepIdx/STEP_LABELS.length)*100)}%`,
+                            transition:"width .4s"}} />
+                </div>
+                <div className="progress-label">
+                  {STEP_LABELS[Math.min(stepIdx, STEP_LABELS.length-1)]}
+                </div>
+              </div>
+            )}
+
+            {/* Error */}
+            {step === STEPS.error && error && (
+              <div className="status-strip error">⚠ {error}</div>
+            )}
+
+            {/* Warnings */}
+            {warnings.length > 0 && (
+              <div>
+                <div className="card-title" style={{marginBottom:8}}>Cảnh báo</div>
+                <div className="warn-list">
+                  {warnings.map((w,i) => (
+                    <div key={i} className="warn-item">{w}</div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* ── Main content ─────────────────────────────────────────────── */}
+          <div className="content">
+            <div className="card expiration-card" style={{marginBottom:20}}>
+              <div className="expiration-header">
+                <div>
+                  <div className="expiration-kicker">Kiểm tra hạn dùng</div>
+                  <h1 className="expiration-title">Quét và đối chiếu sản phẩm</h1>
+                  <div className="expiration-subtitle">Tải dữ liệu tồn kho, sau đó nhập tay hoặc quét mã trên sản phẩm.</div>
+                </div>
+                <div className="format-pill">MÃ_P;SỐ_LÔ;DD/MM/YYYY</div>
+              </div>
+              <div className="expiration-grid">
+                <div>
+                  <Dropzone
+                    label="File hạn dùng (.xlsx)"
+                    sub="Cần có ITEMID, BATCHNUMER, EXPDATE"
+                    file={expirationFile}
+                    onFile={file => { setExpirationFile(file); setExpirationResult(null); setExpirationError("") }}
+                  />
+                  <div className="sheet-hint" style={{marginTop:8}}>
+                    Quét QR/barcode có nội dung: MÃ_P;SỐ_LÔ;DD/MM/YYYY
+                  </div>
+                  <div className="camera-actions">
+                    {!cameraActive ? (
+                      <button className="btn btn-ghost" onClick={startCamera}>Mở camera</button>
+                    ) : (
+                      <button className="btn btn-ghost" onClick={stopCamera}>■ Tắt camera</button>
+                    )}
+                    <button
+                      className="btn btn-ghost"
+                      onClick={() => { setExpirationEntries(""); setExpirationResult(null); setCameraMessage("") }}
+                      disabled={!expirationEntries}
+                    >
+                      Xóa danh sách
+                    </button>
+                  </div>
+                  {cameraActive && (
+                    <div className="camera-wrap">
+                      <video ref={cameraVideoRef} className="camera-video" playsInline muted />
+                      <div className="camera-guide" />
+                    </div>
+                  )}
+                  {cameraMessage && (
+                    <div className="status-strip info" style={{marginTop:10}}>{cameraMessage}</div>
+                  )}
+                  {cameraError && (
+                    <div className="status-strip error" style={{marginTop:10}}>⚠ {cameraError}</div>
+                  )}
+                </div>
+                <div>
+                  <textarea
+                    className="entry-input"
+                    value={expirationEntries}
+                    onChange={e => setExpirationEntries(e.target.value)}
+                    placeholder={"Mỗi sản phẩm một dòng, ví dụ:\nP29352;00526;18/03/2029"}
+                    spellCheck="false"
+                  />
+                  <button
+                    className="btn btn-primary"
+                    style={{marginTop:10}}
+                    onClick={handleExpirationCheck}
+                    disabled={!expirationFile || !expirationEntries.trim() || expirationLoading || backendStatus !== "ok"}
+                  >
+                    {expirationLoading ? <><div className="spinner" /> Đang kiểm tra…</> : "Kiểm tra dữ liệu"}
+                  </button>
+                  {expirationError && <div className="status-strip error" style={{marginTop:10}}>⚠ {expirationError}</div>}
+                </div>
+              </div>
+
+              {expirationResult && (
+                <div style={{marginTop:18}}>
+                  <div className={`status-strip ${expirationResult.unmatched ? "warn" : "success"}`}>
+                    Sheet {expirationResult.sheet_name}: khớp {expirationResult.matched}/{expirationResult.total} dòng
+                  </div>
+                  <div style={{display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginTop:12}}>
+                    <select className="sheet-select" style={{marginTop:0}} value={expirationFilter} onChange={e => setExpirationFilter(e.target.value)}>
+                      <option value="all">Tất cả dòng</option>
+                      <option value="matched">Chỉ dòng khớp chính xác</option>
+                      <option value="related">Chỉ lô/ngày khác cùng mã P</option>
+                    </select>
+                    <select className="sheet-select" style={{marginTop:0}} value={expirationSort} onChange={e => setExpirationSort(e.target.value)}>
+                      <option value="expiry_desc">Hạn tốt nhất trước</option>
+                      <option value="expiry_asc">Hạn gần nhất trước</option>
+                      <option value="item">Theo mã sản phẩm</option>
+                      <option value="input">Theo thứ tự nhập</option>
+                    </select>
+                  </div>
+                  <div className="table-wrap" style={{marginTop:12}}>
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>#</th><th>Sản phẩm</th><th>Số lô</th><th>Hạn dùng</th>
+                          <th>Tồn</th><th>Trạng thái</th><th>Đối chiếu</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {expirationDisplayRows(expirationResult, expirationFilter, expirationSort).map(row => (
+                          <tr key={row.rowKey}>
+                            <td>{row.line}</td>
+                            <td style={{minWidth:220}}>
+                              <div style={{fontFamily:"var(--mono)", fontWeight:650}}>{row.item_id || row.input}</div>
+                              {row.item_name && <div style={{fontFamily:"var(--font)", color:"var(--text2)", marginTop:3}}>{row.item_name}</div>}
+                            </td>
+                            <td>{row.batch_number || "—"}</td>
+                            <td>{row.exp_date || "—"}</td>
+                            <td>{row.on_hand ? `${row.on_hand}${row.inventory_unit ? ` ${row.inventory_unit}` : ""}` : "—"}</td>
+                            <td><span className={`result-status ${row.status}`}>{row.status === "matched" ? "Khớp chính xác" : row.status === "related" ? "Cùng mã P" : "Không khớp"}</span></td>
+                            <td style={{minWidth:220, whiteSpace:"normal", fontFamily:"var(--font)"}}>
+                              <div>{row.message}</div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+            </div>
+
+
+            {/* Idle state */}
+            {step === STEPS.idle && (
+              <div className="empty">
+                <div className="empty-icon">📊</div>
+                <div className="empty-title">Chọn file và tháng để bắt đầu</div>
+                <div style={{fontSize:13,color:"var(--text3)",marginTop:6}}>
+                  Upload file CTKM + file POG, chọn tháng báo cáo rồi nhấn Chạy pipeline
+                </div>
+              </div>
+            )}
+
+            {/* Running state */}
+            {step === STEPS.running && (
+              <div className="empty">
+                <div className="empty-icon">⚙️</div>
+                <div className="empty-title">Pipeline đang chạy…</div>
+                <div style={{fontSize:13,color:"var(--text3)",marginTop:6}}>
+                  Gemini đang nhận diện cột, ghép CTKM với POG theo tháng {month}
+                </div>
+                <div style={{maxWidth:320,margin:"20px auto 0"}}>
+                  {STEP_LABELS.map((label, i) => (
+                    <div key={i} style={{
+                      display:"flex", alignItems:"center", gap:10,
+                      padding:"6px 0", fontSize:12.5,
+                      color: i < stepIdx ? "var(--green)"
+                           : i === stepIdx ? "var(--text)"
+                           : "var(--text3)"
+                    }}>
+                      <span style={{fontFamily:"var(--mono)", fontSize:11, width:20, textAlign:"right"}}>
+                        {i < stepIdx ? "✓" : i === stepIdx ? "▶" : String(i+1).padStart(2,"0")}
+                      </span>
+                      {label}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Done state */}
+            {step === STEPS.done && result && (
+              <>
+                {/* Download bar */}
+                <div className="download-bar">
+                  <div style={{fontSize:24}}>📥</div>
+                  <div className="download-info">
+                    <div className="download-name">tong_hop_ctkm_{month}.xlsx</div>
+                    <div className="download-meta">8 sheets · sẵn sàng download</div>
+                  </div>
+                  <button className="btn btn-primary" style={{width:"auto",padding:"10px 20px"}}
+                    onClick={handleDownload}>
+                    Tải xuống
+                  </button>
+                </div>
+
+                {/* Summary stats */}
+                <div className="section-title">
+                  Kết quả tháng {month}
+                </div>
+                <div className="summary-grid" style={{marginBottom:28}}>
+                  <StatBox num={matched}   label="Dòng khớp (CTKM + kệ)" sub={`${fmt(itemMatch)} item duy nhất`} />
+                  <StatBox num={ctkmMiss}  label="CTKM thiếu vị trí kệ"
+                    sub={hoaDon > 0 ? `${hoaDon} CTKM theo hóa đơn` : null}
+                    accent="var(--accent)" />
+                  <StatBox num={pogMiss}   label="Lên kệ không có CTKM"
+                    accent="var(--blue)" />
+                  <StatBox num={overlapW}  label="Cảnh báo trùng thời gian"
+                    accent={overlapW > 0 ? "var(--red)" : "var(--green)"} />
+                </div>
+
+                {/* Preview tabs */}
+                {preview && (
+                  <>
+                    <div className="section-title">
+                      Xem trước dữ liệu
+                      <span>50 dòng đầu mỗi sheet</span>
+                    </div>
+                    <div className="tabs">
+                      {Object.entries(preview.sheets).map(([sn, sd]) => (
+                        <button
+                          key={sn}
+                          className={`tab${activeSheet === sn ? " active" : ""}`}
+                          onClick={() => setActiveSheet(sn)}
+                        >
+                          {sn}
+                          <span className="tab-badge">
+                            {sd.total_rows.toLocaleString("vi-VN")}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                    {activeSheet && preview.sheets[activeSheet] && (
+                      <DataTable {...preview.sheets[activeSheet]} />
+                    )}
+                  </>
+                )}
+              </>
+            )}
+
+            {/* Error state */}
+            {step === STEPS.error && (
+              <div className="empty">
+                <div className="empty-icon">❌</div>
+                <div className="empty-title">Pipeline gặp lỗi</div>
+                <div style={{
+                  marginTop:12, padding:"12px 16px", background:"var(--surface2)",
+                  border:"1px solid var(--border)", borderRadius:"var(--radius)",
+                  fontFamily:"var(--mono)", fontSize:12.5, color:"var(--red)",
+                  maxWidth:560, margin:"12px auto 0"
+                }}>
+                  {error}
+                </div>
+                <button className="btn btn-ghost" style={{width:"auto",padding:"10px 20px",marginTop:20}}
+                  onClick={() => setStep(STEPS.idle)}>
+                  Thử lại
+                </button>
+              </div>
+            )}
+
+          </div>
+        </div>
+      </div>
+    </>
+  )
+}

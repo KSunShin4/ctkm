@@ -1,0 +1,9 @@
+{
+  "garbage_row_if_any_cell_equals": ["total","grand total","tong","tong cong"],
+  "garbage_row_if_any_cell_contains": ["applied filters","applied filter","dateid"],
+  "garbage_row_if_first_cell_empty_and_rest_empty": true,
+  "header_row_detection": {
+    "scan_first_n_rows": 6,
+    "min_non_null_ratio": 0.5
+  }
+}

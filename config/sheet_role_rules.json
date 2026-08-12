@@ -1,0 +1,18 @@
+{
+  "classification_method": "rule_based_with_ai_hint",
+  "fact_rules": {
+    "must_have_signals": [
+      "co cap cot ngay (From/To, Tu ngay/Den ngay)",
+      "co cot chua tu khoa: campaign, chuong trinh, ctkm, promotion"
+    ],
+    "min_signals_required": 1
+  },
+  "dimension_rules": {
+    "signals": [
+      "ten sheet chua: list, store ap dung, sku csmv, brand sku",
+      "khong co cap cot ngay ro rang",
+      "so cot <= 4 va chu yeu la danh sach ma hoac dieu kien text"
+    ]
+  },
+  "fallback_if_unclear": "FACT_WITH_WARNING"
+}

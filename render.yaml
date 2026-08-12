@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: ctkm-pipeline
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: GEMINI_API_KEY
+        sync: false
+    healthCheckPath: /api/health

@@ -1,0 +1,83 @@
+import json
+
+import pandas as pd
+import pytest
+
+import main
+
+
+def _schema():
+    return {
+        "item_id": {"type": "string", "required": True},
+        "source_sheet": {"type": "string", "auto_filled": True},
+    }
+
+
+def test_structured_mapping_is_validated(monkeypatch):
+    df = pd.DataFrame({"SKU": ["A", "B"], "Other": [1, 2]})
+    response = {
+        "assignments": [
+            {"source_column": "SKU", "canonical_field": "item_id", "confidence": 0.98},
+            {"source_column": "Other", "canonical_field": "__UNMAPPED__", "confidence": 0.2},
+        ]
+    }
+    monkeypatch.setattr(main.CM, "_call_gemini_with_retry", lambda prompt, schema: json.dumps(response))
+
+    result = main.CM.map_columns_with_gemini("Sheet1", df, _schema())
+
+    assert result.mapping == {"SKU": "item_id"}
+    assert result.unmapped == ["Other"]
+    assert result.low_confidence_fields == ["Other"]
+
+
+def test_mapping_rejects_missing_source_assignment(monkeypatch):
+    df = pd.DataFrame({"SKU": ["A"], "Other": [1]})
+    response = {
+        "assignments": [
+            {"source_column": "SKU", "canonical_field": "item_id", "confidence": 0.9}
+        ]
+    }
+    monkeypatch.setattr(main.CM, "_call_gemini_with_retry", lambda prompt, schema: json.dumps(response))
+
+    with pytest.raises(main.CM.GeminiMappingError, match="khong tra assignment"):
+        main.CM.map_columns_with_gemini("Sheet1", df, _schema())
+
+
+def test_mapping_accepts_legacy_bold_unmapped_marker(monkeypatch):
+    df = pd.DataFrame({"Other": [1]})
+    response = {
+        "assignments": [
+            {"source_column": "Other", "canonical_field": "**UNMAPPED**", "confidence": 0.8}
+        ]
+    }
+    monkeypatch.setattr(main.CM, "_call_gemini_with_retry", lambda prompt, schema: json.dumps(response))
+
+    result = main.CM.map_columns_with_gemini("Sheet1", df, _schema())
+
+    assert result.mapping == {}
+    assert result.unmapped == ["Other"]
+
+
+def test_response_schema_excludes_auto_filled_fields():
+    df = pd.DataFrame({"SKU": ["A"]})
+    schema = main.CM._response_schema(df, _schema())
+    allowed = schema["properties"]["assignments"]["items"]["properties"]["canonical_field"]["enum"]
+
+    assert "item_id" in allowed
+    assert "source_sheet" not in allowed
+
+
+def test_cache_signature_is_scoped_to_schema_and_prompt_version():
+    columns = ["SKU"]
+    fact = {"item_id": {"type": "string"}}
+    pog = {"store_id": {"type": "string"}}
+
+    assert main.MC.compute_signature(columns, fact, "v2") != main.MC.compute_signature(columns, pog, "v2")
+    assert main.MC.compute_signature(columns, fact, "v2") != main.MC.compute_signature(columns, fact, "v3")
+
+
+def test_manual_mapping_rejects_unknown_target():
+    df = pd.DataFrame({"SKU": ["A"]})
+
+    with pytest.raises(ValueError, match="canonical field"):
+        main._validate_manual_mapping({"SKU": "invented_field"}, df, _schema())

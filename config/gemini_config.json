@@ -1,0 +1,27 @@
+{
+  "_comment": "Cau hinh Gemini API. API key lay tu bien moi truong GEMINI_API_KEY.",
+  "model": "gemini-3.5-flash",
+  "api_endpoint": "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+  "temperature": 0.0,
+  "max_output_tokens": 8192,
+  "timeout_seconds": 30,
+  "sample_rows_per_column": 3,
+  "prompt_version": "column-mapping-v3",
+  "system_instruction": "Ban la cong cu phan loai cot du lieu cho he thong ban le. Nhiem vu DUY NHAT: doc ten cot va du lieu mau, roi map moi cot goc ve dung 1 field trong danh sach canonical duoc cung cap. KHONG duoc bia them field moi. KHONG duoc sua gia tri du lieu. Tra ve DUY NHAT JSON hop le, khong markdown fence.",
+
+  "confidence_threshold": 0.6,
+
+  "_rate_limit_comment": "Gioi han Gemini free tier: 15 req/phut, 1M token/phut. Cac tham so duoi day bao ve pipeline tranh bi 429.",
+  "rate_limit": {
+    "requests_per_minute": 4,
+    "_rpm_note": "Dat thap hon gioi han that (15) de co buffer an toan. Tang len neu dung tra phi.",
+    "min_seconds_between_calls": 15,
+    "_spacing_note": "Khoang cach TOI THIEU giua 2 lan goi lien tiep (giay). Dam bao khong burst.",
+    "max_retries_on_429": 2,
+    "backoff_base_seconds": 20,
+    "_backoff_note": "Thoi gian cho co ban khi bi 429. Thuc te: base * 2^attempt + jitter.",
+    "backoff_max_seconds": 60,
+    "jitter_seconds": 2,
+    "_jitter_note": "Them ngau nhien [0, jitter_seconds] vao moi lan cho de tranh nhieu client goi cung luc."
+  }
+}

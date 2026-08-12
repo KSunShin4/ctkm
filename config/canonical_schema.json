@@ -1,0 +1,33 @@
+{
+  "_comment": "Schema chuan. Gemini chi duoc chon trong danh sach field nay khi map cot.",
+  "fact_fields": {
+    "item_id": {"desc": "Ma SKU dang chuoi (vd P12345)", "type": "string", "required": true},
+    "item_name": {"desc": "Ten san pham", "type": "string", "required": false},
+    "promo_uom": {"desc": "Don vi tinh khuyen mai / Promo UoM cua san pham", "type": "string", "required": false},
+    "campaign_name": {"desc": "Ten chuong trinh khuyen mai", "type": "string", "required": true},
+    "campaign_detail": {"desc": "Chi tiet / Scheme detail KM cho khach hang", "type": "string", "required": false},
+    "promo_from": {"desc": "Ngay bat dau KM (KHONG phai ngay cap nhat file)", "type": "date", "required": true},
+    "promo_to": {"desc": "Ngay ket thuc KM", "type": "date", "required": true},
+    "channel": {"desc": "Kenh ap dung (Offline/Online/ALL)", "type": "string", "required": false},
+    "normal_price": {"desc": "Gia ban thong thuong (RSP / Normal)", "type": "number", "required": false},
+    "promo_price": {"desc": "Gia khuyen mai (Promo price)", "type": "number", "required": false},
+    "product_type": {"desc": "Nhom/loai san pham (Big cat / Category)", "type": "string", "required": false},
+    "source_sheet": {"desc": "Ten sheet goc - tu dong gan, KHONG can Gemini map", "type": "string", "required": false, "auto_filled": true},
+    "row_update_date": {"desc": "Ngay cap nhat dong du lieu (chi la metadata)", "type": "date", "required": false}
+  },
+  "dimension_fields": {
+    "item_id": {"desc": "Ma SKU ma dieu kien ap dung cho", "type": "string", "required": false},
+    "store_id": {"desc": "Ma cua hang ma dieu kien ap dung", "type": "string", "required": false},
+    "condition_note": {"desc": "Noi dung dieu kien / pham vi ap dung", "type": "string", "required": false},
+    "source_sheet": {"desc": "Ten sheet goc", "type": "string", "required": false, "auto_filled": true}
+  },
+  "pog_fields": {
+    "item_id": {"desc": "Ma SKU / ITEMID", "type": "string", "required": true},
+    "item_name": {"desc": "Ten san pham / ITEMNAME", "type": "string", "required": false},
+    "store_id": {"desc": "Ma cua hang / STOREID", "type": "string", "required": true},
+    "pog_code": {"desc": "Ma planogram / POGCODE", "type": "string", "required": false},
+    "location_id": {"desc": "Vi tri tren ke / LOCATIONID", "type": "string", "required": false},
+    "facing": {"desc": "So mat trung bay tren ke", "type": "number", "required": false},
+    "pog_snapshot_month": {"desc": "Thang snapshot - tu dong gan", "type": "string", "required": false, "auto_filled": true}
+  }
+}
