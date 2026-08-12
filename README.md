@@ -78,6 +78,21 @@ Khách không cần đăng nhập và chỉ thấy chức năng kiểm tra hạn
 nhập ở thanh trên cùng để mở Công cụ CTKM và Phân bổ Tem R. Các API quản trị
 cũng yêu cầu token admin, vì vậy việc phân quyền không chỉ dựa vào ẩn giao diện.
 
+CTKM và Tem R dùng chung một hàng đợi nhẹ trong ứng dụng: mỗi lần chỉ xử lý một
+tác vụ Excel nặng, mặc định nhận tối đa 5 tác vụ gồm cả đang chạy và đang chờ.
+Có thể đổi giới hạn bằng `HEAVY_JOB_QUEUE_SIZE`. Kiểm tra hạn dùng chạy riêng và
+không phải chờ hàng đợi này. Vì hàng đợi nằm trong bộ nhớ, nó sẽ mất khi Render
+restart/redeploy.
+
+Kiểm tra hạn dùng cho phép mặc định 5 lượt dò đồng thời (`EXPIRATION_CONCURRENCY`).
+Nếu nhiều người tải lên cùng một file tồn kho, hệ thống nhận diện theo nội dung và
+chỉ đọc Excel một lần; file gần nhất được giữ trong cache RAM
+(`EXPIRATION_CACHE_SIZE=1`). CTKM/Tem R trả mã tác vụ ngay, sau đó giao diện tự
+theo dõi trạng thái và vị trí hàng đợi của chính người dùng.
+
+Giới hạn mặc định là 20 MB cho file hạn dùng, 25 MB cho Tem R và 50 MB cho mỗi
+file CTKM/POG. Kết quả hết hạn sau 6 giờ và được dọn khi có yêu cầu mới.
+
 Lưu ý: gói miễn phí dùng filesystem tạm thời. Kết quả Excel và mapping preset có
 thể mất khi service restart/redeploy; cần persistent disk hoặc object storage nếu
 muốn lưu lâu dài.

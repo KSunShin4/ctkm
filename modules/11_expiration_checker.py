@@ -55,6 +55,15 @@ def check_entries(frame: pd.DataFrame, raw_entries: str) -> list[dict]:
         raise ValueError("Hãy nhập ít nhất một dòng theo mẫu MÃ_P;SỐ_LÔ;DD/MM/YYYY.")
 
     results = []
+    # Build once per request instead of scanning the complete export for every
+    # entered item. Cached frames may also carry this index across requests.
+    item_index = frame.attrs.get("item_index")
+    if item_index is None:
+        item_index = {
+            item_id: positions.tolist()
+            for item_id, positions in frame.groupby("ITEMID", sort=False).groups.items()
+        }
+        frame.attrs["item_index"] = item_index
     for line_number, raw in enumerate(rows, start=1):
         parts = [part.strip() for part in raw.split(";")]
         base = {"line": line_number, "input": raw}
@@ -75,10 +84,11 @@ def check_entries(frame: pd.DataFrame, raw_entries: str) -> list[dict]:
             results.append({**detail, "status": "invalid", "message": "Hạn dùng phải có dạng DD/MM/YYYY"})
             continue
 
-        item_rows = frame[frame["ITEMID"] == item_id]
-        if item_rows.empty:
+        positions = item_index.get(item_id)
+        if not positions:
             results.append({**detail, "status": "not_found", "message": "Không tìm thấy mã sản phẩm trong file"})
             continue
+        item_rows = frame.loc[positions]
         first_item = item_rows.iloc[0]
         related_rows = []
         for _, record in item_rows.drop_duplicates(["BATCHNUMER", "EXPDATE"]).iterrows():

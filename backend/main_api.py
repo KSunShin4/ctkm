@@ -16,6 +16,7 @@ Cau hinh CORS cho phep frontend Vite (http://localhost:5173) goi duoc.
 from __future__ import annotations
 
 import importlib.util
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -27,6 +28,7 @@ import threading
 import time
 import types
 import uuid
+from collections import OrderedDict
 from datetime import datetime
 import tempfile
 from pathlib import Path
@@ -127,6 +129,163 @@ app.add_middleware(
 _jobs: dict[str, dict] = {}
 _gemini_cooldown_until: float = 0.0
 _gemini_cooldown_lock = threading.Lock()
+
+
+class _HeavyJobQueue:
+    """One in-process lane for memory/CPU-heavy Excel jobs."""
+
+    def __init__(self, max_jobs: int = 5):
+        self._max_jobs = max(1, max_jobs)
+        self._condition = threading.Condition()
+        self._waiting: list[dict] = []
+        self._active: dict | None = None
+
+    def acquire(self, job_id: str, kind: str) -> None:
+        entry = {"job_id": job_id, "kind": kind, "queued_at": datetime.now().isoformat()}
+        with self._condition:
+            if len(self._waiting) + (1 if self._active else 0) >= self._max_jobs:
+                raise RuntimeError("Hàng đợi đang đầy. Vui lòng chờ một tác vụ hoàn tất rồi thử lại.")
+            self._waiting.append(entry)
+            while self._active is not None or self._waiting[0] is not entry:
+                self._condition.wait()
+            self._waiting.pop(0)
+            entry["started_at"] = datetime.now().isoformat()
+            self._active = entry
+
+    def release(self, job_id: str) -> None:
+        with self._condition:
+            if self._active and self._active["job_id"] == job_id:
+                self._active = None
+            self._condition.notify_all()
+
+    def snapshot(self) -> dict:
+        with self._condition:
+            return {
+                "capacity": self._max_jobs,
+                "active": dict(self._active) if self._active else None,
+                "waiting": [
+                    {**entry, "position": position}
+                    for position, entry in enumerate(self._waiting, start=1)
+                ],
+            }
+
+
+_heavy_queue = _HeavyJobQueue(int(os.getenv("HEAVY_JOB_QUEUE_SIZE", "5")))
+_expiration_slots = threading.BoundedSemaphore(
+    max(1, int(os.getenv("EXPIRATION_CONCURRENCY", "5")))
+)
+_expiration_cache_lock = threading.Lock()
+_expiration_cache: OrderedDict[str, tuple[pd.DataFrame, str]] = OrderedDict()
+_EXPIRATION_CACHE_SIZE = max(1, int(os.getenv("EXPIRATION_CACHE_SIZE", "1")))
+_MAX_EXPIRATION_BYTES = int(os.getenv("MAX_EXPIRATION_FILE_MB", "20")) * 1024 * 1024
+_MAX_TEM_R_BYTES = int(os.getenv("MAX_TEM_R_FILE_MB", "25")) * 1024 * 1024
+_MAX_PIPELINE_BYTES = int(os.getenv("MAX_PIPELINE_FILE_MB", "50")) * 1024 * 1024
+_JOB_TTL_SECONDS = max(900, int(os.getenv("JOB_TTL_SECONDS", "21600")))
+
+
+async def _read_upload_limited(upload: UploadFile, max_bytes: int, label: str) -> bytes:
+    content = await upload.read(max_bytes + 1)
+    if len(content) > max_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail=f"{label} vượt quá giới hạn {max_bytes // (1024 * 1024)} MB",
+        )
+    if not content:
+        raise HTTPException(status_code=422, detail=f"{label} đang trống")
+    return content
+
+
+def _cleanup_old_jobs() -> None:
+    cutoff = time.time() - _JOB_TTL_SECONDS
+    for job_id, job in list(_jobs.items()):
+        created = job.get("created_timestamp", time.time())
+        if created >= cutoff or job.get("status") in {"queued", "running"}:
+            continue
+        path = Path(job.get("output_path", ""))
+        if path.is_file():
+            path.unlink(missing_ok=True)
+        _jobs.pop(job_id, None)
+    for path in _TMP_DIR.iterdir():
+        try:
+            if path.stat().st_mtime >= cutoff:
+                continue
+            if path.is_file():
+                path.unlink(missing_ok=True)
+            elif path.is_dir():
+                for child in path.iterdir():
+                    if child.is_file():
+                        child.unlink(missing_ok=True)
+                path.rmdir()
+        except OSError:
+            pass
+    for path in _OUT_DIR.iterdir():
+        try:
+            if path.is_file() and path.stat().st_mtime < cutoff:
+                path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _new_job(job_id: str, kind: str, output_path: Path, output_name: str, **extra) -> dict:
+    now = time.time()
+    job = {
+        "job_id": job_id, "kind": kind, "status": "queued", "progress": 0,
+        "message": "Đã vào hàng đợi", "output_path": str(output_path),
+        "output_name": output_name, "summary": {}, "warnings": [],
+        "error": None, "created_at": datetime.now().isoformat(),
+        "created_timestamp": now, **extra,
+    }
+    _jobs[job_id] = job
+    return job
+
+
+def _run_queued_job(job_id: str, kind: str, work) -> None:
+    try:
+        _heavy_queue.acquire(job_id, kind)
+        job = _jobs[job_id]
+        job.update(status="running", progress=10, message="Đang xử lý file")
+        summary, warnings = work(job)
+        job.update(status="completed", progress=100, message="Hoàn tất", summary=summary, warnings=warnings)
+    except Exception as exc:
+        job = _jobs.get(job_id)
+        if job is not None:
+            job.update(status="failed", message="Xử lý thất bại", error=str(exc))
+    finally:
+        _heavy_queue.release(job_id)
+
+
+def _submit_job(job_id: str, kind: str, work) -> None:
+    snapshot = _heavy_queue.snapshot()
+    if len(snapshot["waiting"]) + (1 if snapshot["active"] else 0) >= snapshot["capacity"]:
+        _jobs.pop(job_id, None)
+        raise HTTPException(status_code=503, detail="Hàng đợi đang đầy. Vui lòng thử lại sau.")
+    threading.Thread(target=_run_queued_job, args=(job_id, kind, work), daemon=True).start()
+
+
+def _job_public(job: dict) -> dict:
+    snapshot = _heavy_queue.snapshot()
+    waiting = next((item for item in snapshot["waiting"] if item["job_id"] == job["job_id"]), None)
+    return {
+        key: job.get(key) for key in (
+            "job_id", "kind", "status", "progress", "message", "summary",
+            "warnings", "error", "created_at", "month",
+        )
+    } | {"queue_position": waiting.get("position") if waiting else 0, "has_output": Path(job["output_path"]).is_file()}
+
+
+def _load_expiration_cached(content: bytes) -> tuple[pd.DataFrame, str, bool]:
+    """Parse identical inventory exports once; cache is bounded for Render RAM."""
+    fingerprint = hashlib.sha256(content).hexdigest()
+    with _expiration_cache_lock:
+        cached = _expiration_cache.get(fingerprint)
+        if cached is not None:
+            _expiration_cache.move_to_end(fingerprint)
+            return cached[0], cached[1], True
+        frame, sheet_name = _expiration_mod.load_expiration_export(content)
+        _expiration_cache[fingerprint] = (frame, sheet_name)
+        while len(_expiration_cache) > _EXPIRATION_CACHE_SIZE:
+            _expiration_cache.popitem(last=False)
+        return frame, sheet_name, False
 
 # Admin auth is stateless so a Render restart does not invalidate server-side
 # sessions. ADMIN_PASSWORD is mandatory; ADMIN_SESSION_SECRET is recommended.
@@ -288,6 +447,128 @@ def auth_me(_admin: str = Depends(require_admin)):
     return {"role": "admin", "username": _ADMIN_USERNAME}
 
 
+@app.get("/api/queue/status")
+def queue_status(_admin: str = Depends(require_admin)):
+    return _heavy_queue.snapshot()
+
+
+@app.get("/api/job/{job_id}/status")
+def job_status(job_id: str, _admin: str = Depends(require_admin)):
+    _cleanup_old_jobs()
+    job = _jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Không tìm thấy tác vụ")
+    return _job_public(job)
+
+
+@app.post("/api/jobs/tem-r", status_code=202)
+async def enqueue_tem_r(
+    tem_r_file: UploadFile = File(...), max_location_distance: float = Form(1),
+    stock_column: str = Form(...), column_mapping: Optional[str] = Form(None),
+    sheet_name: Optional[str] = Form(None), header_row: Optional[int] = Form(None),
+    _admin: str = Depends(require_admin),
+):
+    _cleanup_old_jobs()
+    if not tem_r_file.filename or not tem_r_file.filename.lower().endswith(".xlsx"):
+        raise HTTPException(status_code=422, detail="tem_r_file phải là file .xlsx")
+    content = await _read_upload_limited(tem_r_file, _MAX_TEM_R_BYTES, "File Tem R")
+    mapping = json.loads(column_mapping) if column_mapping else None
+    if mapping is not None and not isinstance(mapping, dict):
+        raise HTTPException(status_code=422, detail="Ánh xạ cột Tem R không hợp lệ")
+    job_id = uuid.uuid4().hex[:8]
+    job_dir = _TMP_DIR / f"tem_r_{job_id}"
+    job_dir.mkdir(parents=True, exist_ok=True)
+    source_path, output_path = job_dir / "tem_r.xlsx", _OUT_DIR / f"tem_r_{job_id}.xlsx"
+    source_path.write_bytes(content)
+    job = _new_job(job_id, "tem_r", output_path, output_path.name)
+
+    def work(current):
+        current.update(progress=30, message="Đang phân bổ Tem R")
+        try:
+            plan = _tem_r_mod.create_tem_r_workbook(
+                source_path, output_path, max_location_distance=max_location_distance,
+                stock_column=stock_column.strip(), column_mapping=mapping,
+                sheet_name=sheet_name, header_row=header_row,
+            )
+            summary = {
+                "tem_r_total_rows": len(plan.rows),
+                "tem_r_replaced_rows": int(plan.rows["TEM_R_REPRESENTATIVE"].notna().sum()),
+                "tem_r_exceptions": len(plan.exceptions),
+            }
+            return summary, plan.exceptions["reason"].tolist()
+        finally:
+            source_path.unlink(missing_ok=True)
+
+    _submit_job(job_id, "tem_r", work)
+    return _job_public(job)
+
+
+@app.post("/api/jobs/ctkm", status_code=202)
+async def enqueue_ctkm(
+    ctkm_file: UploadFile = File(...), pog_file: UploadFile = File(...),
+    month: str = Form(...), strict_month: bool = Form(False),
+    ctkm_sheet_name: Optional[str] = Form(None),
+    ctkm_mapping_override: Optional[str] = Form(None),
+    pog_mapping_override: Optional[str] = Form(None),
+    selected_output_columns: Optional[str] = Form(None),
+    mapping_mode: str = Form("auto"), _admin: str = Depends(require_admin),
+):
+    import re
+    _cleanup_old_jobs()
+    if not re.match(r"^\d{4}-\d{2}$", month):
+        raise HTTPException(status_code=422, detail="month phải có dạng YYYY-MM")
+    if not ctkm_file.filename.lower().endswith(".xlsx") or not pog_file.filename.lower().endswith(".xlsx"):
+        raise HTTPException(status_code=422, detail="CTKM và POG phải là file .xlsx")
+    if mapping_mode not in {"auto", "saved_only"}:
+        raise HTTPException(status_code=422, detail="mapping_mode không hợp lệ")
+    if mapping_mode == "auto":
+        _enforce_gemini_cooldown()
+    ctkm_content, pog_content = await asyncio.gather(
+        _read_upload_limited(ctkm_file, _MAX_PIPELINE_BYTES, "File CTKM"),
+        _read_upload_limited(pog_file, _MAX_PIPELINE_BYTES, "File POG"),
+    )
+    try:
+        ctkm_override = json.loads(ctkm_mapping_override) if ctkm_mapping_override else None
+        pog_override = json.loads(pog_mapping_override) if pog_mapping_override else None
+        output_columns = json.loads(selected_output_columns) if selected_output_columns else None
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=422, detail=f"JSON cấu hình không hợp lệ: {exc.msg}") from exc
+    job_id = uuid.uuid4().hex[:8]
+    job_dir = _TMP_DIR / job_id
+    job_dir.mkdir(parents=True, exist_ok=True)
+    ctkm_path, pog_path = job_dir / "ctkm.xlsx", job_dir / "pog.xlsx"
+    output_path = _OUT_DIR / f"tong_hop_ctkm_{month}_{job_id}.xlsx"
+    ctkm_path.write_bytes(ctkm_content); pog_path.write_bytes(pog_content)
+    job = _new_job(job_id, "ctkm", output_path, output_path.name, month=month)
+
+    def work(current):
+        try:
+            current.update(progress=20, message="Đang đọc CTKM và POG")
+            local_ctkm, local_pog, local_output = ctkm_override, pog_override, output_columns
+            wb_ctkm = _main_mod.L.load_workbook_raw(str(ctkm_path), is_pog_file=False)
+            wb_pog = _main_mod.L.load_workbook_raw(str(pog_path), is_pog_file=True)
+            _primary_name, primary_sheet = _main_mod._select_primary_ctkm_sheet(wb_ctkm, ctkm_sheet_name)
+            pog_name = next(iter(wb_pog.sheets)) if wb_pog.sheets else None
+            if pog_name:
+                preset = _get_saved_preset(list(primary_sheet.df.columns), list(wb_pog.sheets[pog_name].df.columns))
+                local_ctkm = local_ctkm or preset.get("ctkm_mapping")
+                local_pog = local_pog or preset.get("pog_mapping")
+                local_output = local_output or preset.get("output_columns")
+            if mapping_mode == "saved_only" and (not local_ctkm or not local_pog):
+                raise ValueError("Chưa có mapping đã lưu cho cấu trúc hai file này")
+            current.update(progress=45, message="Đang ghép dữ liệu và xuất Excel")
+            result = run_pipeline(
+                str(ctkm_path), str(pog_path), month, str(output_path), strict_month,
+                ctkm_sheet_name, local_ctkm, local_pog, local_output,
+            )
+            return result.summary, result.warnings
+        finally:
+            ctkm_path.unlink(missing_ok=True); pog_path.unlink(missing_ok=True)
+
+    _submit_job(job_id, "ctkm", work)
+    return _job_public(job)
+
+
 @app.post("/api/check-expiration")
 async def check_expiration(
     expiration_file: UploadFile = File(..., description="File Detail Expiration Onhand by Item (.xlsx)"),
@@ -296,16 +577,19 @@ async def check_expiration(
     """Đối chiếu danh sách mã sản phẩm, số lô và hạn dùng với file Excel."""
     if not expiration_file.filename or not expiration_file.filename.lower().endswith(".xlsx"):
         raise HTTPException(status_code=422, detail="expiration_file phải là file .xlsx")
-    content = await expiration_file.read()
-    if not content:
-        raise HTTPException(status_code=422, detail="File Excel đang trống")
+    content = await _read_upload_limited(expiration_file, _MAX_EXPIRATION_BYTES, "File hạn dùng")
+    await asyncio.to_thread(_expiration_slots.acquire)
     try:
-        frame, sheet_name = _expiration_mod.load_expiration_export(content)
-        results = _expiration_mod.check_entries(frame, entries)
+        frame, sheet_name, cache_hit = await asyncio.to_thread(_load_expiration_cached, content)
+        results = await asyncio.to_thread(_expiration_mod.check_entries, frame, entries)
+    except HTTPException:
+        raise
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Lỗi đọc file hạn dùng: {exc}") from exc
+    finally:
+        _expiration_slots.release()
     matched = sum(row["status"] == "matched" for row in results)
     return {
         "sheet_name": sheet_name,
@@ -313,6 +597,7 @@ async def check_expiration(
         "total": len(results),
         "matched": matched,
         "unmatched": len(results) - matched,
+        "cache_hit": cache_hit,
         "results": results,
     }
 
@@ -340,23 +625,36 @@ async def run_tem_r(
     job_dir.mkdir(parents=True, exist_ok=True)
     source_path = job_dir / "tem_r.xlsx"
     output_path = _OUT_DIR / f"tem_r_{job_id}.xlsx"
-    source_path.write_bytes(await tem_r_file.read())
+    source_path.write_bytes(await _read_upload_limited(tem_r_file, _MAX_TEM_R_BYTES, "File Tem R"))
+    acquired = False
     try:
         parsed_mapping = json.loads(column_mapping) if column_mapping else None
         if parsed_mapping is not None and not isinstance(parsed_mapping, dict):
             raise ValueError("Ánh xạ cột Tem R không hợp lệ")
-        plan = _tem_r_mod.create_tem_r_workbook(
-            source_path, output_path,
+        try:
+            await asyncio.to_thread(_heavy_queue.acquire, job_id, "tem_r")
+            acquired = True
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        plan = await asyncio.to_thread(
+            _tem_r_mod.create_tem_r_workbook,
+            source_path,
+            output_path,
             max_location_distance=max_location_distance,
             stock_column=stock_column.strip(),
             column_mapping=parsed_mapping,
             sheet_name=sheet_name,
             header_row=header_row,
         )
+    except HTTPException:
+        raise
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Lỗi xử lý Tem R: {exc}") from exc
+    finally:
+        if acquired:
+            _heavy_queue.release(job_id)
 
     _jobs[job_id] = {
         "job_id": job_id,
@@ -385,9 +683,9 @@ async def inspect_tem_r_file(
     job_dir = _TMP_DIR / f"inspect_tem_r_{uuid.uuid4().hex[:8]}"
     job_dir.mkdir(parents=True, exist_ok=True)
     source_path = job_dir / "tem_r.xlsx"
-    source_path.write_bytes(await tem_r_file.read())
+    source_path.write_bytes(await _read_upload_limited(tem_r_file, _MAX_TEM_R_BYTES, "File Tem R"))
     try:
-        result = _tem_r_mod.inspect_tem_r_workbook(source_path)
+        result = await asyncio.to_thread(_tem_r_mod.inspect_tem_r_workbook, source_path)
         columns = result["columns"]
         normalized = {str(column).strip().upper(): column for column in columns}
         result["required_columns"] = list(_tem_r_mod.REQUIRED_COLUMNS)
@@ -477,9 +775,11 @@ async def inspect_ctkm_file(
         raise HTTPException(status_code=422, detail="ctkm_file phai la file .xlsx")
 
     tmp_path = _TMP_DIR / f"inspect_{uuid.uuid4().hex[:8]}.xlsx"
-    tmp_path.write_bytes(await ctkm_file.read())
+    tmp_path.write_bytes(await _read_upload_limited(ctkm_file, _MAX_PIPELINE_BYTES, "File CTKM"))
     try:
-        wb_ctkm = _main_mod.L.load_workbook_raw(str(tmp_path), is_pog_file=False)
+        wb_ctkm = await asyncio.to_thread(
+            _main_mod.L.load_workbook_raw, str(tmp_path), is_pog_file=False
+        )
         sheets = list_ctkm_sheet_names(wb_ctkm)
         return {
             "sheet_names": sheets,
@@ -505,9 +805,11 @@ async def inspect_pog_file(
         raise HTTPException(status_code=422, detail="pog_file phai la file .xlsx")
 
     tmp_path = _TMP_DIR / f"inspect_{uuid.uuid4().hex[:8]}_pog.xlsx"
-    tmp_path.write_bytes(await pog_file.read())
+    tmp_path.write_bytes(await _read_upload_limited(pog_file, _MAX_PIPELINE_BYTES, "File POG"))
     try:
-        wb_pog = _main_mod.L.load_workbook_raw(str(tmp_path), is_pog_file=True)
+        wb_pog = await asyncio.to_thread(
+            _main_mod.L.load_workbook_raw, str(tmp_path), is_pog_file=True
+        )
         return {
             "snapshot_month": wb_pog.pog_snapshot_month,
             "sheet_names": list(wb_pog.sheets.keys()),
@@ -538,12 +840,18 @@ async def preview_mapping_job(
     job_dir.mkdir(parents=True, exist_ok=True)
     ctkm_path = job_dir / "ctkm.xlsx"
     pog_path = job_dir / "pog.xlsx"
-    ctkm_path.write_bytes(await ctkm_file.read())
-    pog_path.write_bytes(await pog_file.read())
+    ctkm_content, pog_content = await asyncio.gather(
+        _read_upload_limited(ctkm_file, _MAX_PIPELINE_BYTES, "File CTKM"),
+        _read_upload_limited(pog_file, _MAX_PIPELINE_BYTES, "File POG"),
+    )
+    ctkm_path.write_bytes(ctkm_content)
+    pog_path.write_bytes(pog_content)
 
     try:
-        wb_ctkm = _main_mod.L.load_workbook_raw(str(ctkm_path), is_pog_file=False)
-        wb_pog = _main_mod.L.load_workbook_raw(str(pog_path), is_pog_file=True)
+        wb_ctkm, wb_pog = await asyncio.gather(
+            asyncio.to_thread(_main_mod.L.load_workbook_raw, str(ctkm_path), is_pog_file=False),
+            asyncio.to_thread(_main_mod.L.load_workbook_raw, str(pog_path), is_pog_file=True),
+        )
         if ctkm_sheet_name not in wb_ctkm.sheets:
             raise HTTPException(status_code=422, detail=f"Khong tim thay sheet CTKM '{ctkm_sheet_name}'")
         ctkm_sheet = wb_ctkm.sheets[ctkm_sheet_name]
@@ -670,8 +978,17 @@ async def run_job(
     pog_path  = job_dir / "pog.xlsx"
     out_path  = _OUT_DIR / f"tong_hop_ctkm_{month}_{job_id}.xlsx"
 
-    ctkm_path.write_bytes(await ctkm_file.read())
-    pog_path.write_bytes(await pog_file.read())
+    ctkm_content, pog_content = await asyncio.gather(
+        _read_upload_limited(ctkm_file, _MAX_PIPELINE_BYTES, "File CTKM"),
+        _read_upload_limited(pog_file, _MAX_PIPELINE_BYTES, "File POG"),
+    )
+    ctkm_path.write_bytes(ctkm_content)
+    pog_path.write_bytes(pog_content)
+
+    try:
+        await asyncio.to_thread(_heavy_queue.acquire, job_id, "ctkm")
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     # Chay pipeline
     try:
@@ -679,8 +996,10 @@ async def run_job(
         parsed_pog_override = json.loads(pog_mapping_override) if pog_mapping_override else None
         parsed_output_columns = json.loads(selected_output_columns) if selected_output_columns else None
 
-        wb_ctkm = _main_mod.L.load_workbook_raw(str(ctkm_path), is_pog_file=False)
-        wb_pog = _main_mod.L.load_workbook_raw(str(pog_path), is_pog_file=True)
+        wb_ctkm, wb_pog = await asyncio.gather(
+            asyncio.to_thread(_main_mod.L.load_workbook_raw, str(ctkm_path), is_pog_file=False),
+            asyncio.to_thread(_main_mod.L.load_workbook_raw, str(pog_path), is_pog_file=True),
+        )
         primary_ctkm_name, primary_ctkm_sheet = _main_mod._select_primary_ctkm_sheet(wb_ctkm, ctkm_sheet_name)
         pog_sheet_name = next(iter(wb_pog.sheets)) if wb_pog.sheets else None
         if pog_sheet_name:
@@ -706,7 +1025,8 @@ async def run_job(
                 output_columns=parsed_output_columns,
             )
 
-        result = run_pipeline(
+        result = await asyncio.to_thread(
+            run_pipeline,
             ctkm_filepath=str(ctkm_path),
             pog_filepath=str(pog_path),
             target_month=month,
@@ -764,6 +1084,8 @@ async def run_job(
 
         # Loi bat ngo khac
         raise HTTPException(status_code=500, detail=f"Loi pipeline [{err_cls}]: {e}")
+    finally:
+        _heavy_queue.release(job_id)
 
     # Luu job info
     _jobs[job_id] = {

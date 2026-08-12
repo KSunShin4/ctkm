@@ -541,6 +541,8 @@ export default function App() {
   const cameraFrameRef = useRef(null)
   const cameraBusyRef = useRef(false)
   const cameraLastScanRef = useRef({ value: "", at: 0 })
+  const healthFailureRef = useRef(0)
+  const busyRef = useRef(false)
   const [step, setStep]           = useState(STEPS.idle)
   const [stepIdx, setStepIdx]     = useState(0)
   const [jobId, setJobId]         = useState(null)
@@ -549,6 +551,11 @@ export default function App() {
   const [activeSheet, setActiveSheet] = useState(null)
   const [error, setError]         = useState(null)
   const [backendStatus, setBackendStatus] = useState("checking") // checking | ok | offline
+  const [queueStatus, setQueueStatus] = useState(null)
+
+  useEffect(() => {
+    busyRef.current = temRLoading || expirationLoading || step === STEPS.running
+  }, [temRLoading, expirationLoading, step])
 
   const isAdmin = !!adminToken
   const authFetch = useCallback((url, options = {}) => {
@@ -592,6 +599,10 @@ export default function App() {
     }).catch(() => {})
   }, [adminToken, authFetch, logoutAdmin])
 
+  const waitingJobs = queueStatus?.waiting?.length || 0
+  const ownQueuePosition = queueStatus?.waiting?.[0]?.position || 0
+  const queueHasWaiting = waitingJobs > 0
+
   useEffect(() => {
     const stored = readJsonStorage(OUTPUT_PRESET_KEY, [])
     if (Array.isArray(stored)) {
@@ -627,10 +638,19 @@ export default function App() {
     let cancelled = false
     const check = async () => {
       try {
-        const res = await fetch(`${API}/api/health`, { signal: AbortSignal.timeout(5000) })
-        if (!cancelled) setBackendStatus(res.ok ? "ok" : "offline")
+        const res = await fetch(`${API}/api/health`, { signal: AbortSignal.timeout(8000) })
+        if (cancelled) return
+        if (res.ok) {
+          healthFailureRef.current = 0
+          setBackendStatus("ok")
+        } else if (!busyRef.current && ++healthFailureRef.current >= 3) {
+          setBackendStatus("offline")
+        }
       } catch {
-        if (!cancelled) setBackendStatus("offline")
+        if (!cancelled) {
+          if (busyRef.current) healthFailureRef.current = 0
+          else if (++healthFailureRef.current >= 3) setBackendStatus("offline")
+        }
       }
     }
     check()
@@ -641,7 +661,7 @@ export default function App() {
   useEffect(() => {
     let cancelled = false
     const inspect = async () => {
-      if (!isAdmin || !ctkmFile || backendStatus !== "ok") {
+      if (!isAdmin || !ctkmFile) {
         setCtkmSheetOptions([])
         setCtkmSheetName("")
         setCtkmSheetError("")
@@ -673,12 +693,12 @@ export default function App() {
     }
     inspect()
     return () => { cancelled = true }
-  }, [ctkmFile, backendStatus, isAdmin, authFetch])
+  }, [ctkmFile, isAdmin, authFetch])
 
   useEffect(() => {
     let cancelled = false
     const inspect = async () => {
-      if (!isAdmin || !pogFile || backendStatus !== "ok") {
+      if (!isAdmin || !pogFile) {
         setPogSnapshotMonth("")
         setPogInspectError("")
         return
@@ -700,19 +720,21 @@ export default function App() {
     }
     inspect()
     return () => { cancelled = true }
-  }, [pogFile, backendStatus, isAdmin, authFetch])
+  }, [pogFile, isAdmin, authFetch])
 
   useEffect(() => {
     let cancelled = false
     const inspect = async () => {
-      setTemRColumns([])
-      setTemRStockColumn("")
-      setTemRItemColumn("")
-      setTemRSheetOptions([])
-      setTemRSheetName("")
-      setTemRColumnMapping({})
-      setTemRInspectInfo(null)
-      if (!isAdmin || !temRFile || backendStatus !== "ok") return
+      if (!isAdmin || !temRFile) {
+        setTemRColumns([])
+        setTemRStockColumn("")
+        setTemRItemColumn("")
+        setTemRSheetOptions([])
+        setTemRSheetName("")
+        setTemRColumnMapping({})
+        setTemRInspectInfo(null)
+        return
+      }
       setTemRInspecting(true)
       setTemRError("")
       try {
@@ -738,7 +760,7 @@ export default function App() {
     }
     inspect()
     return () => { cancelled = true }
-  }, [temRFile, backendStatus, isAdmin, authFetch])
+  }, [temRFile, isAdmin, authFetch])
 
   useEffect(() => {
     setMappingPreview(null)
@@ -792,6 +814,18 @@ export default function App() {
     return iv
   }, [])
 
+  const waitForJob = async (jobId, onUpdate) => {
+    while (true) {
+      const res = await authFetch(`${API}/api/job/${jobId}/status`)
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.detail || "Không đọc được trạng thái tác vụ")
+      onUpdate?.(data)
+      if (data.status === "completed") return data
+      if (data.status === "failed") throw new Error(data.error || "Tác vụ xử lý thất bại")
+      await new Promise(resolve => setTimeout(resolve, 2000))
+    }
+  }
+
   const handleRun = async () => {
     setStep(STEPS.running); setError(null); setResult(null)
     setPreview(null); setJobId(null); setActiveSheet(null)
@@ -813,8 +847,7 @@ export default function App() {
       fd.append("selected_output_columns", JSON.stringify(selectedOutputColumns))
     }
     try {
-      const res = await authFetch(`${API}/api/run`, { method: "POST", body: fd })
-      clearInterval(iv); setStepIdx(STEP_LABELS.length)
+      const res = await authFetch(`${API}/api/jobs/ctkm`, { method: "POST", body: fd })
       if (!res.ok) {
         const err = await res.json()
         if (res.status === 429) {
@@ -828,8 +861,13 @@ export default function App() {
         const detail = err.detail || "Lỗi không xác định từ server."
         throw new Error(typeof detail === "object" ? JSON.stringify(detail) : detail)
       }
-      const data = await res.json()
-      setJobId(data.job_id)
+      const accepted = await res.json()
+      setJobId(accepted.job_id)
+      const data = await waitForJob(accepted.job_id, status => {
+        setQueueStatus(prev => ({...(prev || {}), waiting: status.queue_position
+          ? [{job_id:status.job_id, position:status.queue_position}] : []}))
+      })
+      clearInterval(iv); setStepIdx(STEP_LABELS.length)
       setResult({ summary: data.summary, warnings: data.warnings })
       setStep(STEPS.done)
       refreshPresets()
@@ -882,9 +920,13 @@ export default function App() {
       fd.append("column_mapping", JSON.stringify({...temRColumnMapping, ITEMID:temRItemColumn}))
       fd.append("sheet_name", temRSheetName)
       if (temRInspectInfo?.headerRow) fd.append("header_row", String(temRInspectInfo.headerRow))
-      const res = await authFetch(`${API}/api/tem-r`, { method: "POST", body: fd })
-      const data = await res.json()
-      if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : "Khong the xu ly Tem R")
+      const res = await authFetch(`${API}/api/jobs/tem-r`, { method: "POST", body: fd })
+      const accepted = await res.json()
+      if (!res.ok) throw new Error(typeof accepted.detail === "string" ? accepted.detail : "Không thể đưa Tem R vào hàng đợi")
+      const data = await waitForJob(accepted.job_id, status => {
+        setQueueStatus(prev => ({...(prev || {}), waiting: status.queue_position
+          ? [{job_id:status.job_id, position:status.queue_position}] : []}))
+      })
       setTemRResult(data)
       writeJsonStorage(TEM_R_RESULT_KEY, data)
     } catch (e) {
@@ -1175,7 +1217,7 @@ export default function App() {
             }`} />
             {backendStatus === "ok" && "Backend kết nối"}
             {backendStatus === "checking" && "Đang kiểm tra backend…"}
-            {backendStatus === "offline" && "Backend chưa chạy — chạy start.bat hoặc start.sh"}
+            {backendStatus === "offline" && "Mất kết nối backend — hệ thống sẽ tự thử lại"}
           </div>
           {isAdmin ? (
             <div className="auth-actions">
@@ -1585,8 +1627,15 @@ export default function App() {
                 disabled={!temRFile || !temRItemColumn || !temRStockColumn || temRInspecting || temRLoading || backendStatus !== "ok"}
                 onClick={handleTemR}
               >
-                {temRLoading ? <><div className="spinner" /> Đang phân bổ Tem R…</> : "Phân bổ Tem R"}
+                {temRLoading
+                  ? <><div className="spinner" /> {ownQueuePosition ? `Đang chờ · vị trí ${ownQueuePosition}…` : "Đang phân bổ Tem R…"}</>
+                  : "Phân bổ Tem R"}
               </button>
+              {temRLoading && queueHasWaiting && (
+                <div className="status-strip info" style={{marginTop:10}}>
+                  Tác vụ của bạn đang ở vị trí {ownQueuePosition || waitingJobs} trong hàng chờ. Không cần bấm lại.
+                </div>
+              )}
               {temRError && <div className="sheet-hint" style={{color:"var(--red)"}}>{temRError}</div>}
               {temRResult && (
                 <>
@@ -1602,7 +1651,7 @@ export default function App() {
 
             {backendStatus === "offline" && (
               <div className="status-strip error">
-                ⚠ Backend chưa sẵn sàng. Mở terminal tại thư mục dự án và chạy <code>start.bat</code> (Windows) hoặc <code>bash start.sh</code>.
+                ⚠ Tạm thời mất kết nối backend. Hệ thống sẽ tự kiểm tra lại; dữ liệu bạn đã chọn vẫn được giữ nguyên.
               </div>
             )}
 
@@ -1613,7 +1662,7 @@ export default function App() {
               onClick={handleRun}
             >
               {step === STEPS.running
-                ? <><div className="spinner" /> Đang xử lý…</>
+                ? <><div className="spinner" /> {ownQueuePosition ? `Đang chờ · vị trí ${ownQueuePosition}…` : "Đang xử lý…"}</>
                 : "▶ Chạy pipeline"}
             </button>
 
@@ -1786,7 +1835,9 @@ export default function App() {
                 <div className="empty-icon">⚙️</div>
                 <div className="empty-title">Pipeline đang chạy…</div>
                 <div style={{fontSize:13,color:"var(--text3)",marginTop:6}}>
-                  Gemini đang nhận diện cột, ghép CTKM với POG theo tháng {month}
+                  {queueHasWaiting
+                    ? `Tác vụ của bạn đang ở vị trí ${ownQueuePosition || waitingJobs} trong hàng chờ. Không cần bấm lại.`
+                    : `Gemini đang nhận diện cột, ghép CTKM với POG theo tháng ${month}`}
                 </div>
                 <div style={{maxWidth:320,margin:"20px auto 0"}}>
                   {STEP_LABELS.map((label, i) => (
