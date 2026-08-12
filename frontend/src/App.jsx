@@ -53,6 +53,13 @@ const css = `
   .module-nav button.active { color: var(--text); background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.08); }
   .backend-status { margin-left: auto; display: flex; align-items: center; gap: 7px;
                     font-size: 11px; color: var(--text3); font-family: var(--mono); }
+  .auth-actions { display:flex; align-items:center; gap:8px; }
+  .auth-input { width:118px; border:1px solid var(--border2); border-radius:7px;
+                padding:7px 9px; font:12px var(--font); outline:none; }
+  .auth-input:focus { border-color:var(--accent); }
+  .auth-button { border:1px solid var(--border2); background:#fff; border-radius:7px;
+                 padding:7px 10px; font:600 11px var(--font); cursor:pointer; }
+  .auth-error { color:var(--red); font-size:11px; }
   .status-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
   .status-dot.ok   { background: var(--green); box-shadow: 0 0 6px var(--green); }
   .status-dot.warn { background: var(--accent); }
@@ -476,6 +483,11 @@ const TEM_R_REQUIRED_COLUMNS = ["STOREID", "POGCODE", "FIXELID", "LOCATIONID", "
 
 export default function App() {
   const [activeModule, setActiveModule] = useState("expiration")
+  const [adminToken, setAdminToken] = useState(() => sessionStorage.getItem("ctkm.admin.token") || "")
+  const [adminUsername, setAdminUsername] = useState("admin")
+  const [adminPassword, setAdminPassword] = useState("")
+  const [authLoading, setAuthLoading] = useState(false)
+  const [authError, setAuthError] = useState("")
   const [ctkmAdvanced, setCtkmAdvanced] = useState(false)
   const [ctkmFile, setCtkmFile]   = useState(null)
   const [pogFile, setPogFile]     = useState(null)
@@ -537,6 +549,48 @@ export default function App() {
   const [error, setError]         = useState(null)
   const [backendStatus, setBackendStatus] = useState("checking") // checking | ok | offline
 
+  const isAdmin = !!adminToken
+  const authFetch = useCallback((url, options = {}) => {
+    const headers = new Headers(options.headers || {})
+    if (adminToken) headers.set("Authorization", `Bearer ${adminToken}`)
+    return fetch(url, {...options, headers})
+  }, [adminToken])
+
+  const logoutAdmin = useCallback(() => {
+    sessionStorage.removeItem("ctkm.admin.token")
+    setAdminToken("")
+    setAdminPassword("")
+    setAuthError("")
+    setActiveModule("expiration")
+  }, [])
+
+  const loginAdmin = async (event) => {
+    event.preventDefault()
+    setAuthLoading(true); setAuthError("")
+    try {
+      const body = new FormData()
+      body.append("username", adminUsername)
+      body.append("password", adminPassword)
+      const res = await fetch(`${API}/api/auth/login`, {method:"POST", body})
+      const data = await res.json()
+      if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : "Không đăng nhập được")
+      sessionStorage.setItem("ctkm.admin.token", data.access_token)
+      setAdminToken(data.access_token)
+      setAdminPassword("")
+    } catch (e) {
+      setAuthError(e.message)
+    } finally {
+      setAuthLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    if (!adminToken) return
+    authFetch(`${API}/api/auth/me`).then(res => {
+      if (res.status === 401) logoutAdmin()
+    }).catch(() => {})
+  }, [adminToken, authFetch, logoutAdmin])
+
   useEffect(() => {
     const stored = readJsonStorage(OUTPUT_PRESET_KEY, [])
     if (Array.isArray(stored)) {
@@ -545,10 +599,11 @@ export default function App() {
   }, [])
 
   const refreshPresets = useCallback(async () => {
+    if (!adminToken) return
     setPresetLoading(true)
     setPresetError("")
     try {
-      const res = await fetch(`${API}/api/presets`)
+      const res = await authFetch(`${API}/api/presets`)
       const data = await res.json()
       if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : "Không tải được preset")
       setSavedPresets(data.items || [])
@@ -557,13 +612,13 @@ export default function App() {
     } finally {
       setPresetLoading(false)
     }
-  }, [])
+  }, [adminToken, authFetch])
 
   useEffect(() => {
-    refreshPresets()
-  }, [refreshPresets])
+    if (isAdmin) refreshPresets()
+  }, [isAdmin, refreshPresets])
 
-  const canRun = ctkmFile && pogFile && month && step !== STEPS.running
+  const canRun = isAdmin && ctkmFile && pogFile && month && step !== STEPS.running
     && backendStatus === "ok"
     && (!ctkmSheetOptions.length || !!ctkmSheetName)
 
@@ -585,7 +640,7 @@ export default function App() {
   useEffect(() => {
     let cancelled = false
     const inspect = async () => {
-      if (!ctkmFile || backendStatus !== "ok") {
+      if (!isAdmin || !ctkmFile || backendStatus !== "ok") {
         setCtkmSheetOptions([])
         setCtkmSheetName("")
         setCtkmSheetError("")
@@ -597,7 +652,7 @@ export default function App() {
       try {
         const fd = new FormData()
         fd.append("ctkm_file", ctkmFile)
-        const res = await fetch(`${API}/api/inspect-ctkm`, { method: "POST", body: fd })
+        const res = await authFetch(`${API}/api/inspect-ctkm`, { method: "POST", body: fd })
         const data = await res.json()
         if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : "Không đọc được sheet CTKM")
         if (!cancelled) {
@@ -617,12 +672,12 @@ export default function App() {
     }
     inspect()
     return () => { cancelled = true }
-  }, [ctkmFile, backendStatus])
+  }, [ctkmFile, backendStatus, isAdmin, authFetch])
 
   useEffect(() => {
     let cancelled = false
     const inspect = async () => {
-      if (!pogFile || backendStatus !== "ok") {
+      if (!isAdmin || !pogFile || backendStatus !== "ok") {
         setPogSnapshotMonth("")
         setPogInspectError("")
         return
@@ -631,7 +686,7 @@ export default function App() {
       try {
         const fd = new FormData()
         fd.append("pog_file", pogFile)
-        const res = await fetch(`${API}/api/inspect-pog`, { method: "POST", body: fd })
+        const res = await authFetch(`${API}/api/inspect-pog`, { method: "POST", body: fd })
         const data = await res.json()
         if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : "Không đọc được snapshot POG")
         if (!cancelled) setPogSnapshotMonth(data.snapshot_month || "")
@@ -644,7 +699,7 @@ export default function App() {
     }
     inspect()
     return () => { cancelled = true }
-  }, [pogFile, backendStatus])
+  }, [pogFile, backendStatus, isAdmin, authFetch])
 
   useEffect(() => {
     let cancelled = false
@@ -657,13 +712,13 @@ export default function App() {
       setTemRColumnMapping({})
       setTemRResult(null)
       setTemRInspectInfo(null)
-      if (!temRFile || backendStatus !== "ok") return
+      if (!isAdmin || !temRFile || backendStatus !== "ok") return
       setTemRInspecting(true)
       setTemRError("")
       try {
         const fd = new FormData()
         fd.append("tem_r_file", temRFile)
-        const res = await fetch(`${API}/api/inspect-tem-r`, { method: "POST", body: fd })
+        const res = await authFetch(`${API}/api/inspect-tem-r`, { method: "POST", body: fd })
         const data = await res.json()
         if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : "Không đọc được cột trong file")
         if (!cancelled) {
@@ -683,7 +738,7 @@ export default function App() {
     }
     inspect()
     return () => { cancelled = true }
-  }, [temRFile, backendStatus])
+  }, [temRFile, backendStatus, isAdmin, authFetch])
 
   useEffect(() => {
     setMappingPreview(null)
@@ -713,7 +768,7 @@ export default function App() {
 
   const deletePreset = async (key) => {
     try {
-      const res = await fetch(`${API}/api/presets?key=${encodeURIComponent(key)}`, { method: "DELETE" })
+      const res = await authFetch(`${API}/api/presets?key=${encodeURIComponent(key)}`, { method: "DELETE" })
       const data = await res.json()
       if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : "Không xoá được preset")
       await refreshPresets()
@@ -754,7 +809,7 @@ export default function App() {
       fd.append("selected_output_columns", JSON.stringify(selectedOutputColumns))
     }
     try {
-      const res = await fetch(`${API}/api/run`, { method: "POST", body: fd })
+      const res = await authFetch(`${API}/api/run`, { method: "POST", body: fd })
       clearInterval(iv); setStepIdx(STEP_LABELS.length)
       if (!res.ok) {
         const err = await res.json()
@@ -775,7 +830,7 @@ export default function App() {
       setStep(STEPS.done)
       refreshPresets()
       // Load preview
-      const pres = await fetch(`${API}/api/preview/${data.job_id}?rows=100`)
+      const pres = await authFetch(`${API}/api/preview/${data.job_id}?rows=100`)
       if (pres.ok) {
         const pdata = await pres.json()
         setPreview(pdata)
@@ -787,8 +842,28 @@ export default function App() {
     }
   }
 
+  const downloadAdminFile = async (downloadJobId) => {
+    try {
+      const res = await authFetch(`${API}/api/download/${downloadJobId}`)
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        throw new Error(data.detail || "Không tải được file")
+      }
+      const blob = await res.blob()
+      const disposition = res.headers.get("content-disposition") || ""
+      const matchedName = disposition.match(/filename\*?=(?:UTF-8'')?["']?([^"';]+)/i)
+      const filename = matchedName ? decodeURIComponent(matchedName[1]) : `ket_qua_${downloadJobId}.xlsx`
+      const url = URL.createObjectURL(blob)
+      const anchor = document.createElement("a")
+      anchor.href = url; anchor.download = filename; anchor.click()
+      URL.revokeObjectURL(url)
+    } catch (e) {
+      setError(e.message)
+    }
+  }
+
   const handleDownload = () => {
-    window.open(`${API}/api/download/${jobId}`, "_blank")
+    if (jobId) downloadAdminFile(jobId)
   }
 
   const handleTemR = async () => {
@@ -804,7 +879,7 @@ export default function App() {
       fd.append("column_mapping", JSON.stringify({...temRColumnMapping, ITEMID:temRItemColumn}))
       fd.append("sheet_name", temRSheetName)
       if (temRInspectInfo?.headerRow) fd.append("header_row", String(temRInspectInfo.headerRow))
-      const res = await fetch(`${API}/api/tem-r`, { method: "POST", body: fd })
+      const res = await authFetch(`${API}/api/tem-r`, { method: "POST", body: fd })
       const data = await res.json()
       if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : "Khong the xu ly Tem R")
       setTemRResult(data)
@@ -816,7 +891,7 @@ export default function App() {
   }
 
   const downloadTemR = () => {
-    if (temRResult?.job_id) window.open(`${API}/api/download/${temRResult.job_id}`, "_blank")
+    if (temRResult?.job_id) downloadAdminFile(temRResult.job_id)
   }
 
   const handleExpirationCheck = async () => {
@@ -943,7 +1018,7 @@ export default function App() {
       fd.append("pog_file", pogFile)
       fd.append("ctkm_sheet_name", ctkmSheetName)
       fd.append("manual_only", String(manualOnly))
-      const res = await fetch(`${API}/api/preview-mapping`, { method: "POST", body: fd })
+      const res = await authFetch(`${API}/api/preview-mapping`, { method: "POST", body: fd })
       const data = await res.json()
       if (!res.ok) {
         throw new Error(typeof data.detail === "string" ? data.detail : "Không lấy được mapping preview")
@@ -1030,7 +1105,7 @@ export default function App() {
       fd.append("ctkm_mapping", JSON.stringify(ctkmMappingOverride))
       fd.append("pog_mapping", JSON.stringify(pogMappingOverride))
       fd.append("selected_output_columns", JSON.stringify(selectedOutputColumns))
-      const res = await fetch(`${API}/api/presets`, { method: "POST", body: fd })
+      const res = await authFetch(`${API}/api/presets`, { method: "POST", body: fd })
       const data = await res.json()
       if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : "Khong luu duoc mapping")
       setMappingSaved("Đã lưu mapping. Lần sau có thể bật chế độ chỉ dùng mapping đã lưu.")
@@ -1075,18 +1150,20 @@ export default function App() {
             >
               Kiểm tra hạn dùng
             </button>
-            <button
-              className={activeModule === "ctkm" ? "active" : ""}
-              onClick={() => { stopCamera(); setActiveModule("ctkm") }}
-            >
-              Công cụ CTKM
-            </button>
-            <button
-              className={activeModule === "temr" ? "active" : ""}
-              onClick={() => { stopCamera(); setActiveModule("temr") }}
-            >
-              Phân bổ Tem R
-            </button>
+            {isAdmin && <>
+              <button
+                className={activeModule === "ctkm" ? "active" : ""}
+                onClick={() => { stopCamera(); setActiveModule("ctkm") }}
+              >
+                Công cụ CTKM
+              </button>
+              <button
+                className={activeModule === "temr" ? "active" : ""}
+                onClick={() => { stopCamera(); setActiveModule("temr") }}
+              >
+                Phân bổ Tem R
+              </button>
+            </>}
           </nav>
           <div className="backend-status">
             <span className={`status-dot ${
@@ -1096,6 +1173,23 @@ export default function App() {
             {backendStatus === "checking" && "Đang kiểm tra backend…"}
             {backendStatus === "offline" && "Backend chưa chạy — chạy start.bat hoặc start.sh"}
           </div>
+          {isAdmin ? (
+            <div className="auth-actions">
+              <span style={{fontSize:11,color:"var(--green)",fontWeight:650}}>ADMIN</span>
+              <button className="auth-button" onClick={logoutAdmin}>Đăng xuất</button>
+            </div>
+          ) : (
+            <form className="auth-actions" onSubmit={loginAdmin}>
+              <input className="auth-input" value={adminUsername}
+                onChange={e => setAdminUsername(e.target.value)} placeholder="Tài khoản admin" />
+              <input className="auth-input" type="password" value={adminPassword}
+                onChange={e => setAdminPassword(e.target.value)} placeholder="Mật khẩu" />
+              <button className="auth-button" disabled={authLoading || !adminPassword}>
+                {authLoading ? "Đang vào…" : "Admin"}
+              </button>
+              {authError && <span className="auth-error">{authError}</span>}
+            </form>
+          )}
         </div>
 
         <div className={`main ${activeModule}-mode`}>

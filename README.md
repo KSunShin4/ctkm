@@ -69,8 +69,14 @@ trong một Docker service:
 
 1. Đẩy source code lên GitHub/GitLab (không commit file `.env`).
 2. Trên Render, tạo Blueprint từ repository; Render sẽ đọc `render.yaml`.
-3. Nhập secret `GEMINI_API_KEY` khi được yêu cầu.
+3. Nhập secret `GEMINI_API_KEY` và `ADMIN_PASSWORD` khi được yêu cầu.
+   `ADMIN_SESSION_SECRET` được Render tự sinh. Tên đăng nhập mặc định là `admin`;
+   có thể đổi bằng biến `ADMIN_USERNAME`.
 4. Sau khi deploy, kiểm tra `/api/health` và mở URL gốc để dùng giao diện.
+
+Khách không cần đăng nhập và chỉ thấy chức năng kiểm tra hạn dùng. Admin đăng
+nhập ở thanh trên cùng để mở Công cụ CTKM và Phân bổ Tem R. Các API quản trị
+cũng yêu cầu token admin, vì vậy việc phân quyền không chỉ dựa vào ẩn giao diện.
 
 Lưu ý: gói miễn phí dùng filesystem tạm thời. Kết quả Excel và mapping preset có
 thể mất khi service restart/redeploy; cần persistent disk hoặc object storage nếu

@@ -16,8 +16,12 @@ Cau hinh CORS cho phep frontend Vite (http://localhost:5173) goi duoc.
 from __future__ import annotations
 
 import importlib.util
+import base64
+import hashlib
+import hmac
 import json
 import os
+import secrets
 import sys
 import threading
 import time
@@ -30,7 +34,7 @@ from typing import Optional
 
 import uvicorn
 import pandas as pd
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -124,6 +128,49 @@ _jobs: dict[str, dict] = {}
 _gemini_cooldown_until: float = 0.0
 _gemini_cooldown_lock = threading.Lock()
 
+# Admin auth is stateless so a Render restart does not invalidate server-side
+# sessions. ADMIN_PASSWORD is mandatory; ADMIN_SESSION_SECRET is recommended.
+_ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin").strip() or "admin"
+_ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "")
+_ADMIN_SESSION_SECRET = os.getenv("ADMIN_SESSION_SECRET", "") or _ADMIN_PASSWORD
+_ADMIN_TOKEN_TTL = max(300, int(os.getenv("ADMIN_TOKEN_TTL_SECONDS", "43200")))
+
+
+def _token_signature(payload: str) -> str:
+    digest = hmac.new(
+        _ADMIN_SESSION_SECRET.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256
+    ).digest()
+    return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+
+
+def _create_admin_token() -> str:
+    expires_at = int(time.time()) + _ADMIN_TOKEN_TTL
+    payload = f"admin:{expires_at}:{secrets.token_hex(8)}"
+    encoded = base64.urlsafe_b64encode(payload.encode("utf-8")).decode("ascii").rstrip("=")
+    return f"{encoded}.{_token_signature(encoded)}"
+
+
+def _validate_admin_token(token: str) -> bool:
+    if not _ADMIN_PASSWORD or not _ADMIN_SESSION_SECRET or "." not in token:
+        return False
+    encoded, signature = token.rsplit(".", 1)
+    if not hmac.compare_digest(signature, _token_signature(encoded)):
+        return False
+    try:
+        padded = encoded + "=" * (-len(encoded) % 4)
+        payload = base64.urlsafe_b64decode(padded).decode("utf-8")
+        role, expires_at, _nonce = payload.split(":", 2)
+        return role == "admin" and int(expires_at) > int(time.time())
+    except (ValueError, UnicodeDecodeError):
+        return False
+
+
+def require_admin(authorization: Optional[str] = Header(None)) -> str:
+    scheme, _, token = (authorization or "").partition(" ")
+    if scheme.lower() != "bearer" or not _validate_admin_token(token.strip()):
+        raise HTTPException(status_code=401, detail="Cần đăng nhập bằng tài khoản admin")
+    return "admin"
+
 
 def _set_gemini_cooldown(seconds: int) -> None:
     global _gemini_cooldown_until
@@ -214,6 +261,33 @@ def health():
     return {"status": "ok", "time": datetime.now().isoformat()}
 
 
+@app.post("/api/auth/login")
+def admin_login(
+    username: str = Form(...),
+    password: str = Form(...),
+):
+    if not _ADMIN_PASSWORD:
+        raise HTTPException(
+            status_code=503,
+            detail="Admin chưa được cấu hình. Hãy đặt ADMIN_PASSWORD trên Render.",
+        )
+    valid_user = hmac.compare_digest(username.strip(), _ADMIN_USERNAME)
+    valid_password = hmac.compare_digest(password, _ADMIN_PASSWORD)
+    if not (valid_user and valid_password):
+        raise HTTPException(status_code=401, detail="Sai tài khoản hoặc mật khẩu")
+    return {
+        "access_token": _create_admin_token(),
+        "token_type": "bearer",
+        "expires_in": _ADMIN_TOKEN_TTL,
+        "role": "admin",
+    }
+
+
+@app.get("/api/auth/me")
+def auth_me(_admin: str = Depends(require_admin)):
+    return {"role": "admin", "username": _ADMIN_USERNAME}
+
+
 @app.post("/api/check-expiration")
 async def check_expiration(
     expiration_file: UploadFile = File(..., description="File Detail Expiration Onhand by Item (.xlsx)"),
@@ -251,6 +325,7 @@ async def run_tem_r(
     column_mapping: Optional[str] = Form(None, description="JSON ánh xạ cột bắt buộc Tem R"),
     sheet_name: Optional[str] = Form(None, description="Sheet dữ liệu Tem R"),
     header_row: Optional[int] = Form(None, description="Dòng tiêu đề Tem R"),
+    _admin: str = Depends(require_admin),
 ):
     """Phân bổ Tem R theo tồn dư và vị trí liền kề trên cùng kệ."""
     if not tem_r_file.filename or not tem_r_file.filename.lower().endswith(".xlsx"):
@@ -300,7 +375,10 @@ async def run_tem_r(
 
 
 @app.post("/api/inspect-tem-r")
-async def inspect_tem_r_file(tem_r_file: UploadFile = File(..., description="File Tem R (.xlsx)")):
+async def inspect_tem_r_file(
+    tem_r_file: UploadFile = File(..., description="File Tem R (.xlsx)"),
+    _admin: str = Depends(require_admin),
+):
     """Read headers so the user can explicitly confirm which column contains stock."""
     if not tem_r_file.filename or not tem_r_file.filename.lower().endswith(".xlsx"):
         raise HTTPException(status_code=422, detail="tem_r_file phải là file .xlsx")
@@ -329,7 +407,7 @@ async def inspect_tem_r_file(tem_r_file: UploadFile = File(..., description="Fil
 
 
 @app.get("/api/presets")
-def get_presets():
+def get_presets(_admin: str = Depends(require_admin)):
     """Tra ve danh sach preset workflow da luu."""
     return {"items": _list_presets(), "count": len(_list_presets())}
 
@@ -341,6 +419,7 @@ def save_preset(
     ctkm_mapping: str = Form(..., description="JSON mapping CTKM đã xác nhận"),
     pog_mapping: str = Form(..., description="JSON mapping POG đã xác nhận"),
     selected_output_columns: Optional[str] = Form(None, description="JSON array cột output"),
+    _admin: str = Depends(require_admin),
 ):
     """Lưu mapping đã duyệt ngay, để lần chạy sau không cần gọi Gemini."""
     try:
@@ -379,7 +458,7 @@ def save_preset(
 
 
 @app.delete("/api/presets")
-def delete_preset(key: str):
+def delete_preset(key: str, _admin: str = Depends(require_admin)):
     """Xoa preset theo key signature."""
     if not key:
         raise HTTPException(status_code=422, detail="key khong duoc trong")
@@ -389,7 +468,10 @@ def delete_preset(key: str):
 
 
 @app.post("/api/inspect-ctkm")
-async def inspect_ctkm_file(ctkm_file: UploadFile = File(..., description="File Excel CTKM (.xlsx)")):
+async def inspect_ctkm_file(
+    ctkm_file: UploadFile = File(..., description="File Excel CTKM (.xlsx)"),
+    _admin: str = Depends(require_admin),
+):
     """Doc 1 lan file CTKM de tra ve danh sach sheet co du lieu cho nguoi dung chon."""
     if not ctkm_file.filename.endswith(".xlsx"):
         raise HTTPException(status_code=422, detail="ctkm_file phai la file .xlsx")
@@ -414,7 +496,10 @@ async def inspect_ctkm_file(ctkm_file: UploadFile = File(..., description="File 
 
 
 @app.post("/api/inspect-pog")
-async def inspect_pog_file(pog_file: UploadFile = File(..., description="File Excel POG (.xlsx)")):
+async def inspect_pog_file(
+    pog_file: UploadFile = File(..., description="File Excel POG (.xlsx)"),
+    _admin: str = Depends(require_admin),
+):
     """Doc 1 lan file POG de lay snapshot month truoc khi chay pipeline."""
     if not pog_file.filename.endswith(".xlsx"):
         raise HTTPException(status_code=422, detail="pog_file phai la file .xlsx")
@@ -440,6 +525,7 @@ async def preview_mapping_job(
     pog_file: UploadFile = File(..., description="File Excel POG (.xlsx)"),
     ctkm_sheet_name: str = Form(..., description="Ten sheet CTKM can review mapping"),
     manual_only: bool = Form(False, description="Chi doc cot, khong goi Gemini"),
+    _admin: str = Depends(require_admin),
 ):
     """Tra ve cot va mapping goi y; Gemini loi van cho phep mapping thu cong."""
     if not ctkm_file.filename.endswith(".xlsx"):
@@ -555,6 +641,7 @@ async def run_job(
     pog_mapping_override: Optional[str] = Form(None, description="JSON mapping override cho sheet POG"),
     selected_output_columns: Optional[str] = Form(None, description="JSON array cac cot output can giu lai"),
     mapping_mode: str = Form("auto", description="auto hoac saved_only"),
+    _admin: str = Depends(require_admin),
 ):
     """
     Upload 2 file Excel + chon thang -> chay pipeline -> tra ket qua.
@@ -698,7 +785,7 @@ async def run_job(
 
 
 @app.get("/api/download/{job_id}")
-def download_result(job_id: str):
+def download_result(job_id: str, _admin: str = Depends(require_admin)):
     """Tra ve file Excel ket qua de frontend trigger download."""
     job = _jobs.get(job_id)
     if not job:
@@ -714,7 +801,7 @@ def download_result(job_id: str):
 
 
 @app.get("/api/preview/{job_id}")
-def preview_result(job_id: str, rows: int = 50):
+def preview_result(job_id: str, rows: int = 50, _admin: str = Depends(require_admin)):
     """
     Doc N dong dau cua moi sheet trong file Excel ket qua, tra ve JSON.
     Frontend dung de hien thi bang preview ma khong can download file.
@@ -761,7 +848,7 @@ def preview_result(job_id: str, rows: int = 50):
 
 
 @app.get("/api/jobs")
-def list_jobs():
+def list_jobs(_admin: str = Depends(require_admin)):
     """Lich su cac job da chay (trong session hien tai)."""
     return sorted(_jobs.values(), key=lambda x: x["created_at"], reverse=True)
 
