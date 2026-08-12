@@ -479,6 +479,7 @@ const OUTPUT_FIELDS = [
 ]
 const OUTPUT_PRESET_KEY = "ctkm.output.columns.v1"
 const MAPPING_PRESET_PREFIX = "ctkm.mapping.preset.v1"
+const TEM_R_RESULT_KEY = "ctkm.temr.last-result.v1"
 const TEM_R_REQUIRED_COLUMNS = ["STOREID", "POGCODE", "FIXELID", "LOCATIONID", "ITEMID", "ITEMNAME"]
 
 export default function App() {
@@ -515,7 +516,7 @@ export default function App() {
   const [presetError, setPresetError] = useState("")
   const [temRFile, setTemRFile] = useState(null)
   const [temRLoading, setTemRLoading] = useState(false)
-  const [temRResult, setTemRResult] = useState(null)
+  const [temRResult, setTemRResult] = useState(() => readJsonStorage(TEM_R_RESULT_KEY, null))
   const [temRError, setTemRError] = useState("")
   const [temRColumns, setTemRColumns] = useState([])
   const [temRSheetOptions, setTemRSheetOptions] = useState([])
@@ -710,7 +711,6 @@ export default function App() {
       setTemRSheetOptions([])
       setTemRSheetName("")
       setTemRColumnMapping({})
-      setTemRResult(null)
       setTemRInspectInfo(null)
       if (!isAdmin || !temRFile || backendStatus !== "ok") return
       setTemRInspecting(true)
@@ -750,6 +750,10 @@ export default function App() {
   useEffect(() => {
     writeJsonStorage(OUTPUT_PRESET_KEY, selectedOutputColumns)
   }, [selectedOutputColumns])
+
+  useEffect(() => {
+    if (temRResult?.job_id) writeJsonStorage(TEM_R_RESULT_KEY, temRResult)
+  }, [temRResult])
 
   useEffect(() => {
     if (!mappingPreview) return
@@ -842,7 +846,7 @@ export default function App() {
     }
   }
 
-  const downloadAdminFile = async (downloadJobId) => {
+  const downloadAdminFile = async (downloadJobId, onError = setError) => {
     try {
       const res = await authFetch(`${API}/api/download/${downloadJobId}`)
       if (!res.ok) {
@@ -858,7 +862,7 @@ export default function App() {
       anchor.href = url; anchor.download = filename; anchor.click()
       URL.revokeObjectURL(url)
     } catch (e) {
-      setError(e.message)
+      onError(e.message)
     }
   }
 
@@ -870,7 +874,6 @@ export default function App() {
     if (!temRFile || !temRItemColumn || !temRStockColumn || backendStatus !== "ok") return
     setTemRLoading(true)
     setTemRError("")
-    setTemRResult(null)
     try {
       const fd = new FormData()
       fd.append("tem_r_file", temRFile)
@@ -883,6 +886,7 @@ export default function App() {
       const data = await res.json()
       if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : "Khong the xu ly Tem R")
       setTemRResult(data)
+      writeJsonStorage(TEM_R_RESULT_KEY, data)
     } catch (e) {
       setTemRError(e.message)
     } finally {
@@ -891,7 +895,7 @@ export default function App() {
   }
 
   const downloadTemR = () => {
-    if (temRResult?.job_id) downloadAdminFile(temRResult.job_id)
+    if (temRResult?.job_id) downloadAdminFile(temRResult.job_id, setTemRError)
   }
 
   const handleExpirationCheck = async () => {
@@ -1525,7 +1529,11 @@ export default function App() {
                 label="File Tem R (.xlsx)"
                 sub="Tải file lên rồi chọn các cột dùng để phân bổ"
                 file={temRFile}
-                onFile={setTemRFile}
+                onFile={file => {
+                  setTemRFile(file)
+                  setTemRResult(null)
+                  localStorage.removeItem(TEM_R_RESULT_KEY)
+                }}
               />
               {temRInspecting && <div className="sheet-hint">Đang đọc danh sách cột…</div>}
               {temRFile && !temRInspecting && !temRError && temRColumns.length === 0 && (
@@ -1547,12 +1555,11 @@ export default function App() {
                     setTemRStockColumn(option?.suggested_stock_column || "")
                     setTemRColumnMapping(option?.suggested_mapping || {})
                     setTemRInspectInfo(option ? {sheetName:option.sheet_name, headerRow:option.header_row} : null)
-                    setTemRResult(null)
                   }}>
                     {temRSheetOptions.map(option => <option key={option.sheet_name} value={option.sheet_name}>{option.sheet_name}</option>)}
                   </select>
                   <label className="sheet-hint" style={{display:"block", marginTop:12}}>Cột nào chứa mã P?</label>
-                  <select className="sheet-select" value={temRItemColumn} onChange={e => { setTemRItemColumn(e.target.value); setTemRResult(null) }}>
+                  <select className="sheet-select" value={temRItemColumn} onChange={e => setTemRItemColumn(e.target.value)}>
                     <option value="">— Chọn cột mã P —</option>
                     {temRColumns.map(column => <option key={column} value={column}>{column}</option>)}
                   </select>
@@ -1562,7 +1569,7 @@ export default function App() {
                   <select
                     className="sheet-select"
                     value={temRStockColumn}
-                    onChange={e => { setTemRStockColumn(e.target.value); setTemRResult(null) }}
+                    onChange={e => setTemRStockColumn(e.target.value)}
                   >
                     <option value="">— Chọn cột tồn kho —</option>
                     {temRColumns.map(column => <option key={column} value={column}>{column}</option>)}
