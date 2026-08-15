@@ -14,6 +14,18 @@ STRING_FIELDS = {"item_id","item_name","promo_uom","campaign_name","campaign_det
 # Field nao khac bi trung slot (do mapping sai) se KHONG nhan dong — chi rename sang
 # extra__ va ghi canh bao, tranh loi nhan dong am tham lam sai so lieu.
 UNPIVOTABLE_FIELDS = {"campaign_detail", "promo_price"}
+EXCEL_ERROR_VALUES = {"#N/A", "#VALUE!", "#REF!", "#DIV/0!", "#NAME?", "#NUM!", "#NULL!"}
+
+def _parse_identifier(v):
+    """Keep identifiers as text and undo Excel's harmless integral-float form."""
+    if pd.isna(v) or v is None:
+        return None
+    text = str(v).replace("\xa0", " ").strip()
+    if not text or text.upper() in EXCEL_ERROR_VALUES:
+        return None
+    if re.fullmatch(r"[+-]?\d+\.0+", text):
+        text = text.split(".", 1)[0]
+    return text
 
 def apply_mapping(df: pd.DataFrame, mapping: dict) -> pd.DataFrame:
     """
@@ -60,7 +72,7 @@ def clean_values(df: pd.DataFrame) -> pd.DataFrame:
         elif col in NUMBER_FIELDS:
             df[col] = df[col].apply(_parse_number)
         elif col in STRING_FIELDS:
-            df[col] = df[col].apply(lambda v: str(v).strip() if pd.notna(v) and str(v).strip() else None)
+            df[col] = df[col].apply(_parse_identifier)
     if "item_id" in df.columns:
         df = df[df["item_id"].notna()].reset_index(drop=True)
     return df

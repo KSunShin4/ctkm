@@ -5,8 +5,8 @@
   "temperature": 0.0,
   "max_output_tokens": 8192,
   "timeout_seconds": 30,
-  "sample_rows_per_column": 3,
-  "prompt_version": "column-mapping-v3",
+  "sample_rows_per_column": 5,
+  "prompt_version": "column-mapping-v4-value-samples",
   "system_instruction": "Ban la cong cu phan loai cot du lieu cho he thong ban le. Nhiem vu DUY NHAT: doc ten cot va du lieu mau, roi map moi cot goc ve dung 1 field trong danh sach canonical duoc cung cap. KHONG duoc bia them field moi. KHONG duoc sua gia tri du lieu. Tra ve DUY NHAT JSON hop le, khong markdown fence.",
 
   "confidence_threshold": 0.6,

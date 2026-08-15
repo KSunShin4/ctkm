@@ -56,7 +56,7 @@ def test_shelf_with_zero_stock_is_fully_rearranged():
         {"STOREID": "S1", "POGCODE": "G1", "FIXELID": "1/1", "LOCATIONID": 3, "ITEMID": "P3", "ITEMNAME": "Three", "TỒN": 3},
     ])
 
-    plan = tem_r.build_tem_r_plan(frame)
+    plan = tem_r.build_tem_r_plan(frame, max_location_distance=2)
 
     assert plan.rows["TEM R"].tolist() == ["P2", "P3", "P3"]
 
@@ -70,7 +70,7 @@ def test_split_replacement_group_triggers_full_shelf_rearrangement():
         {"STOREID": "S1", "POGCODE": "G1", "FIXELID": "1/1", "LOCATIONID": 4, "ITEMID": "P2", "ITEMNAME": "Two", "TỒN": 0},
     ])
 
-    plan = tem_r.build_tem_r_plan(frame)
+    plan = tem_r.build_tem_r_plan(frame, max_location_distance=2)
 
     assert plan.rows["TEM R"].tolist() == ["PB", "PA", "PA", "PA"]
     assert plan.rows["TEM R"].tolist().count("PA") == 3
@@ -172,6 +172,55 @@ def test_workbook_accepts_user_mapping_for_required_columns(tmp_path):
     assert result.cell(3, 8).value == "P1"
 
 
+def test_inspection_handles_workbook_without_dimension_metadata(tmp_path):
+    tem_r = _module()
+    from openpyxl import Workbook
+    import zipfile
+
+    source = tmp_path / "missing-dimension.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Export"
+    sheet.append(["STOREID", "POGCODE", "FIXELID", "LOCATIONID", "ITEMID", "ITEMNAME", "TỒN"])
+    sheet.append(["S1", "G1", "1/1", 1, "P1", "One", 2])
+    workbook.save(source)
+
+    with zipfile.ZipFile(source, "r") as zin:
+        members = {name: zin.read(name) for name in zin.namelist()}
+    import re
+    members["xl/worksheets/sheet1.xml"] = re.sub(
+        br"<dimension[^>]*/>", b"", members["xl/worksheets/sheet1.xml"]
+    )
+    with zipfile.ZipFile(source, "w", zipfile.ZIP_DEFLATED) as zout:
+        for name, content in members.items():
+            zout.writestr(name, content)
+
+    result = tem_r.inspect_tem_r_workbook(source)
+
+    assert result["sheet_name"] == "Export"
+    assert result["suggested_item_column"] == "ITEMID"
+    assert result["suggested_stock_column"] == "TỒN"
+
+
+def test_inspection_rejects_duplicate_headers(tmp_path):
+    tem_r = _module()
+    from openpyxl import Workbook
+
+    source = tmp_path / "duplicate-headers.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.append(["ITEMID", "ITEMID", "TỒN"])
+    sheet.append(["P1", "P1", 1])
+    workbook.save(source)
+
+    try:
+        tem_r.inspect_tem_r_workbook(source)
+    except ValueError as exc:
+        assert "tên cột bị trùng" in str(exc)
+    else:
+        raise AssertionError("duplicate headers should be rejected")
+
+
 def test_shelf_without_zero_stock_has_no_tem_r():
     tem_r = _module()
     frame = pd.DataFrame([
@@ -191,7 +240,7 @@ def test_stock_units_fill_positions_on_the_same_fixture():
         {"STOREID": "S1", "POGCODE": "G1", "FIXELID": "1/1", "LOCATIONID": 4, "ITEMID": "P4", "ITEMNAME": "Four", "TỒN": 0},
     ])
 
-    plan = tem_r.build_tem_r_plan(frame)
+    plan = tem_r.build_tem_r_plan(frame, max_location_distance=3)
 
     assert plan.rows.loc[1, "TEM R"] == "P1"
     assert plan.rows.loc[1, "TEM_R_STATUS"] == "Tồn 0 - mã thay đã nằm liền nhóm"
@@ -221,3 +270,42 @@ def test_writes_explicit_message_when_pog_has_no_replacement():
 
     assert plan.rows.loc[0, "TEM R"] == "KHÔNG CÓ SẢN PHẨM THAY THẾ"
     assert plan.rows.loc[0, "TEM_R_STATUS"] == "Kệ không còn đủ tồn để thay"
+
+
+def test_replacement_respects_maximum_location_distance():
+    tem_r = _module()
+    frame = pd.DataFrame([
+        {"STOREID":"S1", "POGCODE":"G1", "FIXELID":"1/1", "LOCATIONID":1,
+         "ITEMID":"P1", "ITEMNAME":"One", "TỒN":3},
+        {"STOREID":"S1", "POGCODE":"G1", "FIXELID":"1/1", "LOCATIONID":4,
+         "ITEMID":"P4", "ITEMNAME":"Four", "TỒN":0},
+    ])
+
+    plan = tem_r.build_tem_r_plan(frame, max_location_distance=1)
+
+    assert plan.rows.loc[1, "TEM R"] == "KHÔNG CÓ SẢN PHẨM THAY THẾ"
+
+
+def test_missing_shelf_key_is_quarantined_instead_of_grouped():
+    tem_r = _module()
+    frame = pd.DataFrame([
+        {"STOREID":None, "POGCODE":"G1", "FIXELID":"1/1", "LOCATIONID":1,
+         "ITEMID":"P1", "ITEMNAME":"One", "TỒN":3},
+        {"STOREID":None, "POGCODE":"G1", "FIXELID":"1/1", "LOCATIONID":2,
+         "ITEMID":"P2", "ITEMNAME":"Two", "TỒN":0},
+    ])
+
+    plan = tem_r.build_tem_r_plan(frame)
+
+    assert plan.rows["TEM R"].isna().all()
+    assert plan.exceptions["reason"].tolist() == ["Thiếu mã cửa hàng", "Thiếu mã cửa hàng"]
+
+
+def test_stock_parser_supports_common_localized_numbers():
+    tem_r = _module()
+
+    assert tem_r._as_stock("1,000") == 1000
+    assert tem_r._as_stock("1.000") == 1000
+    assert tem_r._as_stock("2,5") == 2
+    assert tem_r._as_stock("0.166") == 1
+    assert tem_r._as_stock("1,234.5") == 1234

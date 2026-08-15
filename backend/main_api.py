@@ -471,10 +471,31 @@ async def enqueue_tem_r(
     _cleanup_old_jobs()
     if not tem_r_file.filename or not tem_r_file.filename.lower().endswith(".xlsx"):
         raise HTTPException(status_code=422, detail="tem_r_file phải là file .xlsx")
+    if max_location_distance <= 0:
+        raise HTTPException(status_code=422, detail="Khoảng cách vị trí tối đa phải lớn hơn 0")
+    if not stock_column.strip():
+        raise HTTPException(status_code=422, detail="Hãy chọn cột tồn kho")
     content = await _read_upload_limited(tem_r_file, _MAX_TEM_R_BYTES, "File Tem R")
-    mapping = json.loads(column_mapping) if column_mapping else None
+    try:
+        mapping = json.loads(column_mapping) if column_mapping else None
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=422, detail=f"Ánh xạ cột Tem R không phải JSON hợp lệ: {exc.msg}") from exc
     if mapping is not None and not isinstance(mapping, dict):
         raise HTTPException(status_code=422, detail="Ánh xạ cột Tem R không hợp lệ")
+    if mapping is not None:
+        missing = [column for column in _tem_r_mod.REQUIRED_COLUMNS if not mapping.get(column)]
+        if missing:
+            raise HTTPException(
+                status_code=422,
+                detail="Hãy xác nhận đủ cột Tem R: " + ", ".join(missing),
+            )
+        selected_sources = list(mapping.values()) + [stock_column.strip()]
+        duplicates = sorted({source for source in selected_sources if selected_sources.count(source) > 1})
+        if duplicates:
+            raise HTTPException(
+                status_code=422,
+                detail="Mỗi trường phải dùng một cột riêng. Cột đang bị chọn trùng: " + ", ".join(duplicates),
+            )
     job_id = uuid.uuid4().hex[:8]
     job_dir = _TMP_DIR / f"tem_r_{job_id}"
     job_dir.mkdir(parents=True, exist_ok=True)
@@ -508,6 +529,7 @@ async def enqueue_ctkm(
     ctkm_file: UploadFile = File(...), pog_file: UploadFile = File(...),
     month: str = Form(...), strict_month: bool = Form(False),
     ctkm_sheet_name: Optional[str] = Form(None),
+    pog_sheet_name: Optional[str] = Form(None),
     ctkm_mapping_override: Optional[str] = Form(None),
     pog_mapping_override: Optional[str] = Form(None),
     selected_output_columns: Optional[str] = Form(None),
@@ -545,8 +567,14 @@ async def enqueue_ctkm(
         try:
             current.update(progress=20, message="Đang đọc CTKM và POG")
             local_ctkm, local_pog, local_output = ctkm_override, pog_override, output_columns
-            wb_ctkm = _main_mod.L.load_workbook_raw(str(ctkm_path), is_pog_file=False)
-            wb_pog = _main_mod.L.load_workbook_raw(str(pog_path), is_pog_file=True)
+            wb_ctkm = _main_mod.L.load_workbook_raw(
+                str(ctkm_path), is_pog_file=False,
+                selected_sheet_names=[ctkm_sheet_name] if ctkm_sheet_name else None,
+            )
+            wb_pog = _main_mod.L.load_workbook_raw(
+                str(pog_path), is_pog_file=True,
+                selected_sheet_names=[pog_sheet_name] if pog_sheet_name else None,
+            )
             _primary_name, primary_sheet = _main_mod._select_primary_ctkm_sheet(wb_ctkm, ctkm_sheet_name)
             pog_name = next(iter(wb_pog.sheets)) if wb_pog.sheets else None
             if pog_name:
@@ -560,6 +588,7 @@ async def enqueue_ctkm(
             result = run_pipeline(
                 str(ctkm_path), str(pog_path), month, str(output_path), strict_month,
                 ctkm_sheet_name, local_ctkm, local_pog, local_output,
+                pog_sheet_name,
             )
             return result.summary, result.warnings
         finally:
@@ -777,10 +806,7 @@ async def inspect_ctkm_file(
     tmp_path = _TMP_DIR / f"inspect_{uuid.uuid4().hex[:8]}.xlsx"
     tmp_path.write_bytes(await _read_upload_limited(ctkm_file, _MAX_PIPELINE_BYTES, "File CTKM"))
     try:
-        wb_ctkm = await asyncio.to_thread(
-            _main_mod.L.load_workbook_raw, str(tmp_path), is_pog_file=False
-        )
-        sheets = list_ctkm_sheet_names(wb_ctkm)
+        sheets = await asyncio.to_thread(_main_mod.L.inspect_workbook_sheets, str(tmp_path))
         return {
             "sheet_names": sheets,
             "suggested_sheet": sheets[0] if len(sheets) == 1 else next(
@@ -798,6 +824,7 @@ async def inspect_ctkm_file(
 @app.post("/api/inspect-pog")
 async def inspect_pog_file(
     pog_file: UploadFile = File(..., description="File Excel POG (.xlsx)"),
+    pog_sheet_name: Optional[str] = Form(None, description="Sheet POG da chon"),
     _admin: str = Depends(require_admin),
 ):
     """Doc 1 lan file POG de lay snapshot month truoc khi chay pipeline."""
@@ -807,12 +834,16 @@ async def inspect_pog_file(
     tmp_path = _TMP_DIR / f"inspect_{uuid.uuid4().hex[:8]}_pog.xlsx"
     tmp_path.write_bytes(await _read_upload_limited(pog_file, _MAX_PIPELINE_BYTES, "File POG"))
     try:
+        sheets = await asyncio.to_thread(_main_mod.L.inspect_workbook_sheets, str(tmp_path))
+        suggested = pog_sheet_name if pog_sheet_name in sheets else (sheets[0] if sheets else None)
         wb_pog = await asyncio.to_thread(
-            _main_mod.L.load_workbook_raw, str(tmp_path), is_pog_file=True
+            _main_mod.L.load_workbook_raw, str(tmp_path), is_pog_file=True,
+            selected_sheet_names=[suggested] if suggested else None,
         )
         return {
             "snapshot_month": wb_pog.pog_snapshot_month,
-            "sheet_names": list(wb_pog.sheets.keys()),
+            "sheet_names": sheets,
+            "suggested_sheet": suggested,
         }
     finally:
         try:
@@ -826,6 +857,7 @@ async def preview_mapping_job(
     ctkm_file: UploadFile = File(..., description="File Excel CTKM (.xlsx)"),
     pog_file: UploadFile = File(..., description="File Excel POG (.xlsx)"),
     ctkm_sheet_name: str = Form(..., description="Ten sheet CTKM can review mapping"),
+    pog_sheet_name: Optional[str] = Form(None, description="Ten sheet POG can review mapping"),
     manual_only: bool = Form(False, description="Chi doc cot, khong goi Gemini"),
     _admin: str = Depends(require_admin),
 ):
@@ -848,15 +880,23 @@ async def preview_mapping_job(
     pog_path.write_bytes(pog_content)
 
     try:
+        if not pog_sheet_name:
+            pog_sheets = await asyncio.to_thread(_main_mod.L.inspect_workbook_sheets, str(pog_path))
+            pog_sheet_name = pog_sheets[0]
         wb_ctkm, wb_pog = await asyncio.gather(
-            asyncio.to_thread(_main_mod.L.load_workbook_raw, str(ctkm_path), is_pog_file=False),
-            asyncio.to_thread(_main_mod.L.load_workbook_raw, str(pog_path), is_pog_file=True),
+            asyncio.to_thread(
+                _main_mod.L.load_workbook_raw, str(ctkm_path), is_pog_file=False,
+                selected_sheet_names=[ctkm_sheet_name],
+            ),
+            asyncio.to_thread(
+                _main_mod.L.load_workbook_raw, str(pog_path), is_pog_file=True,
+                selected_sheet_names=[pog_sheet_name],
+            ),
         )
         if ctkm_sheet_name not in wb_ctkm.sheets:
             raise HTTPException(status_code=422, detail=f"Khong tim thay sheet CTKM '{ctkm_sheet_name}'")
         ctkm_sheet = wb_ctkm.sheets[ctkm_sheet_name]
-        pog_sheet_name = next(iter(wb_pog.sheets)) if wb_pog.sheets else None
-        if not pog_sheet_name:
+        if pog_sheet_name not in wb_pog.sheets:
             raise HTTPException(status_code=422, detail="File POG khong co sheet nao co du lieu.")
 
         stored_preset = _get_saved_preset(list(ctkm_sheet.df.columns), list(wb_pog.sheets[pog_sheet_name].df.columns))
@@ -945,6 +985,7 @@ async def run_job(
     month:      str        = Form(..., description="Thang bao cao, dang YYYY-MM (vd 2026-05)"),
     strict_month: bool     = Form(False, description="Dung pipeline neu lech thang POG/CTKM"),
     ctkm_sheet_name: Optional[str] = Form(None, description="Ten sheet CTKM tong hop can xu ly"),
+    pog_sheet_name: Optional[str] = Form(None, description="Ten sheet POG can xu ly"),
     ctkm_mapping_override: Optional[str] = Form(None, description="JSON mapping override cho sheet CTKM"),
     pog_mapping_override: Optional[str] = Form(None, description="JSON mapping override cho sheet POG"),
     selected_output_columns: Optional[str] = Form(None, description="JSON array cac cot output can giu lai"),
@@ -997,11 +1038,17 @@ async def run_job(
         parsed_output_columns = json.loads(selected_output_columns) if selected_output_columns else None
 
         wb_ctkm, wb_pog = await asyncio.gather(
-            asyncio.to_thread(_main_mod.L.load_workbook_raw, str(ctkm_path), is_pog_file=False),
-            asyncio.to_thread(_main_mod.L.load_workbook_raw, str(pog_path), is_pog_file=True),
+            asyncio.to_thread(
+                _main_mod.L.load_workbook_raw, str(ctkm_path), is_pog_file=False,
+                selected_sheet_names=[ctkm_sheet_name] if ctkm_sheet_name else None,
+            ),
+            asyncio.to_thread(
+                _main_mod.L.load_workbook_raw, str(pog_path), is_pog_file=True,
+                selected_sheet_names=[pog_sheet_name] if pog_sheet_name else None,
+            ),
         )
         primary_ctkm_name, primary_ctkm_sheet = _main_mod._select_primary_ctkm_sheet(wb_ctkm, ctkm_sheet_name)
-        pog_sheet_name = next(iter(wb_pog.sheets)) if wb_pog.sheets else None
+        pog_sheet_name = pog_sheet_name or (next(iter(wb_pog.sheets)) if wb_pog.sheets else None)
         if pog_sheet_name:
             saved_preset = _get_saved_preset(
                 list(primary_ctkm_sheet.df.columns),
@@ -1036,6 +1083,7 @@ async def run_job(
             ctkm_mapping_override=parsed_ctkm_override,
             pog_mapping_override=parsed_pog_override,
             selected_output_columns=parsed_output_columns,
+            pog_sheet_name=pog_sheet_name,
         )
     except Exception as e:
         # Phan loai loi de frontend hien thi thong bao phu hop

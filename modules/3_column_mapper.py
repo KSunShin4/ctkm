@@ -150,10 +150,8 @@ def _field_catalog(schema_section: dict) -> str:
     )
 
 def _sample_values(df, col: str, n: int) -> str:
-    series = df[col].dropna()
-    if len(series) > n:
-        positions = sorted({round(i * (len(series) - 1) / (n - 1)) for i in range(n)}) if n > 1 else [0]
-        series = series.iloc[positions]
+    """Return the first N non-empty values, preserving their row order."""
+    series = df[col].dropna().head(n)
     vals = []
     for value in series:
         text = str(value).strip()
@@ -173,8 +171,16 @@ def _build_prompt(sheet_name: str, df, schema_section: dict, n: int) -> str:
 {catalog}
 
 Sheet dang xu ly: "{sheet_name}"
-Danh sach cot goc va gia tri mau:
+Danh sach cot goc va TOI DA 5 GIA TRI KHONG RONG DAU TIEN:
 {blocks}
+
+QUY TAC NHAN DIEN:
+- Phan tich mau gia tri va kieu du lieu de xac dinh y nghia cot; khong chi dua vao ten cot.
+- Uu tien bang chung tu gia tri khi ten cot mo ho, trung lap, viet tat hoac sai chinh ta.
+- Vi du: P12345 thuong la item_id; ma cua hang nhu SGPMC047 thuong la store_id;
+  ngay/thoi gian phai phu hop promo_from/promo_to. Cac cot gia deu la so nen can ket hop
+  mau gia tri voi ten cot va quan he gia tri, khong duoc doan chi tu kieu number.
+- Neu 5 mau va ten cot van khong du bang chung, chon "__UNMAPPED__" thay vi doan.
 
 Tra ve mot assignment cho MOI cot goc. Moi cot chi duoc gan mot canonical field;
 neu khong khop, dung gia tri "__UNMAPPED__". Khong map cac field co auto_filled=true."""

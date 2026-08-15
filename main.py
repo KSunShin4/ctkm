@@ -209,12 +209,18 @@ def _process(sheet_name, df, schema_section, mapping_logs, is_fact, all_warnings
 def run_pipeline(ctkm_filepath, pog_filepath, target_month, output_path,
                  fail_on_month_mismatch=False, ctkm_sheet_name=None,
                  ctkm_mapping_override=None, pog_mapping_override=None,
-                 selected_output_columns=None) -> PipelineResult:
+                 selected_output_columns=None, pog_sheet_name=None) -> PipelineResult:
     warnings, mapping_logs = [], []
 
     # --- Buoc 1: Load ---
-    wb_ctkm = L.load_workbook_raw(ctkm_filepath, is_pog_file=False)
-    wb_pog  = L.load_workbook_raw(pog_filepath,  is_pog_file=True)
+    wb_ctkm = L.load_workbook_raw(
+        ctkm_filepath, is_pog_file=False,
+        selected_sheet_names=[ctkm_sheet_name] if ctkm_sheet_name else None,
+    )
+    wb_pog  = L.load_workbook_raw(
+        pog_filepath, is_pog_file=True,
+        selected_sheet_names=[pog_sheet_name] if pog_sheet_name else None,
+    )
     if not wb_pog.sheets:
         raise ValueError(f"File POG '{pog_filepath}' khong co sheet nao co du lieu.")
     pog_snapshot_month = wb_pog.pog_snapshot_month
@@ -238,7 +244,7 @@ def run_pipeline(ctkm_filepath, pog_filepath, target_month, output_path,
     dim_frames = {}
 
     # --- Chuan hoa POG ---
-    pog_sn  = next(iter(wb_pog.sheets))
+    pog_sn  = pog_sheet_name or next(iter(wb_pog.sheets))
     df_pog  = _process(
         pog_sn,
         wb_pog.sheets[pog_sn].df,

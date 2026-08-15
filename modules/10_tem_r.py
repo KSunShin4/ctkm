@@ -5,12 +5,42 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 import unicodedata
+import zipfile
 
 import math
 import pandas as pd
 
 
 REQUIRED_COLUMNS = ("STOREID", "POGCODE", "FIXELID", "LOCATIONID", "ITEMID", "ITEMNAME")
+HEADER_SCAN_ROWS = 100
+
+
+def _validate_xlsx_file(input_path: str | Path) -> Path:
+    path = Path(input_path)
+    if not path.exists() or not path.is_file():
+        raise ValueError(f"Không tìm thấy file Tem R: {path.name}")
+    if path.stat().st_size == 0:
+        raise ValueError("File Tem R đang rỗng.")
+    if not zipfile.is_zipfile(path):
+        raise ValueError(
+            "File Tem R không phải XLSX hợp lệ; file có thể bị hỏng, "
+            "đặt sai đuôi hoặc đang dùng định dạng XLS/XLSB."
+        )
+    return path
+
+
+def _clean_header(value: Any) -> str:
+    return " ".join(str(value).replace("\xa0", " ").split()) if value is not None else ""
+
+
+def _validate_headers(headers: list[Any], sheet_name: str) -> None:
+    cleaned = [_clean_header(value) for value in headers if _clean_header(value)]
+    duplicates = sorted({value for value in cleaned if cleaned.count(value) > 1})
+    if duplicates:
+        raise ValueError(
+            f"Sheet '{sheet_name}' có tên cột bị trùng: {', '.join(duplicates)}. "
+            "Hãy đổi thành các tên cột khác nhau trước khi chạy Tem R."
+        )
 
 
 @dataclass(frozen=True)
@@ -24,7 +54,32 @@ def _as_stock(value: Any) -> int | None:
     if value is None or (isinstance(value, float) and math.isnan(value)):
         return None
     try:
-        raw_stock = float(str(value).strip().replace(",", "."))
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            raw_stock = float(value)
+        else:
+            text = str(value).strip().replace("\xa0", "").replace(" ", "")
+            if not text:
+                return None
+            if "," in text and "." in text:
+                decimal_mark = "," if text.rfind(",") > text.rfind(".") else "."
+                thousands_mark = "." if decimal_mark == "," else ","
+                text = text.replace(thousands_mark, "").replace(decimal_mark, ".")
+            elif "," in text or "." in text:
+                mark = "," if "," in text else "."
+                parts = text.split(mark)
+                if len(parts) > 2:
+                    if not all(part.isdigit() and (index == 0 or len(part) == 3)
+                               for index, part in enumerate(parts)):
+                        return None
+                    text = "".join(parts)
+                elif len(parts) == 2:
+                    left, right = parts
+                    # 1,000 / 1.000 are thousands; 0.166 and 2,5 are decimals.
+                    if len(right) == 3 and left not in ("0", "+0", "-0"):
+                        text = left + right
+                    else:
+                        text = left + "." + right
+            raw_stock = float(text)
     except (TypeError, ValueError):
         return None
     if not math.isfinite(raw_stock) or raw_stock < 0:
@@ -53,6 +108,12 @@ def _clean_input(frame: pd.DataFrame, stock_column: str) -> pd.DataFrame:
     df = frame.copy()
     # File mẫu có một dòng tiêu đề lặp lại; không coi đó là sản phẩm.
     df = df[df["ITEMID"].astype(str).str.strip().str.upper() != "ITEMID"].copy()
+    df["ITEMID"] = df["ITEMID"].map(
+        lambda value: str(value).strip().upper()
+        if value is not None and not pd.isna(value) and str(value).strip()
+        and str(value).strip().upper() not in ("NAN", "NONE", "#N/A", "#REF!", "#VALUE!")
+        else None
+    )
     df["_stock"] = df[stock_column].map(_as_stock)
     df["_location"] = df["LOCATIONID"].map(_as_location)
     df["_group"] = list(zip(
@@ -60,6 +121,18 @@ def _clean_input(frame: pd.DataFrame, stock_column: str) -> pd.DataFrame:
         df["POGCODE"].fillna("").astype(str).str.strip(),
         df["FIXELID"].fillna("").astype(str).str.strip(),
     ))
+    df["_input_error"] = pd.NA
+    required_checks = (
+        ("STOREID", "Thiếu mã cửa hàng"),
+        ("POGCODE", "Thiếu mã POG"),
+        ("FIXELID", "Thiếu mã kệ"),
+        ("ITEMID", "Thiếu hoặc sai mã sản phẩm"),
+    )
+    for column, reason in required_checks:
+        invalid = df[column].isna() | df[column].astype(str).str.strip().isin(("", "nan", "None"))
+        df.loc[invalid & df["_input_error"].isna(), "_input_error"] = reason
+    df.loc[df["_location"].isna() & df["_input_error"].isna(), "_input_error"] = "Thiếu hoặc sai vị trí kệ"
+    df.loc[df["_stock"].isna() & df["_input_error"].isna(), "_input_error"] = "Thiếu hoặc sai tồn kho"
     return df.reset_index(drop=True)
 
 
@@ -75,7 +148,14 @@ def build_tem_r_plan(frame: pd.DataFrame, *, max_location_distance: float = 1, s
     exceptions: list[dict[str, Any]] = []
     remaining: dict[int, int] = {}
 
-    for _, group_frame in df.groupby("_group", sort=False):
+    invalid_rows = df.index[df["_input_error"].notna()].tolist()
+    for idx in invalid_rows:
+        reason = str(df.at[idx, "_input_error"])
+        df.at[idx, "TEM_R_STATUS"] = reason
+        exceptions.append({"row": idx, "ITEMID": df.at[idx, "ITEMID"], "reason": reason})
+
+    valid_df = df[df["_input_error"].isna()]
+    for _, group_frame in valid_df.groupby("_group", sort=False):
         ordered = sorted(
             group_frame.index,
             key=lambda idx: (
@@ -89,9 +169,6 @@ def build_tem_r_plan(frame: pd.DataFrame, *, max_location_distance: float = 1, s
         own_positions_by_item: dict[str, int] = {}
         for source_idx in ordered:
             stock = df.at[source_idx, "_stock"]
-            if pd.isna(stock):
-                exceptions.append({"row": source_idx, "ITEMID": df.at[source_idx, "ITEMID"], "reason": "Thiếu hoặc sai tồn kho"})
-                continue
             remaining[source_idx] = int(stock)
             if stock > 0:
                 item = str(df.at[source_idx, "ITEMID"])
@@ -104,10 +181,6 @@ def build_tem_r_plan(frame: pd.DataFrame, *, max_location_distance: float = 1, s
                 df.at[source_idx, "TEM_R_STATUS"] = "Còn tồn - không cần Tem R"
 
         targets = [idx for idx in ordered if df.at[idx, "_stock"] == 0]
-        invalid = [idx for idx in ordered if pd.isna(df.at[idx, "_stock"])]
-        for idx in invalid:
-            df.at[idx, "TEM_R_STATUS"] = "Thiếu hoặc sai tồn kho"
-
         if not targets:
             continue
 
@@ -141,6 +214,11 @@ def build_tem_r_plan(frame: pd.DataFrame, *, max_location_distance: float = 1, s
                 for target_idx in unassigned
                 for item, count in capacity.items()
                 if count > 0
+                and min(
+                    (abs(location - df.at[target_idx, "_location"])
+                     for location in source_locations[item]),
+                    default=float("inf"),
+                ) <= max_location_distance
             ]
             if not candidates:
                 break
@@ -161,6 +239,27 @@ def build_tem_r_plan(frame: pd.DataFrame, *, max_location_distance: float = 1, s
         needs_rearrangement = any(
             not is_contiguous(code) for code in {code for code in final_codes if code is not None}
         )
+
+        if needs_rearrangement:
+            arranged_preview: list[str] = []
+            for item in stock_by_item:
+                arranged_preview.extend([item] * final_codes.count(item))
+            arranged_preview.extend(
+                ["KHÔNG CÓ SẢN PHẨM THAY THẾ"] * final_codes.count(None)
+            )
+            # Sắp xếp toàn kệ không được biến thành cách lách giới hạn khoảng
+            # cách. Nếu bất kỳ vị trí mới nào quá xa mã nguồn, giữ phương án
+            # thay từng vị trí đã được kiểm tra khoảng cách ở trên.
+            rearrangement_within_distance = all(
+                representative == "KHÔNG CÓ SẢN PHẨM THAY THẾ"
+                or min(
+                    abs(location - df.at[target_idx, "_location"])
+                    for location in source_locations[representative]
+                ) <= max_location_distance
+                for target_idx, representative in zip(ordered, arranged_preview)
+            )
+            if not rearrangement_within_distance:
+                needs_rearrangement = False
 
         if not needs_rearrangement:
             for source_idx in ordered:
@@ -231,7 +330,7 @@ def _find_export_sheet_and_header(workbook, itemid_column: str = "ITEMID", *, al
     wanted = itemid_column.strip().upper()
     for candidate_sheet in worksheets:
         found = next(
-            (row for row in range(1, min(50, candidate_sheet.max_row) + 1)
+            (row for row in range(1, min(HEADER_SCAN_ROWS, candidate_sheet.max_row) + 1)
              if any(str(candidate_sheet.cell(row, col).value).strip().upper() == wanted
                     for col in range(1, candidate_sheet.max_column + 1))),
             None,
@@ -242,7 +341,7 @@ def _find_export_sheet_and_header(workbook, itemid_column: str = "ITEMID", *, al
     if header_row is None and allow_fallback:
         scored_rows = []
         for candidate_sheet in worksheets:
-            for row in range(1, min(50, candidate_sheet.max_row) + 1):
+            for row in range(1, min(HEADER_SCAN_ROWS, candidate_sheet.max_row) + 1):
                 values = [candidate_sheet.cell(row, col).value for col in range(1, candidate_sheet.max_column + 1)]
                 nonempty = [value for value in values if value not in (None, "")]
                 text_cells = sum(isinstance(value, str) for value in nonempty)
@@ -254,9 +353,10 @@ def _find_export_sheet_and_header(workbook, itemid_column: str = "ITEMID", *, al
                 header_row = None
     if header_row is None:
         raise ValueError(
-            f"Không tìm thấy dòng tiêu đề/cột {itemid_column} trong 50 dòng đầu của các sheet file Tem R"
+            f"Không tìm thấy dòng tiêu đề/cột {itemid_column} trong {HEADER_SCAN_ROWS} dòng đầu của các sheet file Tem R"
         )
     headers = [worksheet.cell(header_row, col).value for col in range(1, worksheet.max_column + 1)]
+    _validate_headers(headers, worksheet.title)
     return worksheet, header_row, headers
 
 
@@ -264,7 +364,14 @@ def inspect_tem_r_workbook(input_path: str | Path) -> dict:
     """List columns and suggest, but never silently choose, a stock column."""
     from openpyxl import load_workbook
 
-    workbook = load_workbook(input_path, read_only=True, data_only=True)
+    input_path = _validate_xlsx_file(input_path)
+    try:
+        workbook = load_workbook(input_path, read_only=True, data_only=True)
+    except Exception as exc:
+        message = str(exc).lower()
+        if "encrypt" in message or "password" in message:
+            raise ValueError("File Tem R đang được mã hóa/đặt mật khẩu. Hãy bỏ mật khẩu rồi tải lại.") from exc
+        raise ValueError(f"Không thể mở file Tem R; file có thể bị hỏng: {exc}") from exc
     def normalized(value: str) -> str:
         value = unicodedata.normalize("NFD", value.lower())
         return "".join(char for char in value if unicodedata.category(char) != "Mn").replace(" ", "")
@@ -272,19 +379,35 @@ def inspect_tem_r_workbook(input_path: str | Path) -> dict:
     preferred = ("ton", "tonkho", "stock", "onhand", "inventory", "quantity", "qty")
     sheet_options = []
     for worksheet in workbook.worksheets:
+        # A number of POG exports omit the worksheet dimension element.  The
+        # cells are valid, but read-only openpyxl then reports max_row/max_column
+        # as None until it calculates the real bounds.
+        if worksheet.max_row is None or worksheet.max_column is None:
+            worksheet.calculate_dimension(force=True)
+        max_row = worksheet.max_row or 0
+        max_column = worksheet.max_column or 0
         exact_row = next(
-            (row for row in range(1, min(50, worksheet.max_row) + 1)
+            (row for row in range(1, min(HEADER_SCAN_ROWS, max_row) + 1)
              if any(str(worksheet.cell(row, col).value).strip().upper() == "ITEMID"
-                    for col in range(1, worksheet.max_column + 1))), None,
+                    for col in range(1, max_column + 1))), None,
         )
         if exact_row is None:
-            rows = range(1, min(50, worksheet.max_row) + 1)
+            rows = range(1, min(HEADER_SCAN_ROWS, max_row) + 1)
             exact_row = max(rows, key=lambda row: sum(
                 isinstance(worksheet.cell(row, col).value, str) and bool(str(worksheet.cell(row, col).value).strip())
-                for col in range(1, worksheet.max_column + 1)
+                for col in range(1, max_column + 1)
             ), default=None)
-        headers = [worksheet.cell(exact_row, col).value for col in range(1, worksheet.max_column + 1)] if exact_row else []
-        columns = [str(value).strip() for value in headers if value is not None and str(value).strip()]
+        headers = [worksheet.cell(exact_row, col).value for col in range(1, max_column + 1)] if exact_row else []
+        try:
+            _validate_headers(headers, worksheet.title)
+        except ValueError as exc:
+            sheet_options.append({
+                "sheet_name": worksheet.title, "header_row": exact_row, "columns": [],
+                "suggested_item_column": None, "suggested_stock_column": None,
+                "error": str(exc), "_score": -1,
+            })
+            continue
+        columns = [_clean_header(value) for value in headers if _clean_header(value)]
         stock = next((column for column in columns if normalized(column) in preferred), None)
         if stock is None:
             stock = next((column for column in columns if any(word in normalized(column) for word in preferred)), None)
@@ -298,7 +421,12 @@ def inspect_tem_r_workbook(input_path: str | Path) -> dict:
     usable = [option for option in sheet_options if option["columns"]]
     if not usable:
         workbook.close()
-        raise ValueError("Không tìm thấy dòng tiêu đề có dữ liệu trong 50 dòng đầu của các sheet")
+        errors = [option.get("error") for option in sheet_options if option.get("error")]
+        if errors:
+            raise ValueError(errors[0])
+        raise ValueError(
+            f"Không tìm thấy dòng tiêu đề có dữ liệu trong {HEADER_SCAN_ROWS} dòng đầu của các sheet"
+        )
     selected = max(usable, key=lambda option: option["_score"])
     for option in sheet_options:
         option.pop("_score", None)
@@ -320,7 +448,7 @@ def create_tem_r_workbook(
     from openpyxl import load_workbook
     from openpyxl.styles import PatternFill
 
-    input_path, output_path = Path(input_path), Path(output_path)
+    input_path, output_path = _validate_xlsx_file(input_path), Path(output_path)
     # Keep the original workbook for output, but read cached results for formula-based stock columns.
     workbook = load_workbook(input_path)
     value_workbook = load_workbook(input_path, data_only=True)
@@ -330,6 +458,11 @@ def create_tem_r_workbook(
             raise ValueError(f"Không tìm thấy sheet đã chọn: {sheet_name}")
         worksheet = workbook[sheet_name]
         value_worksheet = value_workbook[sheet_name]
+        if header_row is not None and not (1 <= header_row <= worksheet.max_row):
+            raise ValueError(
+                f"Dòng tiêu đề {header_row} không hợp lệ cho sheet '{sheet_name}' "
+                f"(sheet có {worksheet.max_row} dòng)."
+            )
         if not header_row:
             _, header_row, headers = _find_export_sheet_and_header(workbook, itemid_column=itemid_column)
         else:
@@ -337,6 +470,11 @@ def create_tem_r_workbook(
     else:
         worksheet, header_row, headers = _find_export_sheet_and_header(workbook, itemid_column=itemid_column)
         value_worksheet = value_workbook[worksheet.title]
+    _validate_headers(headers, worksheet.title)
+    headers = [
+        _clean_header(value) or f"__unnamed_col_{index}"
+        for index, value in enumerate(headers)
+    ]
     records = []
     for excel_row in range(header_row + 1, worksheet.max_row + 1):
         values = [value_worksheet.cell(excel_row, col).value for col in range(1, worksheet.max_column + 1)]
@@ -346,6 +484,8 @@ def create_tem_r_workbook(
         record["_excel_row"] = excel_row
         records.append(record)
     frame = pd.DataFrame(records)
+    if frame.empty:
+        raise ValueError(f"Sheet '{worksheet.title}' không có dòng dữ liệu nào dưới tiêu đề.")
     mapping = {
         canonical: source
         for canonical, source in (column_mapping or {}).items()
@@ -357,9 +497,34 @@ def create_tem_r_workbook(
     duplicate_sources = sorted({source for source in mapping.values() if list(mapping.values()).count(source) > 1})
     if duplicate_sources:
         raise ValueError("Mỗi cột nguồn chỉ được chọn một lần: " + ", ".join(duplicate_sources))
+    if stock_column in mapping.values():
+        canonical = next(name for name, source in mapping.items() if source == stock_column)
+        raise ValueError(
+            f"Cột tồn kho '{stock_column}' đang đồng thời được dùng cho {canonical}. "
+            "Hãy chọn hai cột khác nhau."
+        )
     for canonical, source in mapping.items():
         if canonical != source:
             frame[canonical] = frame[source]
+    missing_required = [column for column in REQUIRED_COLUMNS if column not in frame.columns]
+    if missing_required:
+        raise ValueError(
+            "Chưa ánh xạ đủ cột bắt buộc cho Tem R: " + ", ".join(missing_required)
+        )
+    if stock_column in frame.columns:
+        stock_col_index = headers.index(stock_column) + 1 if stock_column in headers else None
+        if stock_col_index:
+            missing_formula_cache = [
+                row for row in range(header_row + 1, worksheet.max_row + 1)
+                if worksheet.cell(row, stock_col_index).data_type == "f"
+                and value_worksheet.cell(row, stock_col_index).value is None
+            ]
+            if missing_formula_cache:
+                raise ValueError(
+                    f"Cột tồn kho '{stock_column}' có công thức nhưng chưa có kết quả lưu sẵn "
+                    f"({len(missing_formula_cache)} dòng). Hãy mở file bằng Excel, tính lại công thức, "
+                    "Save rồi tải lại."
+                )
     plan = build_tem_r_plan(frame, max_location_distance=max_location_distance, stock_column=stock_column)
 
     tem_r_col = headers.index("TEM R") + 1 if "TEM R" in headers else worksheet.max_column + 1
@@ -370,7 +535,7 @@ def create_tem_r_workbook(
         # Gán qua thuộc tính để xóa được Tem R cũ ở các dòng nay không còn thay đổi.
         worksheet.cell(int(row["_excel_row"]), tem_r_col).value = None if pd.isna(value) else str(value)
 
-    # Tô cùng màu cho toàn bộ dòng trong một kệ, đổi màu luân phiên khi sang kệ.
+    # Chỉ tô cột TEM R để không ghi đè màu cảnh báo/định dạng gốc của file.
     shelf_colors = ("EAF3FF", "FFF4E5")
     shelf_color_index: dict[tuple, int] = {}
     for _, row in plan.rows.iterrows():
@@ -379,8 +544,7 @@ def create_tem_r_workbook(
             shelf_color_index[group] = len(shelf_color_index) % len(shelf_colors)
         fill = PatternFill(fill_type="solid", fgColor=shelf_colors[shelf_color_index[group]])
         excel_row = int(row["_excel_row"])
-        for column in range(1, max(worksheet.max_column, tem_r_col) + 1):
-            worksheet.cell(excel_row, column).fill = fill
+        worksheet.cell(excel_row, tem_r_col).fill = fill
 
     for name in ("Tem R phân bổ", "Tem R theo kệ", "Tem R ngoại lệ"):
         if name in workbook.sheetnames:

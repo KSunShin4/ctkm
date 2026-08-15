@@ -81,3 +81,28 @@ def test_manual_mapping_rejects_unknown_target():
 
     with pytest.raises(ValueError, match="canonical field"):
         main._validate_manual_mapping({"SKU": "invented_field"}, df, _schema())
+
+
+def test_sample_values_uses_first_five_non_empty_rows():
+    df = pd.DataFrame({"Unknown": [None, "P1", "P2", "P3", "P4", "P5", "P6"]})
+
+    samples = main.CM._sample_values(df, "Unknown", 5)
+
+    assert samples == "P1 | P2 | P3 | P4 | P5"
+
+
+def test_prompt_tells_gemini_to_use_values_not_only_header_names():
+    df = pd.DataFrame({"Unknown": ["SGPMC047", "HNPMC100"]})
+
+    prompt = main.CM._build_prompt("Export", df, _schema(), 5)
+
+    assert "khong chi dua vao ten cot" in prompt
+    assert "SGPMC047 | HNPMC100" in prompt
+
+
+def test_normalizer_keeps_integral_excel_identifier_as_text():
+    frame = pd.DataFrame({"item_id": [12345.0, "P00123", "#N/A"]})
+
+    result = main.NM.clean_values(frame)
+
+    assert result["item_id"].tolist() == ["12345", "P00123"]

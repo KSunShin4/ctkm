@@ -481,6 +481,10 @@ const OUTPUT_PRESET_KEY = "ctkm.output.columns.v1"
 const MAPPING_PRESET_PREFIX = "ctkm.mapping.preset.v1"
 const TEM_R_RESULT_KEY = "ctkm.temr.last-result.v1"
 const TEM_R_REQUIRED_COLUMNS = ["STOREID", "POGCODE", "FIXELID", "LOCATIONID", "ITEMID", "ITEMNAME"]
+const TEM_R_FIELD_LABELS = {
+  STOREID:"Mã cửa hàng", POGCODE:"Mã POG", FIXELID:"Mã kệ",
+  LOCATIONID:"Vị trí trên kệ", ITEMID:"Mã sản phẩm", ITEMNAME:"Tên sản phẩm",
+}
 
 export default function App() {
   const [activeModule, setActiveModule] = useState("expiration")
@@ -501,6 +505,9 @@ export default function App() {
   const [ctkmSheetLoading, setCtkmSheetLoading] = useState(false)
   const [ctkmSheetError, setCtkmSheetError] = useState("")
   const [pogSnapshotMonth, setPogSnapshotMonth] = useState("")
+  const [pogSheetOptions, setPogSheetOptions] = useState([])
+  const [pogSheetName, setPogSheetName] = useState("")
+  const [pogSheetLoading, setPogSheetLoading] = useState(false)
   const [pogInspectError, setPogInspectError] = useState("")
   const [mappingPreview, setMappingPreview] = useState(null)
   const [mappingLoading, setMappingLoading] = useState(false)
@@ -523,6 +530,7 @@ export default function App() {
   const [temRSheetName, setTemRSheetName] = useState("")
   const [temRItemColumn, setTemRItemColumn] = useState("")
   const [temRStockColumn, setTemRStockColumn] = useState("")
+  const [temRMaxDistance, setTemRMaxDistance] = useState(1)
   const [temRColumnMapping, setTemRColumnMapping] = useState({})
   const [temRInspecting, setTemRInspecting] = useState(false)
   const [temRInspectInfo, setTemRInspectInfo] = useState(null)
@@ -633,6 +641,15 @@ export default function App() {
   const canRun = isAdmin && ctkmFile && pogFile && month && step !== STEPS.running
     && backendStatus === "ok"
     && (!ctkmSheetOptions.length || !!ctkmSheetName)
+    && (!pogSheetOptions.length || !!pogSheetName)
+  const temRSelectedSources = [
+    ...TEM_R_REQUIRED_COLUMNS.map(field => temRColumnMapping[field]).filter(Boolean),
+    temRStockColumn,
+  ].filter(Boolean)
+  const temRMappingComplete = TEM_R_REQUIRED_COLUMNS.every(field => temRColumnMapping[field])
+    && !!temRStockColumn
+    && Number.isFinite(temRMaxDistance) && temRMaxDistance > 0
+    && new Set(temRSelectedSources).size === temRSelectedSources.length
 
   useEffect(() => {
     let cancelled = false
@@ -700,27 +717,41 @@ export default function App() {
     const inspect = async () => {
       if (!isAdmin || !pogFile) {
         setPogSnapshotMonth("")
+        setPogSheetOptions([])
+        setPogSheetName("")
         setPogInspectError("")
+        setPogSheetLoading(false)
         return
       }
+      setPogSheetLoading(true)
       setPogInspectError("")
       try {
         const fd = new FormData()
         fd.append("pog_file", pogFile)
+        if (pogSheetName) fd.append("pog_sheet_name", pogSheetName)
         const res = await authFetch(`${API}/api/inspect-pog`, { method: "POST", body: fd })
         const data = await res.json()
         if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : "Không đọc được snapshot POG")
-        if (!cancelled) setPogSnapshotMonth(data.snapshot_month || "")
+        if (!cancelled) {
+          const sheets = data.sheet_names || []
+          setPogSheetOptions(sheets)
+          setPogSheetName(data.suggested_sheet || sheets[0] || "")
+          setPogSnapshotMonth(data.snapshot_month || "")
+        }
       } catch (e) {
         if (!cancelled) {
           setPogSnapshotMonth("")
+          setPogSheetOptions([])
+          setPogSheetName("")
           setPogInspectError(e.message)
         }
+      } finally {
+        if (!cancelled) setPogSheetLoading(false)
       }
     }
     inspect()
     return () => { cancelled = true }
-  }, [pogFile, isAdmin, authFetch])
+  }, [pogFile, pogSheetName, isAdmin, authFetch])
 
   useEffect(() => {
     let cancelled = false
@@ -837,6 +868,7 @@ export default function App() {
     fd.append("strict_month", strict)
     fd.append("mapping_mode", savedOnly ? "saved_only" : "auto")
     if (ctkmSheetName) fd.append("ctkm_sheet_name", ctkmSheetName)
+    if (pogSheetName) fd.append("pog_sheet_name", pogSheetName)
     if (Object.keys(ctkmMappingOverride).length > 0) {
       fd.append("ctkm_mapping_override", JSON.stringify(ctkmMappingOverride))
     }
@@ -909,15 +941,15 @@ export default function App() {
   }
 
   const handleTemR = async () => {
-    if (!temRFile || !temRItemColumn || !temRStockColumn || backendStatus !== "ok") return
+    if (!temRFile || !temRMappingComplete || backendStatus !== "ok") return
     setTemRLoading(true)
     setTemRError("")
     try {
       const fd = new FormData()
       fd.append("tem_r_file", temRFile)
-      fd.append("max_location_distance", "1")
+      fd.append("max_location_distance", String(temRMaxDistance))
       fd.append("stock_column", temRStockColumn)
-      fd.append("column_mapping", JSON.stringify({...temRColumnMapping, ITEMID:temRItemColumn}))
+      fd.append("column_mapping", JSON.stringify(temRColumnMapping))
       fd.append("sheet_name", temRSheetName)
       if (temRInspectInfo?.headerRow) fd.append("header_row", String(temRInspectInfo.headerRow))
       const res = await authFetch(`${API}/api/jobs/tem-r`, { method: "POST", body: fd })
@@ -1054,7 +1086,7 @@ export default function App() {
   useEffect(() => () => stopCamera(), [stopCamera])
 
   const handlePreviewMapping = async (manualOnly = false) => {
-    if (!ctkmFile || !pogFile || !ctkmSheetName || backendStatus !== "ok") return
+    if (!ctkmFile || !pogFile || !ctkmSheetName || !pogSheetName || backendStatus !== "ok") return
     setMappingLoading(true)
     setMappingError("")
     setMappingSaved("")
@@ -1063,6 +1095,7 @@ export default function App() {
       fd.append("ctkm_file", ctkmFile)
       fd.append("pog_file", pogFile)
       fd.append("ctkm_sheet_name", ctkmSheetName)
+      fd.append("pog_sheet_name", pogSheetName)
       fd.append("manual_only", String(manualOnly))
       const res = await authFetch(`${API}/api/preview-mapping`, { method: "POST", body: fd })
       const data = await res.json()
@@ -1446,6 +1479,27 @@ export default function App() {
                 file={pogFile}
                 onFile={setPogFile}
               />
+              {pogSheetLoading && (
+                <div className="sheet-hint">Đang đọc danh sách sheet POG…</div>
+              )}
+              {!pogSheetLoading && pogSheetOptions.length > 0 && (
+                <>
+                  <select
+                    className="sheet-select"
+                    value={pogSheetName}
+                    onChange={e => {
+                      setPogSheetName(e.target.value)
+                      setMappingPreview(null)
+                      setPogMappingOverride({})
+                    }}
+                  >
+                    {pogSheetOptions.map(sn => (
+                      <option key={sn} value={sn}>{sn}</option>
+                    ))}
+                  </select>
+                  <div className="sheet-hint">Chỉ sheet POG đã chọn sẽ được đọc đầy đủ.</div>
+                </>
+              )}
               {pogFile && pogSnapshotMonth && (
                 <div className="sheet-hint">
                   Snapshot POG đọc được: <b>{pogSnapshotMonth}</b>
@@ -1600,11 +1654,24 @@ export default function App() {
                   }}>
                     {temRSheetOptions.map(option => <option key={option.sheet_name} value={option.sheet_name}>{option.sheet_name}</option>)}
                   </select>
-                  <label className="sheet-hint" style={{display:"block", marginTop:12}}>Cột nào chứa mã P?</label>
-                  <select className="sheet-select" value={temRItemColumn} onChange={e => setTemRItemColumn(e.target.value)}>
-                    <option value="">— Chọn cột mã P —</option>
-                    {temRColumns.map(column => <option key={column} value={column}>{column}</option>)}
-                  </select>
+                  <div className="sheet-hint" style={{display:"block", marginTop:12}}>Xác nhận các cột bắt buộc</div>
+                  {TEM_R_REQUIRED_COLUMNS.map(field => (
+                    <div className="mapping-row" key={field}>
+                      <label className="sheet-hint">{TEM_R_FIELD_LABELS[field]}</label>
+                      <select
+                        className="sheet-select"
+                        value={temRColumnMapping[field] || ""}
+                        onChange={e => {
+                          const value = e.target.value
+                          setTemRColumnMapping(current => ({...current, [field]:value}))
+                          if (field === "ITEMID") setTemRItemColumn(value)
+                        }}
+                      >
+                        <option value="">— Chọn cột —</option>
+                        {temRColumns.map(column => <option key={column} value={column}>{column}</option>)}
+                      </select>
+                    </div>
+                  ))}
                   <label className="sheet-hint" style={{display:"block", marginTop:12}}>
                     Cột nào chứa số lượng tồn kho?
                   </label>
@@ -1619,12 +1686,28 @@ export default function App() {
                   <div className="sheet-hint">
                     Hệ thống chỉ gợi ý; hãy kiểm tra và xác nhận trước khi phân bổ.
                   </div>
+                  <label className="sheet-hint" style={{display:"block", marginTop:12}}>
+                    Khoảng cách vị trí tối đa được phép thay
+                  </label>
+                  <input
+                    className="month-input"
+                    type="number"
+                    min="0.1"
+                    step="0.1"
+                    value={temRMaxDistance}
+                    onChange={e => setTemRMaxDistance(Number(e.target.value))}
+                  />
+                  {temRSelectedSources.length !== new Set(temRSelectedSources).size && (
+                    <div className="sheet-hint" style={{color:"var(--red)"}}>
+                      Mỗi trường phải sử dụng một cột khác nhau.
+                    </div>
+                  )}
                 </>
               )}
               <button
                 className="btn btn-primary"
                 style={{marginTop:12}}
-                disabled={!temRFile || !temRItemColumn || !temRStockColumn || temRInspecting || temRLoading || backendStatus !== "ok"}
+                disabled={!temRFile || !temRMappingComplete || temRInspecting || temRLoading || backendStatus !== "ok"}
                 onClick={handleTemR}
               >
                 {temRLoading
