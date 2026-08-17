@@ -495,6 +495,7 @@ export default function App() {
   const [authError, setAuthError] = useState("")
   const [ctkmAdvanced, setCtkmAdvanced] = useState(false)
   const [ctkmFile, setCtkmFile]   = useState(null)
+  const [clearanceFile, setClearanceFile] = useState(null)
   const [pogFile, setPogFile]     = useState(null)
   const [month, setMonth]         = useState(() => {
     const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`
@@ -864,6 +865,7 @@ export default function App() {
     const fd = new FormData()
     fd.append("ctkm_file", ctkmFile)
     fd.append("pog_file",  pogFile)
+    if (clearanceFile) fd.append("clearance_file", clearanceFile)
     fd.append("month",     month)
     fd.append("strict_month", strict)
     fd.append("mapping_mode", savedOnly ? "saved_only" : "auto")
@@ -1338,6 +1340,16 @@ export default function App() {
                   )}
                 </>
               )}
+            </div>
+
+            <div className="card">
+              <div className="card-title">1b · File Clearance (tùy chọn)</div>
+              <Dropzone
+                label="File Clearance (.xlsx)"
+                sub="Bổ sung để tạo sheet xác nhận CTKM / Clearance"
+                file={clearanceFile}
+                onFile={setClearanceFile}
+              />
             </div>
 
             {ctkmAdvanced && mappingPreview && (

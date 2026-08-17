@@ -527,8 +527,10 @@ async def enqueue_tem_r(
 @app.post("/api/jobs/ctkm", status_code=202)
 async def enqueue_ctkm(
     ctkm_file: UploadFile = File(...), pog_file: UploadFile = File(...),
+    clearance_file: Optional[UploadFile] = File(None),
     month: str = Form(...), strict_month: bool = Form(False),
     ctkm_sheet_name: Optional[str] = Form(None),
+    clearance_sheet_name: Optional[str] = Form(None),
     pog_sheet_name: Optional[str] = Form(None),
     ctkm_mapping_override: Optional[str] = Form(None),
     pog_mapping_override: Optional[str] = Form(None),
@@ -541,14 +543,25 @@ async def enqueue_ctkm(
         raise HTTPException(status_code=422, detail="month phải có dạng YYYY-MM")
     if not ctkm_file.filename.lower().endswith(".xlsx") or not pog_file.filename.lower().endswith(".xlsx"):
         raise HTTPException(status_code=422, detail="CTKM và POG phải là file .xlsx")
+    if clearance_file and (
+        not clearance_file.filename or not clearance_file.filename.lower().endswith(".xlsx")
+    ):
+        raise HTTPException(status_code=422, detail="Clearance phải là file .xlsx")
     if mapping_mode not in {"auto", "saved_only"}:
         raise HTTPException(status_code=422, detail="mapping_mode không hợp lệ")
     if mapping_mode == "auto":
         _enforce_gemini_cooldown()
-    ctkm_content, pog_content = await asyncio.gather(
+    upload_tasks = [
         _read_upload_limited(ctkm_file, _MAX_PIPELINE_BYTES, "File CTKM"),
         _read_upload_limited(pog_file, _MAX_PIPELINE_BYTES, "File POG"),
-    )
+    ]
+    if clearance_file:
+        upload_tasks.append(_read_upload_limited(
+            clearance_file, _MAX_PIPELINE_BYTES, "File Clearance"
+        ))
+    upload_contents = await asyncio.gather(*upload_tasks)
+    ctkm_content, pog_content = upload_contents[:2]
+    clearance_content = upload_contents[2] if len(upload_contents) > 2 else None
     try:
         ctkm_override = json.loads(ctkm_mapping_override) if ctkm_mapping_override else None
         pog_override = json.loads(pog_mapping_override) if pog_mapping_override else None
@@ -559,8 +572,11 @@ async def enqueue_ctkm(
     job_dir = _TMP_DIR / job_id
     job_dir.mkdir(parents=True, exist_ok=True)
     ctkm_path, pog_path = job_dir / "ctkm.xlsx", job_dir / "pog.xlsx"
+    clearance_path = job_dir / "clearance.xlsx"
     output_path = _OUT_DIR / f"tong_hop_ctkm_{month}_{job_id}.xlsx"
     ctkm_path.write_bytes(ctkm_content); pog_path.write_bytes(pog_content)
+    if clearance_content is not None:
+        clearance_path.write_bytes(clearance_content)
     job = _new_job(job_id, "ctkm", output_path, output_path.name, month=month)
 
     def work(current):
@@ -589,10 +605,13 @@ async def enqueue_ctkm(
                 str(ctkm_path), str(pog_path), month, str(output_path), strict_month,
                 ctkm_sheet_name, local_ctkm, local_pog, local_output,
                 pog_sheet_name,
+                str(clearance_path) if clearance_content is not None else None,
+                clearance_sheet_name,
             )
             return result.summary, result.warnings
         finally:
             ctkm_path.unlink(missing_ok=True); pog_path.unlink(missing_ok=True)
+            clearance_path.unlink(missing_ok=True)
 
     _submit_job(job_id, "ctkm", work)
     return _job_public(job)

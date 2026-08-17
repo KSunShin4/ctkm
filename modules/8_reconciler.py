@@ -4,6 +4,8 @@ from __future__ import annotations
 import calendar
 import re
 import unicodedata
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from dataclasses import dataclass, field as dc_field
 from itertools import combinations
 import pandas as pd
@@ -136,12 +138,12 @@ def build_fefo_action_frame(df_ctkm, target_month, df_pog=None) -> pd.DataFrame:
     """
     if df_ctkm is None or df_ctkm.empty:
         return pd.DataFrame(columns=["item_id", "item_name", "promo_uom", "campaign_name", "campaign_detail",
-                                     "promo_from", "promo_to", "channel", "source_sheet",
+                                     "promo_from", "promo_to", "channel", "program_source", "source_sheet",
                                      "action", "reason", "target_month", "store_id", "pog_code",
                                      "location_id", "facing", "pog_snapshot_month", "location_status"])
 
     df = df_ctkm.copy()
-    base_cols = ["item_id", "item_name", "promo_uom", "campaign_name", "campaign_detail", "promo_from", "promo_to", "channel", "source_sheet"]
+    base_cols = ["item_id", "item_name", "promo_uom", "campaign_name", "campaign_detail", "promo_from", "promo_to", "channel", "program_source", "source_sheet"]
     for col in base_cols:
         if col not in df.columns:
             df[col] = pd.NA
@@ -149,13 +151,18 @@ def build_fefo_action_frame(df_ctkm, target_month, df_pog=None) -> pd.DataFrame:
     if "promo_from" not in df.columns or "promo_to" not in df.columns:
         return pd.DataFrame(columns=[*base_cols, "action", "reason", "target_month"])
 
-    today = pd.Timestamp.today().normalize()
+    # Lay ngay nghiep vu theo gio Viet Nam, khong phu thuoc timezone cua server.
+    today = pd.Timestamp(datetime.now(ZoneInfo("Asia/Ho_Chi_Minh")).date())
 
     def _classify(row):
         promo_from = _parse_date(row.get("promo_from"))
         promo_to = _parse_date(row.get("promo_to"))
         if pd.isna(promo_from) or pd.isna(promo_to):
             return "review", "thieu_thong_tin_ngay"
+        promo_from = promo_from.normalize()
+        promo_to = promo_to.normalize()
+        if promo_from > promo_to:
+            return "review", "ngay_bat_dau_sau_ngay_ket_thuc"
         if promo_to < today:
             return "tháo tem", "promo_het_han_truoc_hom_nay"
         if promo_from > today:
@@ -166,20 +173,25 @@ def build_fefo_action_frame(df_ctkm, target_month, df_pog=None) -> pd.DataFrame:
 
     df["action"], df["reason"] = zip(*df.apply(_classify, axis=1))
     df["target_month"] = target_month
+    df["ngay_gan_tem"] = df["promo_from"].apply(_parse_date).dt.normalize()
+    # CTKM con hieu luc het ngay promo_to; thao tem tu dau ngay ke tiep.
+    df["ngay_thao_tem"] = df["promo_to"].apply(_parse_date).dt.normalize() + pd.Timedelta(days=1)
 
     # Cùng mã/chương trình/thời gian nhưng khác kênh hoặc khác chi tiết ưu đãi
     # là các thao tác riêng; không được gộp mất trong danh sách Gắn/Tháo tem.
     dedup_cols = [
         c for c in [
             "item_id", "promo_uom", "campaign_name", "campaign_detail",
-            "promo_from", "promo_to", "channel",
+            "promo_from", "promo_to", "channel", "program_source",
         ]
         if c in df.columns
     ]
     if len(dedup_cols) >= 2:
         df = df.drop_duplicates(subset=dedup_cols)
 
-    out_cols = [c for c in base_cols if c in df.columns] + ["action", "reason", "target_month"]
+    out_cols = [c for c in base_cols if c in df.columns] + [
+        "ngay_gan_tem", "ngay_thao_tem", "action", "reason", "target_month"
+    ]
     actions = df.loc[:, out_cols].reset_index(drop=True)
 
     location_cols = ["store_id", "pog_code", "location_id", "facing", "pog_snapshot_month"]

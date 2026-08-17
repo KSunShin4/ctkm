@@ -187,6 +187,94 @@ def _ensure_promo_uom_mapping(mapping: dict, df: pd.DataFrame) -> dict:
             break
     return mapping
 
+def _infer_standard_fact_mapping(df: pd.DataFrame) -> dict:
+    """Map cac cot CTKM/Clearance chuan cua cong ty ma khong can goi AI."""
+    aliases = {
+        "item code": "item_id", "item code 2": "item_id", "itemid": "item_id",
+        "product name": "item_name", "itemname": "item_name",
+        "promo uom": "promo_uom", "campaign": "campaign_name",
+        "scheme detail for customer": "campaign_detail",
+        "from": "promo_from", "to": "promo_to",
+        "kenh ap dung": "channel", "key channel": "channel", "channel": "channel",
+        "normal": "normal_price", "promo": "promo_price",
+        "product type": "product_type",
+    }
+    mapping = {}
+    claimed_targets = set()
+    for column in df.columns:
+        target = aliases.get(_normalized_header(column))
+        if target and target not in claimed_targets:
+            mapping[column] = target
+            claimed_targets.add(target)
+    required = {"item_id", "campaign_name", "promo_from", "promo_to"}
+    return mapping if required.issubset(claimed_targets) else {}
+
+def _build_ctkm_clearance_confirmation(df_ctkm: pd.DataFrame,
+                                       df_clearance: pd.DataFrame | None) -> pd.DataFrame:
+    """Tao danh sach de nguoi dung xac nhan CTKM va Clearance trong cung mot sheet."""
+    columns = [
+        "item_id", "item_name", "promo_uom", "campaign_name", "campaign_detail",
+        "promo_from", "promo_to", "channel", "normal_price", "promo_price",
+        "source_sheet",
+    ]
+
+    def tagged(frame: pd.DataFrame, source: str) -> pd.DataFrame:
+        result = frame.copy()
+        for column in columns:
+            if column not in result.columns:
+                result[column] = pd.NA
+        result = result.loc[:, columns]
+        result.insert(0, "nguon_chuong_trinh", source)
+        return result
+
+    ctkm = tagged(df_ctkm, "CTKM")
+    if df_clearance is None or df_clearance.empty:
+        result = ctkm
+        result.insert(1, "trang_thai_doi_chieu", "Chỉ CTKM")
+    else:
+        clearance = tagged(df_clearance, "CLEARANCE")
+        ctkm_items = set(ctkm["item_id"].dropna().astype(str).str.strip())
+        clearance_items = set(clearance["item_id"].dropna().astype(str).str.strip())
+        both = ctkm_items & clearance_items
+        result = pd.concat([ctkm, clearance], ignore_index=True)
+        item_keys = result["item_id"].fillna("").astype(str).str.strip()
+        result.insert(1, "trang_thai_doi_chieu", [
+            "Có cả CTKM và Clearance" if item in both
+            else ("Chỉ CTKM" if source == "CTKM" else "Chỉ Clearance")
+            for item, source in zip(item_keys, result["nguon_chuong_trinh"])
+        ])
+
+    result.insert(2, "xac_nhan_ap_dung", "Chưa xác nhận")
+    result.insert(3, "ghi_chu_xac_nhan", "")
+    return result.sort_values(
+        ["trang_thai_doi_chieu", "item_id", "nguon_chuong_trinh", "promo_from"],
+        kind="stable", na_position="last",
+    ).reset_index(drop=True)
+
+
+def _build_promo_action_source(df_ctkm: pd.DataFrame,
+                               df_clearance: pd.DataFrame | None) -> pd.DataFrame:
+    """CTKM day du + chi cac ma Clearance khong ton tai trong CTKM."""
+    ctkm = df_ctkm.copy()
+    ctkm["program_source"] = "CTKM"
+    if df_clearance is None or df_clearance.empty:
+        return ctkm
+
+    clearance = df_clearance.copy()
+    clearance["program_source"] = "CLEARANCE"
+    ctkm_items = set(ctkm["item_id"].dropna().astype(str).str.strip().str.upper())
+    clearance_keys = clearance["item_id"].fillna("").astype(str).str.strip().str.upper()
+    clearance = clearance.loc[~clearance_keys.isin(ctkm_items)].copy()
+    if "campaign_name" not in clearance.columns:
+        clearance["campaign_name"] = "CLEARANCE"
+    else:
+        blank_campaign = (
+            clearance["campaign_name"].isna()
+            | clearance["campaign_name"].astype(str).str.strip().eq("")
+        )
+        clearance.loc[blank_campaign, "campaign_name"] = "CLEARANCE"
+    return pd.concat([ctkm, clearance], ignore_index=True)
+
 def _process(sheet_name, df, schema_section, mapping_logs, is_fact, all_warnings, mapping_override=None):
     if mapping_override:
         result = _build_manual_mapping_result(sheet_name, mapping_override, df, schema_section)
@@ -209,7 +297,9 @@ def _process(sheet_name, df, schema_section, mapping_logs, is_fact, all_warnings
 def run_pipeline(ctkm_filepath, pog_filepath, target_month, output_path,
                  fail_on_month_mismatch=False, ctkm_sheet_name=None,
                  ctkm_mapping_override=None, pog_mapping_override=None,
-                 selected_output_columns=None, pog_sheet_name=None) -> PipelineResult:
+                 selected_output_columns=None, pog_sheet_name=None,
+                 clearance_filepath=None, clearance_sheet_name=None,
+                 clearance_mapping_override=None) -> PipelineResult:
     warnings, mapping_logs = [], []
 
     # --- Buoc 1: Load ---
@@ -240,6 +330,30 @@ def run_pipeline(ctkm_filepath, pog_filepath, target_month, output_path,
         warnings,
         mapping_override=ctkm_mapping_override,
     )
+    df_ctkm_all["program_source"] = "CTKM"
+
+    df_clearance_all = None
+    if clearance_filepath:
+        wb_clearance = L.load_workbook_raw(
+            clearance_filepath, is_pog_file=False,
+            selected_sheet_names=[clearance_sheet_name] if clearance_sheet_name else None,
+        )
+        clearance_name, clearance_sheet = _select_primary_ctkm_sheet(
+            wb_clearance, clearance_sheet_name
+        )
+        clearance_override = clearance_mapping_override or _infer_standard_fact_mapping(
+            clearance_sheet.df
+        )
+        df_clearance_all = _process(
+            clearance_name,
+            clearance_sheet.df,
+            SCHEMA["fact_fields"],
+            mapping_logs,
+            True,
+            warnings,
+            mapping_override=clearance_override or None,
+        )
+        df_clearance_all["program_source"] = "CLEARANCE"
 
     dim_frames = {}
 
@@ -256,9 +370,17 @@ def run_pipeline(ctkm_filepath, pog_filepath, target_month, output_path,
     )
     df_pog  = NM.attach_pog_snapshot_month(df_pog, pog_snapshot_month)
 
-    # --- Buoc 8a: Quet overlap TRUOC khi loc thang (tren toan bo CTKM) ---
-    overlap_warns = RC.detect_campaign_time_overlaps(df_ctkm_all)
-    df_fefo_actions = RC.build_fefo_action_frame(df_ctkm_all, target_month, df_pog)
+    # Danh sach thao tac tem phai gom ca Clearance, ke ca cac ma P khong co
+    # trong file CTKM Monthly. Giu program_source de nguoi dung biet nguon.
+    df_promo_for_actions = _build_promo_action_source(
+        df_ctkm_all, df_clearance_all
+    )
+
+    # --- Buoc 8a: Quet overlap va tao thao tac tem tren CTKM + Clearance ---
+    overlap_warns = RC.detect_campaign_time_overlaps(df_promo_for_actions)
+    df_fefo_actions = RC.build_fefo_action_frame(
+        df_promo_for_actions, target_month, df_pog
+    )
 
     # --- Buoc 6: Kiem tra lech thang + loc ---
     alignment = TF.check_snapshot_alignment(target_month, pog_snapshot_month)
@@ -267,6 +389,15 @@ def run_pipeline(ctkm_filepath, pog_filepath, target_month, output_path,
             raise ValueError(alignment.warning_message)
         warnings.append(alignment.warning_message)
     _df_all, df_ctkm_strict = TF.filter_ctkm_by_month(df_ctkm_all, target_month)
+    if df_clearance_all is not None:
+        _clearance_all, df_clearance_strict = TF.filter_ctkm_by_month(
+            df_clearance_all, target_month
+        )
+    else:
+        df_clearance_strict = None
+    df_confirmation = _build_ctkm_clearance_confirmation(
+        df_ctkm_strict, df_clearance_strict
+    )
 
     # --- Buoc 7: Join ---
     join_result = JN.join_ctkm_pog(df_ctkm_strict, df_pog)
@@ -288,6 +419,14 @@ def run_pipeline(ctkm_filepath, pog_filepath, target_month, output_path,
         "So dong len ke thieu CTKM":        report.pog_only_count,
         "So item len ke thieu CTKM":        report.pog_only_unique_items,
         "So canh bao trung thoi gian":      len({warning.item_id for warning in overlap_warns}),
+        "So dong Clearance":                0 if df_clearance_strict is None else len(df_clearance_strict),
+        "So item trung CTKM va Clearance":  0 if df_clearance_strict is None else len(
+            set(df_ctkm_strict["item_id"].dropna().astype(str).str.strip())
+            & set(df_clearance_strict["item_id"].dropna().astype(str).str.strip())
+        ),
+        "So dong tem tu Clearance":         int(
+            (df_fefo_actions.get("program_source", pd.Series(dtype=str)) == "CLEARANCE").sum()
+        ),
     }
 
     # --- Buoc 9: Export ---
@@ -302,6 +441,7 @@ def run_pipeline(ctkm_filepath, pog_filepath, target_month, output_path,
         snapshot_alignment_warning=alignment.warning_message,
         selected_output_columns=selected_output_columns,
         df_fefo_actions=df_fefo_actions,
+        df_ctkm_clearance_confirmation=df_confirmation,
     )
     return PipelineResult(final, warnings, summary)
 
@@ -312,6 +452,8 @@ def _cli():
     p.add_argument("--pog",          required=True)
     p.add_argument("--month",        required=True, help="YYYY-MM, vd 2026-05")
     p.add_argument("--ctkm-sheet",    default=None, help="Ten sheet CTKM tong hop can xu ly")
+    p.add_argument("--clearance",      default=None, help="File Clearance tuy chon")
+    p.add_argument("--clearance-sheet", default=None, help="Ten sheet Clearance can xu ly")
     p.add_argument("--output",       default=None)
     p.add_argument("--strict-month", action="store_true",
                    help="Dung pipeline ngay neu lech thang POG/CTKM (mac dinh: chi canh bao)")
@@ -329,7 +471,11 @@ def _cli():
             else:
                 args.ctkm_sheet = choice
     out = args.output or str(_ROOT/"output"/f"tong_hop_ctkm_{args.month}.xlsx")
-    result = run_pipeline(args.ctkm, args.pog, args.month, out, args.strict_month, args.ctkm_sheet)
+    result = run_pipeline(
+        args.ctkm, args.pog, args.month, out, args.strict_month, args.ctkm_sheet,
+        pog_sheet_name=None, clearance_filepath=args.clearance,
+        clearance_sheet_name=args.clearance_sheet,
+    )
     print(f"Da xuat: {result.output_filepath}")
     for w in result.warnings: print(f"CANH BAO: {w}")
     print("Tom tat:")
