@@ -128,10 +128,9 @@ def _as_stock(value: Any) -> int | None:
         return None
     if not math.isfinite(raw_stock) or raw_stock < 0:
         return None
-    if raw_stock == 0:
-        return 0
-    # Tồn dương dạng quy đổi đơn vị (vd 0.166667 thùng) vẫn là còn hàng.
-    return max(1, int(raw_stock))
+    # Nghiệp vụ Tem R chỉ tính đơn vị nguyên hoàn chỉnh. Phần lẻ bị bỏ đi,
+    # nên 0.5/0.99 đều được xem là 0 và đủ điều kiện xét Tem R.
+    return int(raw_stock)
 
 
 def _stock_skip_details(value: Any) -> tuple[str, str]:
