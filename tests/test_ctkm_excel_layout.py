@@ -19,7 +19,7 @@ def _normalize(value):
     return " ".join(str(value).strip().lower().split())
 
 
-def test_raw_channel_is_preferred_over_key_channel():
+def test_key_channel_and_channel_are_both_preserved():
     perf = _performance_module()
     frame = pd.DataFrame({
         "KEY Channel": ["OFFLINE", "ONLINE"],
@@ -28,13 +28,15 @@ def test_raw_channel_is_preferred_over_key_channel():
     })
     mapping = {"KEY Channel": "channel", "Item code": "item_id"}
 
-    result = perf.prefer_raw_channel_mapping(mapping, frame, normalize_header=_normalize)
+    result = perf.preserve_both_channel_mappings(
+        mapping, frame, normalize_header=_normalize
+    )
 
-    assert result.get("Channel") == "channel"
-    assert result.get("KEY Channel") != "channel"
+    assert result["KEY Channel"] == "key_channel"
+    assert result["Channel"] == "channel"
 
 
-def test_action_sheet_places_user_fields_before_technical_ids():
+def test_action_sheet_places_both_channels_before_technical_ids():
     perf = _performance_module()
     frame = pd.DataFrame({
         "task_id": ["T1"],
@@ -42,6 +44,7 @@ def test_action_sheet_places_user_fields_before_technical_ids():
         "pog_position_id": ["L1"],
         "item_id": ["P123"],
         "item_name": ["Thuốc A"],
+        "key_channel": ["OFFLINE"],
         "channel": ["MẸ & BÉ"],
         "campaign_name": ["CTKM A"],
         "store_id": ["S1"],
@@ -55,6 +58,23 @@ def test_action_sheet_places_user_fields_before_technical_ids():
     columns = list(result.columns)
 
     assert columns.index("item_id") < columns.index("task_id")
-    assert columns.index("item_name") < columns.index("promotion_id")
+    assert columns.index("key_channel") < columns.index("promotion_id")
     assert columns.index("channel") < columns.index("pog_position_id")
-    assert columns[:4] == ["item_id", "item_name", "channel", "campaign_name"]
+    assert columns[:5] == [
+        "item_id", "item_name", "key_channel", "channel", "campaign_name"
+    ]
+
+
+def test_selected_output_columns_always_keep_both_channels():
+    perf = _performance_module()
+    frame = pd.DataFrame({
+        "item_id": ["P1"],
+        "item_name": ["Thuốc A"],
+        "key_channel": ["ALL CHANNEL - EXCEPT MKP"],
+        "channel": ["COMBO ĐI SINH"],
+        "campaign_name": ["CTKM A"],
+    })
+
+    result = perf.filter_selected_columns_keep_channels(frame, ["item_name"])
+
+    assert list(result.columns) == ["item_name", "item_id", "key_channel", "channel"]
