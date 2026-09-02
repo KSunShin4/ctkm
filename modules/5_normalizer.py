@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Module 5: Normalizer — apply mapping, parse kieu du lieu, unpivot multi-promo."""
+"""Module 5: Normalizer — map columns while preserving source values verbatim."""
 from __future__ import annotations
 import re
 from typing import Optional
@@ -13,7 +13,9 @@ STRING_FIELDS = {"item_id","item_name","promo_uom","campaign_name","campaign_det
 UNPIVOTABLE_FIELDS = {"campaign_detail", "promo_price"}
 EXCEL_ERROR_VALUES = {"#N/A", "#VALUE!", "#REF!", "#DIV/0!", "#NAME?", "#NUM!", "#NULL!"}
 
+
 def _parse_identifier(v):
+    """Legacy helper retained for compatibility; do not use to overwrite source values."""
     if pd.isna(v) or v is None:
         return None
     text = str(v).replace("\xa0", " ").strip()
@@ -25,28 +27,35 @@ def _parse_identifier(v):
 
 
 def _preserve_item_id(v):
-    if v is None or pd.isna(v):
-        return None
-    if isinstance(v, str):
-        return None if v.strip().upper() in EXCEL_ERROR_VALUES or not v.strip() else v
-    text = str(v)
-    if re.fullmatch(r"[+-]?\d+\.0+", text):
-        return text.split(".", 1)[0]
-    return text
+    """Return the source value unchanged.
+
+    Matching/validation must use ``item_key`` instead of rewriting ``item_id``.
+    """
+    return v
 
 
 def make_item_key(v):
+    """Build a normalized technical SKU key without changing the source cell."""
     if v is None or pd.isna(v):
         return None
-    key = str(v).strip().upper()
+    if isinstance(v, str):
+        text = v.strip()
+        if not text or text.upper() in EXCEL_ERROR_VALUES:
+            return None
+    else:
+        text = str(v).strip()
+    # Excel may expose an integral numeric identifier as 12345.0. Normalize only
+    # the technical key; the displayed/source item_id remains untouched.
+    if re.fullmatch(r"[+-]?\d+\.0+", text):
+        text = text.split(".", 1)[0]
+    key = text.upper()
     return key or None
 
 
 def _preserve_channel(v):
-    """Keep KEY Channel/Channel exactly as source text for Excel filtering."""
-    if v is None or pd.isna(v):
-        return None
-    return v if isinstance(v, str) else str(v)
+    """Return KEY Channel/Channel exactly as loaded from the source workbook."""
+    return v
+
 
 def apply_mapping(df: pd.DataFrame, mapping: dict) -> pd.DataFrame:
     canonical_count: dict = {}
@@ -66,38 +75,38 @@ def apply_mapping(df: pd.DataFrame, mapping: dict) -> pd.DataFrame:
                         break
     return df.rename(columns=final_names)
 
+
 def _parse_date(v):
+    """Parse a value for calculations only; never write it back to a source field."""
     if pd.isna(v) or v is None or str(v).strip()=="": return None
     if isinstance(v, pd.Timestamp): return v
     try: return pd.to_datetime(v, dayfirst=False, errors="raise")
-    except:
+    except Exception:
         try: return pd.to_datetime(v, dayfirst=True, errors="raise")
-        except: return None
+        except Exception: return None
+
 
 def _parse_number(v):
+    """Parse a value for calculations only; never write it back to a source field."""
     if pd.isna(v) or v is None or str(v).strip()=="": return None
     if isinstance(v, (int,float)): return float(v)
     cleaned = re.sub(r"[^\d.\-]","",str(v))
     try: return float(cleaned) if cleaned not in ("","-",".") else None
-    except: return None
+    except Exception: return None
+
 
 def clean_values(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-    for col in df.columns:
-        if col in DATE_FIELDS:
-            df[col] = df[col].apply(_parse_date)
-        elif col in NUMBER_FIELDS:
-            df[col] = df[col].apply(_parse_number)
-        elif col == "item_id":
-            df[col] = df[col].apply(_preserve_item_id)
-        elif col in {"key_channel", "channel"}:
-            df[col] = df[col].apply(_preserve_channel)
-        elif col in STRING_FIELDS:
-            df[col] = df[col].apply(_parse_identifier)
-    if "item_id" in df.columns:
-        df["item_key"] = df["item_id"].apply(make_item_key)
-    df = df.reset_index(drop=True)
-    return df
+    """Preserve all mapped source values and add technical matching keys only.
+
+    Previous versions parsed dates/prices and trimmed/coerced strings in-place.
+    That made exported values differ from the uploaded workbook. Business logic
+    already parses dates locally where needed, so canonical source fields can and
+    should remain exactly as loaded by openpyxl.
+    """
+    result = df.copy()
+    if "item_id" in result.columns:
+        result["item_key"] = result["item_id"].apply(make_item_key)
+    return result.reset_index(drop=True)
 
 
 def _attach_default_logical_ids(df: pd.DataFrame) -> pd.DataFrame:
@@ -109,11 +118,14 @@ def _attach_default_logical_ids(df: pd.DataFrame) -> pd.DataFrame:
             result["logical_row_id"] = result["source_row_id"]
     return result
 
+
 def attach_source_sheet(df: pd.DataFrame, sheet_name: str) -> pd.DataFrame:
     df = df.copy(); df["source_sheet"] = sheet_name; return df
 
+
 def attach_pog_snapshot_month(df: pd.DataFrame, month) -> pd.DataFrame:
     df = df.copy(); df["pog_snapshot_month"] = month; return df
+
 
 def unpivot_multi_promo(df: pd.DataFrame, max_slots: int = 5):
     suffix_pat = re.compile(r"^(.+)__(\d+)$")
