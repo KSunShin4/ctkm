@@ -2,6 +2,20 @@ import React from 'react'
 import ReactDOM from 'react-dom/client'
 import App from './App.jsx'
 
+// App.jsx historically checks drag-dropped filenames with a lowercase `.xlsx`
+// suffix. Normalize only that suffix at the File API boundary so `.XLSX` works
+// without changing the large UI component or any non-Excel filename.
+const fileNameDescriptor = Object.getOwnPropertyDescriptor(File.prototype, 'name')
+if (fileNameDescriptor?.get && fileNameDescriptor.configurable) {
+  Object.defineProperty(File.prototype, 'name', {
+    ...fileNameDescriptor,
+    get() {
+      const name = fileNameDescriptor.get.call(this)
+      return /\.xlsx$/i.test(name) ? name.replace(/\.xlsx$/i, '.xlsx') : name
+    },
+  })
+}
+
 // App.jsx historically falls back to the first returned POG sheet. When the
 // backend reports that a workbook has multiple candidate sheets, prepend an
 // empty choice so the existing dropdown requires an explicit user selection.
