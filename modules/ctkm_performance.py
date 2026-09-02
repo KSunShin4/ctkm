@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
-"""Drop-in CTKM performance and presentation patches.
+"""Drop-in CTKM performance, fidelity and presentation patches.
 
-These helpers preserve business semantics while replacing known hot paths and
-making exported action sheets easier for store users to read.
+Source workbook values are immutable. Normalization used for matching or business
+logic is kept in technical keys/local variables and never written back over source
+fields such as item_id, campaign, dates, prices, UoM, KEY Channel or Channel.
 """
 from __future__ import annotations
 
@@ -31,44 +32,27 @@ TECHNICAL_ACTION_COLUMNS = [
 
 
 def preserve_both_channel_mappings(mapping: dict, df: pd.DataFrame, *, normalize_header) -> dict:
-    """Keep KEY Channel and Channel as two independent canonical fields."""
+    """Keep KEY Channel and Channel as two independent source fields."""
     result = dict(mapping)
     normalized_columns = {normalize_header(column): column for column in df.columns}
-
     key_source = normalized_columns.get("key channel")
     raw_source = normalized_columns.get("channel")
     apply_source = normalized_columns.get("kenh ap dung")
 
-    # Remove stale/AI assignments for these exact source columns before forcing
-    # deterministic company-workbook semantics.
     for source in (key_source, raw_source):
         if source is not None:
             result.pop(source, None)
 
     if key_source is not None:
-        result = {
-            source: target for source, target in result.items()
-            if target != "key_channel" or source == key_source
-        }
+        result = {source: target for source, target in result.items() if target != "key_channel"}
         result[key_source] = "key_channel"
 
     if raw_source is not None:
-        result = {
-            source: target for source, target in result.items()
-            if target != "channel" or source == raw_source
-        }
+        result = {source: target for source, target in result.items() if target != "channel"}
         result[raw_source] = "channel"
     elif apply_source is not None:
-        result = {
-            source: target for source, target in result.items()
-            if target != "channel" or source == apply_source
-        }
+        result = {source: target for source, target in result.items() if target != "channel"}
         result[apply_source] = "channel"
-    elif key_source is not None:
-        # Older/alternate files may only have KEY Channel. Preserve it in its own
-        # field and also mirror it to channel only through the normalized frame is
-        # not possible here; exporter still shows KEY Channel explicitly.
-        pass
 
     return result
 
@@ -93,7 +77,6 @@ def prepare_action_sheet_user_first(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def filter_selected_columns_keep_channels(df: pd.DataFrame, selected_columns) -> pd.DataFrame:
-    """Honor user column selection but always keep SKU + both channel columns."""
     if df is None or df.empty:
         return df
     selected_fields = {
@@ -110,8 +93,7 @@ def filter_selected_columns_keep_channels(df: pd.DataFrame, selected_columns) ->
         return base in selected_fields or exact in selected_fields
 
     keep = [column for column in df.columns if matches(column)]
-    mandatory = ["item_id", "key_channel", "channel"]
-    for column in mandatory:
+    for column in ("item_id", "key_channel", "channel"):
         if column in df.columns and column not in keep:
             keep.append(column)
     return df.loc[:, [column for column in keep if column in df.columns]].copy()
@@ -216,6 +198,29 @@ def build_ctkm_clearance_confirmation_fast(df_ctkm, df_clearance, *, make_item_k
     ).reset_index(drop=True)
 
 
+def build_promo_action_source_without_inference(df_ctkm: pd.DataFrame,
+                                                df_clearance: pd.DataFrame | None) -> pd.DataFrame:
+    """Combine CTKM/Clearance without inventing or overwriting any source value."""
+    ctkm = df_ctkm.copy()
+    ctkm["program_source"] = "CTKM"
+    if "source_row_id" in ctkm.columns:
+        ctkm["source_row_id"] = ctkm["source_row_id"].map(
+            lambda value: str(value) if str(value).startswith("CTKM:") else f"CTKM:{value}"
+        )
+    if df_clearance is None or df_clearance.empty:
+        return ctkm
+
+    clearance = df_clearance.copy()
+    clearance["program_source"] = "CLEARANCE"
+    if "source_row_id" in clearance.columns:
+        clearance["source_row_id"] = clearance["source_row_id"].map(
+            lambda value: str(value) if str(value).startswith("CLEARANCE:") else f"CLEARANCE:{value}"
+        )
+    # Deliberately do NOT fill blank campaign_name with "CLEARANCE". A blank
+    # source value stays blank and will be classified into review by reconciler.
+    return pd.concat([ctkm, clearance], ignore_index=True)
+
+
 def install_performance_patches(main_mod) -> None:
     if getattr(main_mod, "_ctkm_performance_patched", False):
         return
@@ -246,7 +251,16 @@ def install_performance_patches(main_mod) -> None:
             action_sheet=action_sheet,
         )
 
+    # KEY Channel participates in duplicate identity and stable promotion IDs,
+    # but its source value is never normalized/rewritten.
+    for constant_name in ("_BUSINESS_COLUMNS", "_PROMOTION_ID_COLUMNS"):
+        columns = getattr(main_mod.RC, constant_name, None)
+        if isinstance(columns, list) and "key_channel" not in columns:
+            channel_index = columns.index("channel") if "channel" in columns else len(columns)
+            columns.insert(channel_index, "key_channel")
+
     main_mod._build_ctkm_clearance_confirmation = confirmation
+    main_mod._build_promo_action_source = build_promo_action_source_without_inference
     main_mod._ensure_channel_mapping = channel_mapping
     main_mod.RC.detect_campaign_time_overlaps = overlap
     main_mod.EX._prepare_action_sheet = prepare_action_sheet_user_first
