@@ -100,7 +100,9 @@ def test_prompt_tells_gemini_to_use_values_not_only_header_names():
     assert "SGPMC047 | HNPMC100" in prompt
 
 
-def test_key_channel_is_preferred_over_ambiguous_channel_column():
+def test_key_channel_and_channel_are_both_preserved():
+    # Runtime installs the fidelity/performance patch before workbook processing.
+    main.L._install_ctkm_performance_patches()
     frame = pd.DataFrame({
         "KEY Channel": ["ALL CHANNEL - EXCEPT MKP"],
         "Channel": ["COMBO ĐI SINH"],
@@ -108,15 +110,32 @@ def test_key_channel_is_preferred_over_ambiguous_channel_column():
 
     mapping = main._ensure_channel_mapping({"Channel": "channel"}, frame)
 
-    assert mapping["KEY Channel"] == "channel"
-    assert "Channel" not in mapping
+    assert mapping["KEY Channel"] == "key_channel"
+    assert mapping["Channel"] == "channel"
 
 
-def test_normalizer_keeps_integral_excel_identifier_as_text():
-    frame = pd.DataFrame({"item_id": [12345.0, "P00123", "#N/A"]})
+def test_normalizer_preserves_source_values_and_uses_separate_item_key():
+    source_date = "01/09/2026 "
+    frame = pd.DataFrame({
+        "item_id": [12345.0, " P00123 ", "#N/A"],
+        "item_name": ["  Tên giữ khoảng trắng  ", "Tên B", "Tên C"],
+        "promo_from": [source_date, "2026-09-02", None],
+        "normal_price": ["12,500 đ", 25000, None],
+        "key_channel": [" ALL ", "OFFLINE", None],
+        "channel": [" Combo Đi Sinh ", "MẸ & BÉ", None],
+    })
 
     result = main.NM.clean_values(frame)
 
-    assert result["item_id"].iloc[:2].tolist() == ["12345", "P00123"]
-    assert pd.isna(result.loc[2, "item_id"])
+    # Source/business cells are byte/value-preserved in the DataFrame.
+    assert result["item_id"].tolist() == frame["item_id"].tolist()
+    assert result["item_name"].tolist() == frame["item_name"].tolist()
+    assert result["promo_from"].tolist() == frame["promo_from"].tolist()
+    assert result["normal_price"].tolist() == frame["normal_price"].tolist()
+    assert result["key_channel"].tolist() == frame["key_channel"].tolist()
+    assert result["channel"].tolist() == frame["channel"].tolist()
+
+    # Only the technical matching key is normalized.
+    assert result.loc[0, "item_key"] == "12345"
+    assert result.loc[1, "item_key"] == "P00123"
     assert pd.isna(result.loc[2, "item_key"])
