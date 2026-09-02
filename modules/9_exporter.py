@@ -31,7 +31,16 @@ _BILINGUAL_HEADERS = {
     "program_source": "Nguồn chương trình (CTKM / Clearance)",
     "ngay_gan_tem": "Ngày bắt đầu gắn tem",
     "ngay_thao_tem": "Ngày bắt đầu tháo tem",
+    "scheduled_action": "Hành động theo lịch (scheduled_action)",
     "action": "Công việc (action)",
+    "reason": "Lý do phân loại (reason)",
+    "task_id": "Mã công việc (task_id)",
+    "source_row_id": "Dòng nguồn chính (source_row_id)",
+    "source_row_ids": "Các dòng nguồn (source_row_ids)",
+    "source_row_count": "Số dòng nguồn (source_row_count)",
+    "duplicate_status": "Trạng thái trùng dòng (duplicate_status)",
+    "pog_position_count": "Số vị trí POG",
+    "pog_month_status": "Tình trạng tháng POG",
     "so_ngay_con_lai": "Số ngày còn lại (công thức)",
     "processing_status": "Đã xử lý (processing_status)",
     "processed_by": "Người thực hiện (processed_by)",
@@ -79,11 +88,13 @@ def _prepare_action_sheet(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or df.empty:
         return df
     preferred = [
-        "item_id", "item_name", "promo_uom", "program_source", "store_id", "channel", "pog_code", "location_id", "facing",
+        "task_id", "item_id", "item_name", "promo_uom", "program_source", "store_id", "channel", "pog_code", "location_id", "facing",
         "location_status", "campaign_name", "campaign_detail", "promo_from", "promo_to",
-        "ngay_gan_tem", "ngay_thao_tem", "so_ngay_con_lai", "action", "processing_status", "processed_by", "processed_at",
+        "normal_price", "promo_price", "product_type", "ngay_gan_tem", "ngay_thao_tem",
+        "so_ngay_con_lai", "scheduled_action", "action", "processing_status", "processed_by", "processed_at",
         "staff_note", "reason", "target_month",
-        "pog_snapshot_month", "source_sheet",
+        "pog_snapshot_month", "pog_month_status", "pog_position_count", "source_sheet",
+        "source_row_id", "source_row_ids", "source_row_count", "duplicate_status",
     ]
     ordered = [col for col in preferred if col in df.columns]
     ordered.extend(col for col in df.columns if col not in ordered)
@@ -140,7 +151,7 @@ def _apply_alternating_shelf_colors(ws, df: pd.DataFrame | None) -> None:
 
 
 def _hide_technical_columns(ws, *, action_sheet: bool = False) -> None:
-    technical_exact = {"reason", "target_month", "source_sheet", "pog_snapshot_month"}
+    technical_exact = {"target_month", "source_sheet", "pog_snapshot_month"}
     for idx, cell in enumerate(ws[1], start=1):
         header = str(cell.value or "")
         normalized_header = _normalize_action_text(header)
@@ -229,8 +240,8 @@ def _configure_confirmation_inputs(ws) -> None:
     ws.protection.sheet = True
 
 
-def _create_guide_sheet(workbook, df_gan, df_thao, df_ctkm_only, summary,
-                        df_confirmation=None) -> None:
+def _create_guide_sheet(workbook, df_gan, df_thao, df_wait, df_review,
+                        df_location_issues, summary, df_confirmation=None) -> None:
     ws = workbook.create_sheet("HƯỚNG DẪN", 0)
     ws.sheet_view.showGridLines = False
     ws.sheet_properties.tabColor = "1F4E78"
@@ -247,10 +258,11 @@ def _create_guide_sheet(workbook, df_gan, df_thao, df_ctkm_only, summary,
     ws["D4"] = "Cách sử dụng"
     ws["D4"].font = Font(bold=True, color="1F4E78")
     instructions = [
-        "1. Mở sheet Gắn tem hoặc Tháo tem.",
+        "1. Mở sheet Gắn tem, Tháo tem, Chờ gắn hoặc Cần review.",
         "2. Tự bật bộ lọc trong Excel và lọc Kênh áp dụng phù hợp; hệ thống không tự loại CTKM Online/Offline.",
         "3. Lọc tiếp theo Cửa hàng → Mã kệ → Vị trí kệ.",
-        "4. Thực hiện tại quầy và cập nhật các ô màu vàng; không sửa ô dữ liệu khác.",
+        "4. POG chỉ cung cấp vị trí; không phản ánh tem đã gắn thực tế hay chưa.",
+        "5. Thực hiện tại quầy và cập nhật các ô màu vàng; không sửa ô dữ liệu khác.",
     ]
     for offset, instruction in enumerate(instructions, start=5):
         ws.cell(offset, 4, instruction)
@@ -258,7 +270,9 @@ def _create_guide_sheet(workbook, df_gan, df_thao, df_ctkm_only, summary,
     cards = [
         ("Gắn tem", len(df_gan) if df_gan is not None else 0, "E2F0D9", "Gắn tem"),
         ("Tháo tem", len(df_thao) if df_thao is not None else 0, "FCE4D6", "Tháo tem"),
-        ("Thiếu vị trí kệ", len(df_ctkm_only) if df_ctkm_only is not None else 0, "FFC7CE", "CTKM thieu vi tri ke"),
+        ("Chờ gắn", len(df_wait) if df_wait is not None else 0, "FFF2CC", "Chờ gắn"),
+        ("Cần review", len(df_review) if df_review is not None else 0, "E4DFEC", "Cần review"),
+        ("Cần kiểm tra vị trí", len(df_location_issues) if df_location_issues is not None else 0, "FFC7CE", "CTKM thieu vi tri ke"),
         ("Xác nhận CTKM / Clearance", len(df_confirmation) if df_confirmation is not None else 0,
          "DDEBF7", "Xác nhận CTKM Clearance"),
     ]
@@ -271,11 +285,11 @@ def _create_guide_sheet(workbook, df_gan, df_thao, df_ctkm_only, summary,
         ws.cell(row_idx, 2, count).fill = PatternFill(fill_type="solid", fgColor=color)
         ws.cell(row_idx, 2).font = Font(size=14, bold=True)
 
-    ws["A11"] = "Chú giải"
-    ws["A11"].font = Font(bold=True, color="1F4E78")
+    ws["A14"] = "Chú giải"
+    ws["A14"].font = Font(bold=True, color="1F4E78")
     legends = [("Xanh", "Cần gắn tem", "E8F5E9"), ("Cam", "Cần tháo tem", "FFF3E0"),
-               ("Đỏ", "Thiếu vị trí kệ", "FFC7CE"), ("Vàng", "Ô dược sĩ được nhập", "FFF2CC")]
-    for row_idx, (label, meaning, color) in enumerate(legends, start=12):
+               ("Đỏ", "Cần kiểm tra vị trí", "FFC7CE"), ("Vàng", "Ô dược sĩ được nhập", "FFF2CC")]
+    for row_idx, (label, meaning, color) in enumerate(legends, start=15):
         ws.cell(row_idx, 1, label).fill = PatternFill(fill_type="solid", fgColor=color)
         ws.cell(row_idx, 2, meaning)
     for col, width in {"A": 24, "B": 22, "C": 4, "D": 48, "E": 16, "F": 16}.items():
@@ -318,7 +332,8 @@ def _apply_professional_style(ws, sheet_name: str, df: pd.DataFrame | None = Non
     alt_fill = PatternFill(fill_type="solid", fgColor="F7F9FC")
     accent_fill = PatternFill(fill_type="solid", fgColor="EAF7EA")
 
-    ws.freeze_panes = "C2" if sheet_name in {"Gắn tem", "Tháo tem"} else "A2"
+    action_sheet_names = {"Gắn tem", "Tháo tem", "Chờ gắn", "Cần review"}
+    ws.freeze_panes = "C2" if sheet_name in action_sheet_names else "A2"
     # Không ghi AutoFilter vào file xuất. Một số phiên bản Excel xử lý vùng lọc
     # do openpyxl tạo không ổn định; người dùng sẽ tự bật bộ lọc khi cần.
     ws.auto_filter.ref = None
@@ -367,7 +382,7 @@ def _apply_professional_style(ws, sheet_name: str, df: pd.DataFrame | None = Non
                         except Exception:
                             pass
 
-    if sheet_name in {"Gắn tem", "Tháo tem"}:
+    if sheet_name in action_sheet_names:
         ws.sheet_properties.tabColor = "2E7D32"
         action_col_idx = None
         for idx, header in enumerate([ws.cell(row=1, column=i).value for i in range(1, max_col + 1)], start=1):
@@ -389,16 +404,19 @@ def _apply_professional_style(ws, sheet_name: str, df: pd.DataFrame | None = Non
             status_col_idx = headers.index("location_status") + 1
             for row_idx in range(2, max_row + 1):
                 status_cell = ws.cell(row=row_idx, column=status_col_idx)
-                if isinstance(status_cell.value, str) and "thiếu" in status_cell.value.lower():
+                if isinstance(status_cell.value, str) and status_cell.value != "Đủ vị trí":
                     status_cell.fill = PatternFill(fill_type="solid", fgColor="FFC7CE")
                     status_cell.font = Font(bold=True, color="9C0006")
 
     color_map = {
         "Tong hop": "4F81BD",
         "CTKM thieu vi tri ke": "C0504D",
-        "Len ke thieu CTKM": "9BBB59",
         "Gắn tem": "2E7D32",
         "Tháo tem": "F28C00",
+        "Chờ gắn": "C79B00",
+        "Cần review": "7030A0",
+        "Audit hành động": "5B5EA6",
+        "POG không có CTKM": "9BBB59",
         "Canh bao trung thoi gian": "C79B00",
         "Xác nhận CTKM Clearance": "00A6A6",
         "Mapping log": "5B5EA6",
@@ -427,32 +445,58 @@ def export_final_report(output_path, df_matched, df_ctkm_only, df_pog_only,
     for frame in (df_matched, df_ctkm_only, df_pog_only):
         if frame is not None and "channel" not in frame.columns:
             frame["channel"] = ""
-    if df_pog_only is not None and "channel" in df_pog_only.columns:
-        # Sheet này không có bản ghi CTKM tương ứng nên không thể có kênh áp dụng.
-        # Ghi rõ trạng thái thay vì để ô trống khiến người dùng tưởng thiếu cột.
-        blank_channel = df_pog_only["channel"].isna() | df_pog_only["channel"].astype(str).str.strip().eq("")
-        df_pog_only.loc[blank_channel, "channel"] = "KHÔNG CÓ CTKM"
     df_matched = _filter_selected_columns(df_matched, selected_output_columns)
     df_ctkm_only = _filter_selected_columns(df_ctkm_only, selected_output_columns)
     df_pog_only = _filter_selected_columns(df_pog_only, selected_output_columns)
     if df_fefo_actions is not None and not df_fefo_actions.empty:
         # Không lọc theo channel: giữ nguyên mọi kênh để người dùng tự quyết định
         # bằng bộ lọc Excel, tránh bỏ sót do tên kênh không đồng nhất trong file công ty.
-        action_norm = df_fefo_actions["action"].apply(_normalize_action_text)
-        df_fefo_gan = df_fefo_actions[action_norm.isin({"gan tem", "gan tem fefo"})].copy()
-        df_fefo_thao = df_fefo_actions[action_norm.isin({"thao tem", "thao tem fefo", "thao rem fefo"})].copy()
+        df_action_audit = df_fefo_actions.copy()
+        in_scope = (
+            df_action_audit["in_report_scope"].fillna(False).astype(bool)
+            if "in_report_scope" in df_action_audit.columns
+            else pd.Series(True, index=df_action_audit.index)
+        )
+        action_field = "scheduled_action" if "scheduled_action" in df_action_audit.columns else "action"
+        action_norm = df_action_audit[action_field].apply(_normalize_action_text)
+        df_fefo_gan = df_action_audit[
+            in_scope & action_norm.isin({"gan tem", "gan tem fefo"})
+        ].copy()
+        df_fefo_thao = df_action_audit[
+            in_scope & action_norm.isin({"thao tem", "thao tem fefo", "thao rem fefo"})
+        ].copy()
+        df_fefo_wait = df_action_audit[in_scope & action_norm.eq("cho gan tem")].copy()
+        df_fefo_review = df_action_audit[in_scope & action_norm.eq("review")].copy()
+        if "location_status" in df_action_audit.columns:
+            df_location_issues = df_action_audit[
+                in_scope & ~df_action_audit["location_status"].eq("Đủ vị trí")
+            ].copy()
+        else:
+            df_location_issues = pd.DataFrame(columns=df_action_audit.columns)
     else:
-        df_fefo_gan = pd.DataFrame(columns=["item_id", "item_name", "promo_uom", "program_source", "campaign_name", "campaign_detail",
-                                            "promo_from", "promo_to", "channel", "source_sheet",
-                                            "action", "reason", "target_month"])
+        action_columns = [
+            "task_id", "item_id", "item_name", "promo_uom", "program_source",
+            "campaign_name", "campaign_detail", "promo_from", "promo_to",
+            "normal_price", "promo_price", "channel", "product_type", "source_sheet",
+            "scheduled_action", "action", "reason", "target_month", "location_status",
+        ]
+        df_action_audit = pd.DataFrame(columns=action_columns)
+        df_fefo_gan = df_action_audit.copy()
         df_fefo_thao = df_fefo_gan.copy()
+        df_fefo_wait = df_fefo_gan.copy()
+        df_fefo_review = df_fefo_gan.copy()
+        df_location_issues = df_fefo_gan.copy()
 
-    for df in (df_fefo_gan, df_fefo_thao):
+    for df in (df_fefo_gan, df_fefo_thao, df_fefo_wait, df_fefo_review):
         if df is not None and "so_ngay_con_lai" not in df.columns:
             df["so_ngay_con_lai"] = ""
 
     df_fefo_gan = _prepare_action_sheet(_add_work_tracking_columns(df_fefo_gan))
     df_fefo_thao = _prepare_action_sheet(_add_work_tracking_columns(df_fefo_thao))
+    df_fefo_wait = _prepare_action_sheet(_add_work_tracking_columns(df_fefo_wait))
+    df_fefo_review = _prepare_action_sheet(_add_work_tracking_columns(df_fefo_review))
+    df_location_issues = _prepare_action_sheet(df_location_issues)
+    df_action_audit = _prepare_action_sheet(df_action_audit)
 
     if overlap_warnings:
         pair_rows = [{
@@ -474,10 +518,13 @@ def export_final_report(output_path, df_matched, df_ctkm_only, df_pog_only,
 
     with pd.ExcelWriter(output_path, engine="openpyxl") as w:
         _safe(df_matched,   "Khong co dong nao co ca CTKM va vi tri ke.").to_excel(w, sheet_name="Tong hop", index=False)
-        _safe(df_ctkm_only, "Khong co CTKM nao thieu vi tri ke.").to_excel(w, sheet_name="CTKM thieu vi tri ke", index=False)
-        _safe(df_pog_only,  "Khong co vi tri ke nao thieu CTKM.").to_excel(w, sheet_name="Len ke thieu CTKM", index=False)
+        _safe(df_location_issues, "Không có công việc nào cần kiểm tra vị trí POG.").to_excel(w, sheet_name="CTKM thieu vi tri ke", index=False)
+        _safe(df_pog_only,  "Không có SKU POG nào thiếu CTKM phù hợp trong dữ liệu/tháng đang xét.").to_excel(w, sheet_name="POG không có CTKM", index=False)
         _safe(df_fefo_gan,  "Không có CTKM cần gắn tem.").to_excel(w, sheet_name="Gắn tem", index=False)
         _safe(df_fefo_thao, "Không có CTKM cần tháo tem.").to_excel(w, sheet_name="Tháo tem", index=False)
+        _safe(df_fefo_wait, "Không có CTKM đang chờ đến ngày gắn.").to_excel(w, sheet_name="Chờ gắn", index=False)
+        _safe(df_fefo_review, "Không có CTKM cần review.").to_excel(w, sheet_name="Cần review", index=False)
+        _safe(df_action_audit, "Không có dữ liệu hành động để audit.").to_excel(w, sheet_name="Audit hành động", index=False)
         df_ov.to_excel(w, sheet_name="Canh bao trung thoi gian", index=False)
         _safe(
             df_ctkm_clearance_confirmation,
@@ -486,6 +533,8 @@ def export_final_report(output_path, df_matched, df_ctkm_only, df_pog_only,
 
         _add_remaining_days_formula(w.sheets["Gắn tem"], df_fefo_gan, "so_ngay_con_lai")
         _add_remaining_days_formula(w.sheets["Tháo tem"], df_fefo_thao, "so_ngay_con_lai")
+        _add_remaining_days_formula(w.sheets["Chờ gắn"], df_fefo_wait, "so_ngay_con_lai")
+        _add_remaining_days_formula(w.sheets["Cần review"], df_fefo_review, "so_ngay_con_lai")
 
         if mapping_logs:
             rows = []
@@ -510,16 +559,19 @@ def export_final_report(output_path, df_matched, df_ctkm_only, df_pog_only,
 
         # Tao trang bat dau danh cho nguoi thao tac, sau khi tat ca sheet dich da co.
         _create_guide_sheet(
-            w.book, df_fefo_gan, df_fefo_thao, df_ctkm_only,
-            reconciliation_summary, df_ctkm_clearance_confirmation,
+            w.book, df_fefo_gan, df_fefo_thao, df_fefo_wait, df_fefo_review,
+            df_location_issues, reconciliation_summary, df_ctkm_clearance_confirmation,
         )
 
         sheet_frames = [
             ("Tong hop", df_matched),
-            ("CTKM thieu vi tri ke", df_ctkm_only),
-            ("Len ke thieu CTKM", df_pog_only),
+            ("CTKM thieu vi tri ke", df_location_issues),
+            ("POG không có CTKM", df_pog_only),
             ("Gắn tem", df_fefo_gan),
             ("Tháo tem", df_fefo_thao),
+            ("Chờ gắn", df_fefo_wait),
+            ("Cần review", df_fefo_review),
+            ("Audit hành động", df_action_audit),
             ("Canh bao trung thoi gian", df_ov),
             ("Xác nhận CTKM Clearance", df_ctkm_clearance_confirmation),
             ("Mapping log", None),
@@ -534,7 +586,7 @@ def export_final_report(output_path, df_matched, df_ctkm_only, df_pog_only,
             if sheet_name in w.sheets:
                 _apply_alternating_shelf_colors(w.sheets[sheet_name], df)
 
-        for action_sheet in ["Gắn tem", "Tháo tem"]:
+        for action_sheet in ["Gắn tem", "Tháo tem", "Chờ gắn", "Cần review"]:
             _configure_action_inputs(w.sheets[action_sheet])
         _configure_confirmation_inputs(w.sheets["Xác nhận CTKM Clearance"])
 
@@ -543,14 +595,17 @@ def export_final_report(output_path, df_matched, df_ctkm_only, df_pog_only,
             if sheet_name not in w.sheets:
                 continue
             ws = w.sheets[sheet_name]
-            _hide_technical_columns(ws, action_sheet=sheet_name in {"Gắn tem", "Tháo tem"})
+            _hide_technical_columns(
+                ws, action_sheet=sheet_name in {"Gắn tem", "Tháo tem", "Chờ gắn", "Cần review"},
+            )
             if sheet_name not in {"Mapping log", "Tom tat", "Canh bao trung thoi gian"}:
                 _apply_bilingual_headers(ws)
 
         # Thu tu uu tien cong viec tai quay; cac sheet ky thuat van duoc giu lai.
         preferred_order = [
-            "HƯỚNG DẪN", "Gắn tem", "Tháo tem", "CTKM thieu vi tri ke",
-            "Tong hop", "Len ke thieu CTKM", "Canh bao trung thoi gian",
+            "HƯỚNG DẪN", "Gắn tem", "Tháo tem", "Chờ gắn", "Cần review",
+            "CTKM thieu vi tri ke", "Tong hop", "POG không có CTKM",
+            "Audit hành động", "Canh bao trung thoi gian",
             "Xác nhận CTKM Clearance", "Tom tat", "Mapping log",
         ]
         w.book._sheets = [w.book[name] for name in preferred_order if name in w.book.sheetnames]

@@ -220,16 +220,29 @@ def _build_ctkm_clearance_confirmation(df_ctkm: pd.DataFrame,
     columns = [
         "item_id", "item_name", "promo_uom", "campaign_name", "campaign_detail",
         "promo_from", "promo_to", "channel", "normal_price", "promo_price",
-        "source_sheet",
+        "product_type", "source_sheet",
     ]
 
     def tagged(frame: pd.DataFrame, source: str) -> pd.DataFrame:
         result = frame.copy()
+        existing_row_ids = (
+            result["source_row_id"].copy()
+            if "source_row_id" in result.columns
+            else pd.Series(pd.NA, index=result.index)
+        )
         for column in columns:
             if column not in result.columns:
                 result[column] = pd.NA
         result = result.loc[:, columns]
         result.insert(0, "nguon_chuong_trinh", source)
+        row_ids = []
+        for position, (sheet, existing) in enumerate(
+            zip(result["source_sheet"], existing_row_ids), start=2,
+        ):
+            fallback = f"{'Sheet1' if pd.isna(sheet) or not str(sheet).strip() else str(sheet)}:{position}"
+            raw = fallback if pd.isna(existing) or not str(existing).strip() else str(existing).strip()
+            row_ids.append(raw if raw.startswith(f"{source}:") else f"{source}:{raw}")
+        result["source_row_id"] = row_ids
         return result
 
     ctkm = tagged(df_ctkm, "CTKM")
@@ -249,6 +262,35 @@ def _build_ctkm_clearance_confirmation(df_ctkm: pd.DataFrame,
             for item, source in zip(item_keys, result["nguon_chuong_trinh"])
         ])
 
+    def time_relation(row):
+        both_items = both if df_clearance is not None and not df_clearance.empty else set()
+        raw_item = row.get("item_id")
+        item = "" if pd.isna(raw_item) else str(raw_item).strip()
+        if not item or item not in both_items:
+            return "Không có nguồn còn lại để đối chiếu"
+        other_source = "CLEARANCE" if row["nguon_chuong_trinh"] == "CTKM" else "CTKM"
+        candidates = result[
+            result["item_id"].fillna("").astype(str).str.strip().eq(item)
+            & result["nguon_chuong_trinh"].eq(other_source)
+        ]
+        row_from = pd.to_datetime(row.get("promo_from"), errors="coerce")
+        row_to = pd.to_datetime(row.get("promo_to"), errors="coerce")
+        if pd.isna(row_from) or pd.isna(row_to):
+            return "Thiếu ngày - cần xác nhận"
+        relation = "Khác thời gian"
+        for _, candidate in candidates.iterrows():
+            other_from = pd.to_datetime(candidate.get("promo_from"), errors="coerce")
+            other_to = pd.to_datetime(candidate.get("promo_to"), errors="coerce")
+            if pd.isna(other_from) or pd.isna(other_to):
+                continue
+            if row_from == other_from and row_to == other_to:
+                return "Trùng thời gian - cần xác nhận"
+            if row_from <= other_to and other_from <= row_to:
+                relation = "Chồng lấn thời gian - cần xác nhận"
+        return relation
+
+    result["quan_he_thoi_gian"] = result.apply(time_relation, axis=1)
+
     result.insert(2, "xac_nhan_ap_dung", "Chưa xác nhận")
     result.insert(3, "ghi_chu_xac_nhan", "")
     return result.sort_values(
@@ -259,17 +301,22 @@ def _build_ctkm_clearance_confirmation(df_ctkm: pd.DataFrame,
 
 def _build_promo_action_source(df_ctkm: pd.DataFrame,
                                df_clearance: pd.DataFrame | None) -> pd.DataFrame:
-    """CTKM day du + chi cac ma Clearance khong ton tai trong CTKM."""
+    """Giữ đầy đủ CTKM và Clearance; không loại dữ liệu chỉ vì trùng SKU."""
     ctkm = df_ctkm.copy()
     ctkm["program_source"] = "CTKM"
+    if "source_row_id" in ctkm.columns:
+        ctkm["source_row_id"] = ctkm["source_row_id"].map(
+            lambda value: str(value) if str(value).startswith("CTKM:") else f"CTKM:{value}"
+        )
     if df_clearance is None or df_clearance.empty:
         return ctkm
 
     clearance = df_clearance.copy()
     clearance["program_source"] = "CLEARANCE"
-    ctkm_items = set(ctkm["item_id"].dropna().astype(str).str.strip().str.upper())
-    clearance_keys = clearance["item_id"].fillna("").astype(str).str.strip().str.upper()
-    clearance = clearance.loc[~clearance_keys.isin(ctkm_items)].copy()
+    if "source_row_id" in clearance.columns:
+        clearance["source_row_id"] = clearance["source_row_id"].map(
+            lambda value: str(value) if str(value).startswith("CLEARANCE:") else f"CLEARANCE:{value}"
+        )
     if "campaign_name" not in clearance.columns:
         clearance["campaign_name"] = "CLEARANCE"
     else:
@@ -281,6 +328,8 @@ def _build_promo_action_source(df_ctkm: pd.DataFrame,
     return pd.concat([ctkm, clearance], ignore_index=True)
 
 def _process(sheet_name, df, schema_section, mapping_logs, is_fact, all_warnings, mapping_override=None):
+    df = df.copy()
+    source_row_ids = [f"{sheet_name}:{position}" for position in range(2, len(df) + 2)]
     if mapping_override:
         result = _build_manual_mapping_result(sheet_name, mapping_override, df, schema_section)
         mapping_logs.append({**MC.mapping_result_to_dict_safe(result), "sheet_name": sheet_name})
@@ -291,6 +340,7 @@ def _process(sheet_name, df, schema_section, mapping_logs, is_fact, all_warnings
         mapping = _ensure_channel_mapping(mapping, df)
         mapping = _ensure_promo_uom_mapping(mapping, df)
     df = NM.apply_mapping(df, mapping)
+    df["source_row_id"] = source_row_ids
     df = NM.clean_values(df)
     if is_fact:
         df, unpivot_warns = NM.unpivot_multi_promo(df)
@@ -304,7 +354,8 @@ def run_pipeline(ctkm_filepath, pog_filepath, target_month, output_path,
                  ctkm_mapping_override=None, pog_mapping_override=None,
                  selected_output_columns=None, pog_sheet_name=None,
                  clearance_filepath=None, clearance_sheet_name=None,
-                 clearance_mapping_override=None) -> PipelineResult:
+                 clearance_mapping_override=None,
+                 business_date=None) -> PipelineResult:
     warnings, mapping_logs = [], []
 
     # --- Buoc 1: Load ---
@@ -384,7 +435,8 @@ def run_pipeline(ctkm_filepath, pog_filepath, target_month, output_path,
     # --- Buoc 8a: Quet overlap va tao thao tac tem tren CTKM + Clearance ---
     overlap_warns = RC.detect_campaign_time_overlaps(df_promo_for_actions)
     df_fefo_actions = RC.build_fefo_action_frame(
-        df_promo_for_actions, target_month, df_pog
+        df_promo_for_actions, target_month, df_pog,
+        business_date=business_date, overlap_warnings=overlap_warns,
     )
 
     # --- Buoc 6: Kiem tra lech thang + loc ---
@@ -393,15 +445,15 @@ def run_pipeline(ctkm_filepath, pog_filepath, target_month, output_path,
         if fail_on_month_mismatch:
             raise ValueError(alignment.warning_message)
         warnings.append(alignment.warning_message)
-    _df_all, df_ctkm_strict = TF.filter_ctkm_by_month(df_ctkm_all, target_month)
+    _df_ctkm_relevant, df_ctkm_strict = TF.filter_ctkm_by_month(df_ctkm_all, target_month)
     if df_clearance_all is not None:
-        _clearance_all, df_clearance_strict = TF.filter_ctkm_by_month(
+        _df_clearance_relevant, df_clearance_strict = TF.filter_ctkm_by_month(
             df_clearance_all, target_month
         )
     else:
         df_clearance_strict = None
     df_confirmation = _build_ctkm_clearance_confirmation(
-        df_ctkm_strict, df_clearance_strict
+        df_ctkm_all, df_clearance_all
     )
 
     # --- Buoc 7: Join ---
@@ -413,16 +465,25 @@ def run_pipeline(ctkm_filepath, pog_filepath, target_month, output_path,
     report = RC.build_reconciliation_report(
         join_result.df_matched, join_result.df_ctkm_only, join_result.df_pog_only, overlap_warns)
 
+    if "in_report_scope" in df_fefo_actions.columns:
+        actions_in_scope = df_fefo_actions[df_fefo_actions["in_report_scope"].fillna(False)].copy()
+    else:
+        actions_in_scope = df_fefo_actions
+    location_issue_mask = ~actions_in_scope.get(
+        "location_status", pd.Series("Đủ vị trí", index=actions_in_scope.index)
+    ).eq("Đủ vị trí")
+    location_issues = actions_in_scope[location_issue_mask]
+
     summary = {
         "Thang bao cao":                    target_month,
         "Thang snapshot POG":               pog_snapshot_month or "(khong xac dinh duoc)",
         "So dong khop (Matched)":           report.matched_count,
         "So item duy nhat khop":            report.matched_unique_items,
-        "So dong CTKM thieu vi tri ke":     report.ctkm_only_count,
-        "So item CTKM thieu vi tri ke":     report.ctkm_only_unique_items,
+        "So dong CTKM thieu vi tri ke":     len(location_issues),
+        "So item CTKM thieu vi tri ke":     location_issues["item_id"].nunique() if "item_id" in location_issues else 0,
         "  Trong do CTKM theo hoa don":     report.non_sku_ctkm_count,
-        "So dong len ke thieu CTKM":        report.pog_only_count,
-        "So item len ke thieu CTKM":        report.pog_only_unique_items,
+        "So dong POG khong co CTKM phu hop": report.pog_only_count,
+        "So item POG khong co CTKM phu hop": report.pog_only_unique_items,
         "So canh bao trung thoi gian":      len({warning.item_id for warning in overlap_warns}),
         "So dong Clearance":                0 if df_clearance_strict is None else len(df_clearance_strict),
         "So item trung CTKM va Clearance":  0 if df_clearance_strict is None else len(
@@ -430,8 +491,11 @@ def run_pipeline(ctkm_filepath, pog_filepath, target_month, output_path,
             & set(df_clearance_strict["item_id"].dropna().astype(str).str.strip())
         ),
         "So dong tem tu Clearance":         int(
-            (df_fefo_actions.get("program_source", pd.Series(dtype=str)) == "CLEARANCE").sum()
+            (actions_in_scope.get("program_source", pd.Series(dtype=str)) == "CLEARANCE").sum()
         ),
+        "So dong cho gan":                  int((actions_in_scope.get("scheduled_action", pd.Series(dtype=str)) == "chờ gắn tem").sum()),
+        "So dong can review":               int((actions_in_scope.get("scheduled_action", pd.Series(dtype=str)) == "review").sum()),
+        "So dong can kiem tra vi tri":       len(location_issues),
     }
 
     # --- Buoc 9: Export ---
@@ -462,6 +526,8 @@ def _cli():
     p.add_argument("--output",       default=None)
     p.add_argument("--strict-month", action="store_true",
                    help="Dung pipeline ngay neu lech thang POG/CTKM (mac dinh: chi canh bao)")
+    p.add_argument("--business-date", default=None,
+                   help="Ngay nghiep vu YYYY-MM-DD (mac dinh: ngay hien tai theo gio VN)")
     args = p.parse_args()
     if not args.ctkm_sheet:
         wb_ctkm = L.load_workbook_raw(args.ctkm, is_pog_file=False)
@@ -479,7 +545,7 @@ def _cli():
     result = run_pipeline(
         args.ctkm, args.pog, args.month, out, args.strict_month, args.ctkm_sheet,
         pog_sheet_name=None, clearance_filepath=args.clearance,
-        clearance_sheet_name=args.clearance_sheet,
+        clearance_sheet_name=args.clearance_sheet, business_date=args.business_date,
     )
     print(f"Da xuat: {result.output_filepath}")
     for w in result.warnings: print(f"CANH BAO: {w}")

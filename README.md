@@ -118,6 +118,7 @@ result = run_pipeline(
     ctkm_filepath = "file_ctkm_thang5.xlsx",
     pog_filepath  = "file_pog_thang5.xlsx",
     target_month  = "2026-05",          # frontend truyền vào
+    business_date = "2026-05-15",       # tùy chọn; mặc định là ngày hiện tại theo giờ VN
     output_path   = "output/ket_qua.xlsx",
     fail_on_month_mismatch = False,     # True = dừng cứng nếu lệch tháng
 )
@@ -129,18 +130,21 @@ print(result.summary)           # dict số liệu tổng quan
 
 ---
 
-## File kết quả Excel (7 sheet)
+## File kết quả Excel
 
 | Sheet | Nội dung |
 |---|---|
-| `Tong hop` | CTKM có vị trí kệ — sẵn sàng in tem |
-| `CTKM thieu vi tri ke` | Có KM nhưng không tìm thấy trên kệ tháng đó |
-| `Len ke thieu CTKM` | Có vị trí kệ nhưng không có KM — kiểm tra tem nhầm |
-| `Canh bao trung thoi gian` | Campaign chồng ngày nhau cùng 1 item |
+| `Tong hop` | CTKM phù hợp phạm vi tháng và có vị trí POG để đối chiếu |
+| `CTKM thieu vi tri ke` | Các công việc cần kiểm tra vị trí POG; hành động theo lịch vẫn được giữ nguyên |
+| `POG không có CTKM` | SKU có trên POG nhưng không có CTKM phù hợp trong dữ liệu/tháng đang xét — cần kiểm tra |
+| `Canh bao trung thoi gian` | Campaign chồng ngày nhau cùng SKU; các dòng liên quan đồng thời nằm trong `Cần review` |
 | `Mapping log` | Gemini map cột nào, confidence bao nhiêu — để audit |
 | `Tom tat` | Số liệu tổng + cảnh báo lệch tháng POG/CTKM |
 | `Gắn tem` | Danh sách CTKM cần gắn tem, kèm vị trí kệ |
 | `Tháo tem` | Danh sách CTKM cần tháo tem, kèm vị trí kệ |
+| `Chờ gắn` | CTKM chưa đến ngày gắn theo ngày nghiệp vụ |
+| `Cần review` | Dòng thiếu/sai ngày hoặc có xung đột cần người dùng xác nhận |
+| `Audit hành động` | Toàn bộ dữ liệu hành động, kể cả dòng ngoài phạm vi tháng, kèm lineage |
 
 ---
 

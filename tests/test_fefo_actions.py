@@ -19,8 +19,8 @@ build_fefo_action_frame = _reconciler.build_fefo_action_frame
 detect_campaign_time_overlaps = _reconciler.detect_campaign_time_overlaps
 
 
-def test_build_fefo_action_frame_uses_current_date():
-    today = pd.Timestamp.today().normalize()
+def test_build_fefo_action_frame_uses_injected_business_date():
+    today = pd.Timestamp("2026-08-15")
     df = pd.DataFrame(
         [
             {
@@ -40,16 +40,16 @@ def test_build_fefo_action_frame_uses_current_date():
         ]
     )
 
-    result = build_fefo_action_frame(df, "2026-07")
+    result = build_fefo_action_frame(df, "2026-08", business_date=today)
 
     assert list(result["item_id"]) == ["P1001", "P1002"]
     assert list(result["action"]) == ["gắn tem", "tháo tem"]
-    assert result.loc[0, "reason"] == "promo_dang_ap_dung_hom_nay"
-    assert result.loc[1, "reason"] == "promo_het_han_truoc_hom_nay"
+    assert result.loc[0, "reason"] == "trong_thoi_gian_ap_dung"
+    assert result.loc[1, "reason"] == "den_ngay_thao"
 
 
 def test_build_fefo_action_frame_keeps_same_campaign_for_different_channels():
-    today = pd.Timestamp.today().normalize()
+    today = pd.Timestamp("2026-08-15")
     df = pd.DataFrame([
         {
             "item_id": "P1001", "campaign_name": "FULL MONTH",
@@ -65,13 +65,13 @@ def test_build_fefo_action_frame_keeps_same_campaign_for_different_channels():
         },
     ])
 
-    result = build_fefo_action_frame(df, "2026-08")
+    result = build_fefo_action_frame(df, "2026-08", business_date=today)
 
     assert result["channel"].tolist() == ["OFFLINE", "WEBAPP"]
 
 
 def test_build_fefo_action_frame_keeps_different_campaign_details():
-    today = pd.Timestamp.today().normalize()
+    today = pd.Timestamp("2026-08-15")
     df = pd.DataFrame([
         {
             "item_id": "P1001", "campaign_name": "COMBO", "channel": "OFFLINE",
@@ -87,7 +87,7 @@ def test_build_fefo_action_frame_keeps_different_campaign_details():
         },
     ])
 
-    result = build_fefo_action_frame(df, "2026-08")
+    result = build_fefo_action_frame(df, "2026-08", business_date=today)
 
     assert result["campaign_detail"].tolist() == [
         "Combo Mẹ tròn - Con vuông", "Combo Đón Thiên Thần Nhỏ",
@@ -95,7 +95,7 @@ def test_build_fefo_action_frame_keeps_different_campaign_details():
 
 
 def test_build_fefo_action_frame_keeps_promo_uom_from_company_ctkm():
-    today = pd.Timestamp.today().normalize()
+    today = pd.Timestamp("2026-08-15")
     df = pd.DataFrame([{
         "item_id": "P1001", "item_name": "Thuốc A", "promo_uom": "Hộp",
         "campaign_name": "FULL MONTH", "campaign_detail": "Giảm 10%",
@@ -103,19 +103,23 @@ def test_build_fefo_action_frame_keeps_promo_uom_from_company_ctkm():
         "promo_to": today + pd.Timedelta(days=1),
     }])
 
-    result = build_fefo_action_frame(df, "2026-08")
+    result = build_fefo_action_frame(df, "2026-08", business_date=today)
 
     assert result.loc[0, "promo_uom"] == "Hộp"
 
 
-def test_overlap_warning_ignores_disjoint_online_and_offline_channels():
+def test_overlap_warning_does_not_suppress_different_channels():
     period = {"promo_from": pd.Timestamp("2026-08-01"), "promo_to": pd.Timestamp("2026-08-31")}
     df = pd.DataFrame([
         {"item_id": "P1001", "campaign_name": "Store", "channel": "OFFLINE", **period},
         {"item_id": "P1001", "campaign_name": "Web", "channel": "WEBAPP", **period},
     ])
 
-    assert detect_campaign_time_overlaps(df) == []
+    warnings = detect_campaign_time_overlaps(df)
+
+    assert len(warnings) == 1
+    assert warnings[0].channel_a == "OFFLINE"
+    assert warnings[0].channel_b == "WEBAPP"
 
 
 def test_overlap_warning_keeps_channels_that_can_apply_together():

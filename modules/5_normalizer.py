@@ -27,6 +27,13 @@ def _parse_identifier(v):
         text = text.split(".", 1)[0]
     return text
 
+
+def _preserve_channel(v):
+    """Keep the source channel verbatim; users decide channel scope in Excel."""
+    if v is None or pd.isna(v):
+        return None
+    return v if isinstance(v, str) else str(v)
+
 def apply_mapping(df: pd.DataFrame, mapping: dict) -> pd.DataFrame:
     """
     Doi ten cot theo mapping. Neu nhieu cot goc cung map ve 1 canonical field,
@@ -71,6 +78,8 @@ def clean_values(df: pd.DataFrame) -> pd.DataFrame:
             df[col] = df[col].apply(_parse_date)
         elif col in NUMBER_FIELDS:
             df[col] = df[col].apply(_parse_number)
+        elif col == "channel":
+            df[col] = df[col].apply(_preserve_channel)
         elif col in STRING_FIELDS:
             df[col] = df[col].apply(_parse_identifier)
     if "item_id" in df.columns:

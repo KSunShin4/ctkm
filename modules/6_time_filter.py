@@ -55,10 +55,27 @@ def filter_ctkm_by_month(df_ctkm, target_month):
         )
     ms, me = get_month_bounds(target_month)
     df = df_ctkm.copy()
-    has_dates = df["promo_from"].notna() & df["promo_to"].notna()
-    overlap   = has_dates & (df["promo_from"] <= me) & (df["promo_to"] >= ms)
-    missing   = ~has_dates
-    df_strict = df[overlap].copy()
-    df_all    = df[overlap | missing].copy()
-    df_all["_missing_date_info"] = missing[overlap | missing]
+    promo_from = pd.to_datetime(df["promo_from"], errors="coerce")
+    promo_to = pd.to_datetime(df["promo_to"], errors="coerce")
+    has_dates = promo_from.notna() & promo_to.notna()
+    valid_period = has_dates & (promo_from <= promo_to)
+    overlap = valid_period & (promo_from <= me) & (promo_to >= ms)
+    remove_date = promo_to + pd.Timedelta(days=1)
+    removal_in_month = valid_period & remove_date.between(ms, me, inclusive="both")
+    missing = ~has_dates
+    invalid_period = has_dates & ~valid_period
+    operational = overlap | removal_in_month
+    relevant = operational | missing | invalid_period
+
+    df_strict = df[operational].copy().reset_index(drop=True)
+    relevant_index = df.index[relevant]
+    df_all = df.loc[relevant_index].copy().reset_index(drop=True)
+    df_all["_missing_date_info"] = missing.loc[relevant_index].to_numpy()
+    df_all["_month_scope_reason"] = [
+        "thieu_ngay_giu_de_review" if missing.at[idx]
+        else "ngay_khong_hop_le_giu_de_review" if invalid_period.at[idx]
+        else "ngay_thao_trong_thang" if removal_in_month.at[idx] and not overlap.at[idx]
+        else "ctkm_ap_dung_trong_thang"
+        for idx in relevant_index
+    ]
     return df_all, df_strict

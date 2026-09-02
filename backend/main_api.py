@@ -536,6 +536,7 @@ async def enqueue_ctkm(
     ctkm_mapping_override: Optional[str] = Form(None),
     pog_mapping_override: Optional[str] = Form(None),
     selected_output_columns: Optional[str] = Form(None),
+    business_date: Optional[str] = Form(None),
     mapping_mode: str = Form("auto"), _admin: str = Depends(require_admin),
 ):
     import re
@@ -608,6 +609,7 @@ async def enqueue_ctkm(
                 pog_sheet_name,
                 str(clearance_path) if clearance_content is not None else None,
                 clearance_sheet_name,
+                business_date=business_date,
             )
             return result.summary, result.warnings
         finally:

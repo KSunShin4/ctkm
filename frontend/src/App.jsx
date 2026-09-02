@@ -1209,7 +1209,7 @@ export default function App() {
   const matched   = S["So dong khop (Matched)"]         ?? "—"
   const itemMatch = S["So item duy nhat khop"]           ?? "—"
   const ctkmMiss  = S["So dong CTKM thieu vi tri ke"]    ?? "—"
-  const pogMiss   = S["So dong len ke thieu CTKM"]       ?? "—"
+  const pogMiss   = S["So dong POG khong co CTKM phu hop"] ?? S["So dong len ke thieu CTKM"] ?? "—"
   const overlapW  = S["So canh bao trung thoi gian"]     ?? "—"
   const hoaDon    = S["  Trong do CTKM theo hoa don"]    ?? 0
 
@@ -1963,7 +1963,7 @@ export default function App() {
                   <div style={{fontSize:24}}>📥</div>
                   <div className="download-info">
                     <div className="download-name">tong_hop_ctkm_{month}.xlsx</div>
-                    <div className="download-meta">8 sheets · sẵn sàng download</div>
+                    <div className="download-meta">Workbook thao tác và audit · sẵn sàng tải xuống</div>
                   </div>
                   <button className="btn btn-primary" style={{width:"auto",padding:"10px 20px"}}
                     onClick={handleDownload}>
@@ -1977,10 +1977,10 @@ export default function App() {
                 </div>
                 <div className="summary-grid" style={{marginBottom:28}}>
                   <StatBox num={matched}   label="Dòng khớp (CTKM + kệ)" sub={`${fmt(itemMatch)} item duy nhất`} />
-                  <StatBox num={ctkmMiss}  label="CTKM thiếu vị trí kệ"
+                  <StatBox num={ctkmMiss}  label="Cần kiểm tra vị trí POG"
                     sub={hoaDon > 0 ? `${hoaDon} CTKM theo hóa đơn` : null}
                     accent="var(--accent)" />
-                  <StatBox num={pogMiss}   label="Lên kệ không có CTKM"
+                  <StatBox num={pogMiss}   label="POG không có CTKM phù hợp"
                     accent="var(--blue)" />
                   <StatBox num={overlapW}  label="Cảnh báo trùng thời gian"
                     accent={overlapW > 0 ? "var(--red)" : "var(--green)"} />

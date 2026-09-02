@@ -27,6 +27,10 @@ def test_confirmation_distinguishes_ctkm_clearance_and_overlap():
     }
     assert set(result["nguon_chuong_trinh"]) == {"CTKM", "CLEARANCE"}
     assert set(result["xac_nhan_ap_dung"]) == {"Chưa xác nhận"}
+    assert set(result.loc[result["item_id"] == "P2", "quan_he_thoi_gian"]) == {
+        "Trùng thời gian - cần xác nhận"
+    }
+    assert result["source_row_id"].nunique() == len(result)
 
 
 def test_standard_clearance_headers_are_mapped_without_ai():
@@ -56,7 +60,9 @@ def test_fefo_actions_keep_clearance_only_items_and_source():
         },
     ])
 
-    actions = main.RC.build_fefo_action_frame(promotions, "2026-08")
+    actions = main.RC.build_fefo_action_frame(
+        promotions, "2026-08", business_date=pd.Timestamp("2026-08-15"),
+    )
 
     assert set(actions["item_id"]) == {"P1", "P999"}
     clearance_row = actions.loc[actions["item_id"] == "P999"].iloc[0]
@@ -65,7 +71,7 @@ def test_fefo_actions_keep_clearance_only_items_and_source():
     assert clearance_row["ngay_thao_tem"] == pd.Timestamp("2026-09-01")
 
 
-def test_action_source_only_adds_clearance_items_missing_from_ctkm():
+def test_action_source_keeps_clearance_when_sku_also_exists_in_ctkm():
     ctkm = pd.DataFrame([_fact("P1", "Monthly"), _fact("P2", "Monthly")])
     clearance = pd.DataFrame([
         _fact("P2", None),
@@ -74,7 +80,7 @@ def test_action_source_only_adds_clearance_items_missing_from_ctkm():
 
     result = main._build_promo_action_source(ctkm, clearance)
 
-    assert list(result["item_id"]) == ["P1", "P2", "p3"]
+    assert list(result["item_id"]) == ["P1", "P2", "P2", "p3"]
     added = result.loc[result["item_id"] == "p3"].iloc[0]
     assert added["program_source"] == "CLEARANCE"
     assert added["campaign_name"] == "CLEARANCE"
@@ -88,7 +94,9 @@ def test_invalid_promotion_period_is_never_put_in_attach_or_remove_list():
         "program_source": "CLEARANCE",
     }])
 
-    actions = main.RC.build_fefo_action_frame(invalid, "2026-08")
+    actions = main.RC.build_fefo_action_frame(
+        invalid, "2026-08", business_date=pd.Timestamp("2026-08-15"),
+    )
 
     assert actions.iloc[0]["action"] == "review"
     assert actions.iloc[0]["reason"] == "ngay_bat_dau_sau_ngay_ket_thuc"
