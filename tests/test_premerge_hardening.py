@@ -1,36 +1,9 @@
-from types import SimpleNamespace
+import asyncio
 
-import pandas as pd
 import pytest
 from fastapi import HTTPException
 
-import main
 from backend import main_api
-
-
-def _sheet(*, empty: bool = False):
-    frame = pd.DataFrame() if empty else pd.DataFrame({"Item": ["P1"]})
-    return SimpleNamespace(df=frame, source_excel_rows=[2] if not empty else [])
-
-
-def test_pog_multiple_nonempty_sheets_require_explicit_selection():
-    workbook = SimpleNamespace(sheets={"POG A": _sheet(), "POG B": _sheet()})
-
-    with pytest.raises(ValueError, match="nhieu sheet"):
-        main._select_primary_pog_sheet(workbook)
-
-    name, selected = main._select_primary_pog_sheet(workbook, "pog b")
-    assert name == "POG B"
-    assert selected is workbook.sheets["POG B"]
-
-
-def test_pog_single_nonempty_sheet_is_selected_automatically():
-    workbook = SimpleNamespace(sheets={"Notes": _sheet(empty=True), "POG": _sheet()})
-
-    name, selected = main._select_primary_pog_sheet(workbook)
-
-    assert name == "POG"
-    assert selected is workbook.sheets["POG"]
 
 
 @pytest.mark.parametrize("month", ["2026-00", "2026-13", "2026-1", "26-08", "not-a-month"])
@@ -54,6 +27,67 @@ def test_ctkm_request_rejects_invalid_business_date_before_queue(business_date):
 def test_ctkm_request_accepts_valid_month_and_business_date():
     assert main_api._validate_ctkm_request_dates("2026-08", "2026-08-15") == "2026-08-15"
     assert main_api._validate_ctkm_request_dates("2026-08", "") is None
+
+
+def test_ctkm_queue_requires_explicit_pog_sheet_before_reading_uploads():
+    class FakeUpload:
+        def __init__(self, filename):
+            self.filename = filename
+
+        async def read(self, _limit):
+            raise AssertionError("request should be rejected before reading uploads")
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(main_api.enqueue_ctkm(
+            ctkm_file=FakeUpload("ctkm.xlsx"),
+            pog_file=FakeUpload("pog.xlsx"),
+            clearance_file=None,
+            month="2026-08",
+            strict_month=False,
+            ctkm_sheet_name="CTKM",
+            clearance_sheet_name=None,
+            pog_sheet_name=None,
+            ctkm_mapping_override=None,
+            pog_mapping_override=None,
+            selected_output_columns=None,
+            business_date=None,
+            mapping_mode="saved_only",
+            _admin="test-admin",
+        ))
+
+    assert exc_info.value.status_code == 422
+    assert "sheet POG" in str(exc_info.value.detail)
+
+
+def test_inspect_pog_multiple_sheets_does_not_load_full_workbook_before_selection(monkeypatch, tmp_path):
+    class FakeUpload:
+        filename = "POG.XLSX"
+
+        async def read(self, _limit):
+            return b"xlsx-placeholder"
+
+    monkeypatch.setattr(main_api, "_TMP_DIR", tmp_path)
+    monkeypatch.setattr(
+        main_api._main_mod.L,
+        "inspect_workbook_sheets",
+        lambda _path: ["POG A", "POG B"],
+    )
+
+    def should_not_load(*_args, **_kwargs):
+        raise AssertionError("full POG workbook must not load before sheet selection")
+
+    monkeypatch.setattr(main_api._main_mod.L, "load_workbook_raw", should_not_load)
+
+    result = asyncio.run(main_api.inspect_pog_file(
+        pog_file=FakeUpload(),
+        pog_sheet_name=None,
+        _admin="test-admin",
+    ))
+
+    assert result["suggested_sheet"] is None
+    assert result["requires_sheet_selection"] is True
+    assert result["snapshot_month"] is None
+    assert result["sheet_names"] == ["POG A", "POG B"]
 
 
 def test_preview_reads_only_requested_rows(monkeypatch, tmp_path):
