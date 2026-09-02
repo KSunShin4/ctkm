@@ -71,7 +71,7 @@ def build_ctkm_clearance_confirmation_fast(df_ctkm, df_clearance, *, make_item_k
         for item, source, row_from, row_to in zip(
             result["item_key"], result["nguon_chuong_trinh"], parsed_from, parsed_to
         ):
-            if not item or item not in both:
+            if pd.isna(item) or item not in both:
                 relations.append("Không có nguồn còn lại để đối chiếu")
                 continue
             if pd.isna(row_from) or pd.isna(row_to):
