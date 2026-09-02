@@ -103,11 +103,13 @@ def test_formula_stock_is_frozen_to_cached_value_in_output(tmp_path):
 
     # openpyxl does not calculate formulas. Inject the cached value that a real
     # Pharmacity export already contains so data_only=True sees the value 2.
+    # Depending on openpyxl version, an empty cached value may be serialized as
+    # either <v></v> or the equivalent self-closing <v/> form.
     with zipfile.ZipFile(source, "r") as zin:
         members = {name: zin.read(name) for name in zin.namelist()}
     patched, replacements = re.subn(
-        br'(<c r="G2"[^>]*><f>2</f><v>)(?:[^<]*)(</v></c>)',
-        br'\g<1>2\g<2>',
+        br'(<c r="G2"[^>]*><f>2</f>)(?:<v>[^<]*</v>|<v\s*/>)(</c>)',
+        br'\g<1><v>2</v>\g<2>',
         members["xl/worksheets/sheet1.xml"],
     )
     assert replacements == 1
