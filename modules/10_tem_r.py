@@ -242,8 +242,6 @@ def build_tem_r_plan(frame: pd.DataFrame, *, max_location_distance: float = 1, s
             remaining[source_idx] = int(stock)
             if stock > 0:
                 item = str(df.at[source_idx, "ITEMID"])
-                # Tồn là tồn cấp cửa hàng và thường lặp lại trên nhiều dòng POG
-                # của cùng mã; lấy giá trị lớn nhất, tuyệt đối không cộng lặp.
                 stock_by_item[item] = max(stock_by_item.get(item, 0), int(stock))
                 source_by_item.setdefault(item, source_idx)
                 source_locations.setdefault(item, []).append(df.at[source_idx, "_location"])
@@ -254,15 +252,10 @@ def build_tem_r_plan(frame: pd.DataFrame, *, max_location_distance: float = 1, s
         if not targets:
             continue
 
-        # Bước 1: chỉ điền các vị trí tồn 0, ưu tiên mã còn tồn gần nhất. Tồn là
-        # tổng số vị trí nên phải trừ vị trí vốn có của chính mã trước khi thay.
         capacity = {
             item: max(0, stock - own_positions_by_item.get(item, 0))
             for item, stock in stock_by_item.items()
         }
-        # Phân bổ theo khoảng cách trên toàn kệ. Không duyệt target từ trái sang
-        # phải vì vị trí xa có thể chiếm mất đơn vị tồn cuối cùng trước vị trí
-        # nằm sát sản phẩm nguồn.
         proposed: dict[int, str | None] = {idx: None for idx in targets}
         unassigned = set(targets)
         target_order = {idx: position for position, idx in enumerate(targets)}
@@ -317,9 +310,6 @@ def build_tem_r_plan(frame: pd.DataFrame, *, max_location_distance: float = 1, s
             arranged_preview.extend(
                 ["KHÔNG CÓ SẢN PHẨM THAY THẾ"] * final_codes.count(None)
             )
-            # Sắp xếp toàn kệ không được biến thành cách lách giới hạn khoảng
-            # cách. Nếu bất kỳ vị trí mới nào quá xa mã nguồn, giữ phương án
-            # thay từng vị trí đã được kiểm tra khoảng cách ở trên.
             rearrangement_within_distance = all(
                 representative == "KHÔNG CÓ SẢN PHẨM THAY THẾ"
                 or min(
@@ -349,9 +339,6 @@ def build_tem_r_plan(frame: pd.DataFrame, *, max_location_distance: float = 1, s
                 df.at[target_idx, "TEM_R_STATUS"] = "Tồn 0 - mã thay đã nằm liền nhóm"
             continue
 
-        # Bước 2: chỉ khi một mã bị tách thành nhiều cụm mới sắp xếp toàn kệ.
-        # Chỉ gom lại các mã của bố cục đề xuất: mọi mã còn tồn vẫn giữ đủ vị
-        # trí vốn có, không cho mã đầu tiên dùng tồn để lấp hết cả kệ.
         arranged_items: list[str] = []
         for item in stock_by_item:
             arranged_items.extend([item] * final_codes.count(item))
@@ -396,11 +383,7 @@ def _find_export_sheet_and_header(workbook, itemid_column: str = "ITEMID", *, al
     preferred = workbook["Export"] if "Export" in workbook.sheetnames else workbook.active
     worksheets = [preferred, *(sheet for sheet in workbook.worksheets if sheet != preferred)]
     for candidate_sheet in worksheets:
-        header_row = _find_header_row(
-            candidate_sheet,
-            itemid_column=itemid_column,
-            allow_fallback=False,
-        )
+        header_row = _find_header_row(candidate_sheet, itemid_column=itemid_column, allow_fallback=False)
         if header_row is not None:
             headers = _header_values(candidate_sheet, header_row)
             _validate_headers(headers, candidate_sheet.title)
@@ -409,11 +392,7 @@ def _find_export_sheet_and_header(workbook, itemid_column: str = "ITEMID", *, al
     if allow_fallback:
         fallback_candidates = []
         for candidate_sheet in worksheets:
-            header_row = _find_header_row(
-                candidate_sheet,
-                itemid_column=itemid_column,
-                allow_fallback=True,
-            )
+            header_row = _find_header_row(candidate_sheet, itemid_column=itemid_column, allow_fallback=True)
             if header_row is None:
                 continue
             headers = _header_values(candidate_sheet, header_row)
@@ -438,8 +417,6 @@ def inspect_tem_r_workbook(input_path: str | Path) -> dict:
 
     input_path = _validate_xlsx_file(input_path)
     try:
-        # Tem R never needs external workbook links. Some vendor exports contain
-        # malformed externalLink XML, so do not parse or preserve those links.
         workbook = load_workbook(input_path, read_only=True, data_only=True, keep_links=False)
     except Exception as exc:
         message = str(exc).lower()
@@ -509,9 +486,6 @@ def create_tem_r_workbook(
     from openpyxl.styles import PatternFill
 
     input_path, output_path = _validate_xlsx_file(input_path), Path(output_path)
-    # Keep the original workbook for output, but read cached results for formula-based stock columns.
-    # External workbook links are not needed by Tem R and may contain malformed XML
-    # in exports from third-party systems, so explicitly skip them in both loads.
     workbook = load_workbook(input_path, keep_links=False)
     value_workbook = load_workbook(input_path, data_only=True, keep_links=False)
     itemid_column = (column_mapping or {}).get("ITEMID", "ITEMID")
@@ -527,11 +501,7 @@ def create_tem_r_workbook(
                 f"(sheet có {max_row} dòng)."
             )
         if not header_row:
-            header_row = _find_header_row(
-                worksheet,
-                itemid_column=itemid_column,
-                allow_fallback=False,
-            )
+            header_row = _find_header_row(worksheet, itemid_column=itemid_column, allow_fallback=False)
             if header_row is None:
                 raise ValueError(
                     f"Không tìm thấy dòng tiêu đề/cột {itemid_column} trong {HEADER_SCAN_ROWS} "
@@ -542,10 +512,7 @@ def create_tem_r_workbook(
         worksheet, header_row, headers = _find_export_sheet_and_header(workbook, itemid_column=itemid_column)
         value_worksheet = value_workbook[worksheet.title]
     _validate_headers(headers, worksheet.title)
-    headers = [
-        _clean_header(value) or f"__unnamed_col_{index}"
-        for index, value in enumerate(headers)
-    ]
+    headers = [_clean_header(value) or f"__unnamed_col_{index}" for index, value in enumerate(headers)]
     data_column_count = len(headers)
     records = []
     for excel_row in range(header_row + 1, worksheet.max_row + 1):
@@ -580,35 +547,38 @@ def create_tem_r_workbook(
             frame[canonical] = frame[source]
     missing_required = [column for column in REQUIRED_COLUMNS if column not in frame.columns]
     if missing_required:
-        raise ValueError(
-            "Chưa ánh xạ đủ cột bắt buộc cho Tem R: " + ", ".join(missing_required)
-        )
-    # Công thức chưa có cache hoặc trả về lỗi không được xem là tồn 0. Các dòng
-    # này sẽ được cách ly, đánh dấu rõ trong cột TEM R và ghi vào sheet ngoại lệ;
-    # những dòng có tồn hợp lệ vẫn tiếp tục được phân bổ bình thường.
-    stock_col_index = headers.index(stock_column) + 1 if stock_column in headers else None
-    plan = build_tem_r_plan(frame, max_location_distance=max_location_distance, stock_column=stock_column)
+        raise ValueError("Chưa ánh xạ đủ cột bắt buộc cho Tem R: " + ", ".join(missing_required))
 
-    # keep_links=False deliberately removes malformed external workbook links.
-    # Freeze formula-based stock cells to the cached values used for the Tem R
-    # calculation so the exported workbook stays self-contained and does not
-    # contain broken formulas that point to removed external links.
+    stock_col_index = headers.index(stock_column) + 1 if stock_column in headers else None
     if stock_col_index:
-        for _, row in plan.rows.iterrows():
-            excel_row = int(row["_excel_row"])
-            output_stock_cell = worksheet.cell(excel_row, stock_col_index)
-            if output_stock_cell.data_type == "f":
-                output_stock_cell.value = value_worksheet.cell(excel_row, stock_col_index).value
+        unsafe_formula_rows = []
+        for excel_row in frame["_excel_row"].astype(int).tolist():
+            formula_cell = worksheet.cell(excel_row, stock_col_index)
+            if formula_cell.data_type != "f":
+                continue
+            cached_value = value_worksheet.cell(excel_row, stock_col_index).value
+            if _as_stock(cached_value) is not None:
+                unsafe_formula_rows.append(excel_row)
+        if unsafe_formula_rows:
+            preview = ", ".join(str(row) for row in unsafe_formula_rows[:10])
+            suffix = "..." if len(unsafe_formula_rows) > 10 else ""
+            workbook.close()
+            value_workbook.close()
+            raise ValueError(
+                f"Cột tồn kho '{stock_column}' đang chứa công thức Excel ở dòng {preview}{suffix}. "
+                "Tem R không dùng cached value của công thức vì dữ liệu có thể đã cũ. "
+                "Hãy bỏ filter/công thức và Paste Values (chỉ giữ giá trị) cho cột tồn rồi tải file lại."
+            )
+
+    plan = build_tem_r_plan(frame, max_location_distance=max_location_distance, stock_column=stock_column)
 
     tem_r_col = headers.index("TEM R") + 1 if "TEM R" in headers else data_column_count + 1
     if "TEM R" not in headers:
         worksheet.cell(header_row, tem_r_col, "TEM R")
     for _, row in plan.rows.iterrows():
         value = row["TEM R"]
-        # Gán qua thuộc tính để xóa được Tem R cũ ở các dòng nay không còn thay đổi.
         worksheet.cell(int(row["_excel_row"]), tem_r_col).value = None if pd.isna(value) else str(value)
 
-    # Chỉ tô cột TEM R để không ghi đè màu cảnh báo/định dạng gốc của file.
     shelf_colors = ("EAF3FF", "FFF4E5")
     shelf_color_index: dict[tuple, int] = {}
     for _, row in plan.rows.iterrows():
