@@ -454,7 +454,6 @@ def inspect_tem_r_workbook(input_path: str | Path) -> dict:
     preferred = ("ton", "tonkho", "stock", "onhand", "inventory", "quantity", "qty")
     sheet_options = []
     for worksheet in workbook.worksheets:
-        max_row, _ = _sheet_bounds(worksheet)
         exact_row = _find_header_row(worksheet, itemid_column="ITEMID", allow_fallback=False)
         if exact_row is None:
             exact_row = _find_header_row(worksheet, itemid_column="ITEMID", allow_fallback=True)
@@ -601,7 +600,7 @@ def create_tem_r_workbook(
             if output_stock_cell.data_type == "f":
                 output_stock_cell.value = value_worksheet.cell(excel_row, stock_col_index).value
 
-    tem_r_col = headers.index("TEM R") + 1 if "TEM R" in headers else max(worksheet.max_column, data_column_count) + 1
+    tem_r_col = headers.index("TEM R") + 1 if "TEM R" in headers else data_column_count + 1
     if "TEM R" not in headers:
         worksheet.cell(header_row, tem_r_col, "TEM R")
     for _, row in plan.rows.iterrows():
