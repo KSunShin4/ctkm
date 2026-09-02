@@ -10,7 +10,7 @@ import pandas as pd
 
 
 USER_ACTION_COLUMNS = [
-    "item_id", "item_name", "promo_uom", "program_source", "channel",
+    "item_id", "item_name", "promo_uom", "program_source", "key_channel", "channel",
     "campaign_name", "campaign_detail", "promo_from", "promo_to",
     "normal_price", "promo_price", "product_type",
     "store_id", "pog_code", "location_id", "facing",
@@ -30,29 +30,50 @@ TECHNICAL_ACTION_COLUMNS = [
 ]
 
 
-def prefer_raw_channel_mapping(mapping: dict, df: pd.DataFrame, *, normalize_header) -> dict:
-    """Map the original CTKM Channel column instead of collapsing to KEY Channel.
-
-    Company workbooks can contain both ``KEY Channel`` (ALL/OFFLINE/ONLINE scope)
-    and ``Channel`` (the original detailed business/program grouping). Store users
-    want the latter preserved so Excel filters expose the complete source values.
-    ``KEY Channel`` is now only a fallback when no detailed Channel column exists.
-    """
+def preserve_both_channel_mappings(mapping: dict, df: pd.DataFrame, *, normalize_header) -> dict:
+    """Keep KEY Channel and Channel as two independent canonical fields."""
     result = dict(mapping)
     normalized_columns = {normalize_header(column): column for column in df.columns}
-    aliases = ("channel", "kenh ap dung", "sales channel", "kenh ban", "key channel")
-    for alias in aliases:
-        source = normalized_columns.get(alias)
-        if source is None:
-            continue
-        result = {column: target for column, target in result.items() if target != "channel"}
-        result[source] = "channel"
-        break
+
+    key_source = normalized_columns.get("key channel")
+    raw_source = normalized_columns.get("channel")
+    apply_source = normalized_columns.get("kenh ap dung")
+
+    # Remove stale/AI assignments for these exact source columns before forcing
+    # deterministic company-workbook semantics.
+    for source in (key_source, raw_source):
+        if source is not None:
+            result.pop(source, None)
+
+    if key_source is not None:
+        result = {
+            source: target for source, target in result.items()
+            if target != "key_channel" or source == key_source
+        }
+        result[key_source] = "key_channel"
+
+    if raw_source is not None:
+        result = {
+            source: target for source, target in result.items()
+            if target != "channel" or source == raw_source
+        }
+        result[raw_source] = "channel"
+    elif apply_source is not None:
+        result = {
+            source: target for source, target in result.items()
+            if target != "channel" or source == apply_source
+        }
+        result[apply_source] = "channel"
+    elif key_source is not None:
+        # Older/alternate files may only have KEY Channel. Preserve it in its own
+        # field and also mirror it to channel only through the normalized frame is
+        # not possible here; exporter still shows KEY Channel explicitly.
+        pass
+
     return result
 
 
 def prepare_action_sheet_user_first(df: pd.DataFrame) -> pd.DataFrame:
-    """Put store-facing fields first and audit IDs at the far right."""
     if df is None or df.empty:
         return df
     ordered = [column for column in USER_ACTION_COLUMNS if column in df.columns]
@@ -71,8 +92,32 @@ def prepare_action_sheet_user_first(df: pd.DataFrame) -> pd.DataFrame:
     return result.reset_index(drop=True)
 
 
+def filter_selected_columns_keep_channels(df: pd.DataFrame, selected_columns) -> pd.DataFrame:
+    """Honor user column selection but always keep SKU + both channel columns."""
+    if df is None or df.empty:
+        return df
+    selected_fields = {
+        str(column).strip().lower()
+        for column in (selected_columns or [])
+        if str(column).strip()
+    }
+    if not selected_fields:
+        return df
+
+    def matches(column_name: str) -> bool:
+        base = str(column_name).split("__", 1)[0].strip().lower()
+        exact = str(column_name).strip().lower()
+        return base in selected_fields or exact in selected_fields
+
+    keep = [column for column in df.columns if matches(column)]
+    mandatory = ["item_id", "key_channel", "channel"]
+    for column in mandatory:
+        if column in df.columns and column not in keep:
+            keep.append(column)
+    return df.loc[:, [column for column in keep if column in df.columns]].copy()
+
+
 def hide_technical_columns(ws, *, get_column_letter, original_hide=None, action_sheet=False) -> None:
-    """Keep audit columns in the workbook but hide them from the default view."""
     if callable(original_hide):
         original_hide(ws, action_sheet=action_sheet)
     if ws is None or ws.max_row < 1:
@@ -86,8 +131,8 @@ def hide_technical_columns(ws, *, get_column_letter, original_hide=None, action_
 
 def build_ctkm_clearance_confirmation_fast(df_ctkm, df_clearance, *, make_item_key):
     columns = [
-        "item_id", "item_key", "item_name", "promo_uom", "campaign_name",
-        "campaign_detail", "promo_from", "promo_to", "channel", "normal_price",
+        "item_id", "item_key", "item_name", "promo_uom", "key_channel", "channel",
+        "campaign_name", "campaign_detail", "promo_from", "promo_to", "normal_price",
         "promo_price", "product_type", "source_sheet",
     ]
 
@@ -172,7 +217,6 @@ def build_ctkm_clearance_confirmation_fast(df_ctkm, df_clearance, *, make_item_k
 
 
 def install_performance_patches(main_mod) -> None:
-    """Patch known hot paths and presentation defaults; safe to call repeatedly."""
     if getattr(main_mod, "_ctkm_performance_patched", False):
         return
 
@@ -181,9 +225,7 @@ def install_performance_patches(main_mod) -> None:
 
     def confirmation(df_ctkm, df_clearance):
         return build_ctkm_clearance_confirmation_fast(
-            df_ctkm,
-            df_clearance,
-            make_item_key=main_mod.NM.make_item_key,
+            df_ctkm, df_clearance, make_item_key=main_mod.NM.make_item_key,
         )
 
     def overlap(frame):
@@ -192,7 +234,7 @@ def install_performance_patches(main_mod) -> None:
         return original_overlap(prepared)
 
     def channel_mapping(mapping, df):
-        return prefer_raw_channel_mapping(
+        return preserve_both_channel_mappings(
             mapping, df, normalize_header=main_mod._normalized_header
         )
 
@@ -208,6 +250,8 @@ def install_performance_patches(main_mod) -> None:
     main_mod._ensure_channel_mapping = channel_mapping
     main_mod.RC.detect_campaign_time_overlaps = overlap
     main_mod.EX._prepare_action_sheet = prepare_action_sheet_user_first
+    main_mod.EX._filter_selected_columns = filter_selected_columns_keep_channels
     main_mod.EX._hide_technical_columns = hide_columns
-    main_mod.EX._BILINGUAL_HEADERS["channel"] = "Kênh chương trình (Channel nguyên bản từ CTKM)"
+    main_mod.EX._BILINGUAL_HEADERS["key_channel"] = "Phạm vi áp dụng (KEY Channel)"
+    main_mod.EX._BILINGUAL_HEADERS["channel"] = "Kênh chương trình (Channel)"
     main_mod._ctkm_performance_patched = True
