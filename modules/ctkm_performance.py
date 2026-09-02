@@ -1,12 +1,87 @@
 # -*- coding: utf-8 -*-
-"""Drop-in performance patches for CTKM processing.
+"""Drop-in CTKM performance and presentation patches.
 
-These helpers preserve the existing output contract while replacing hot paths
-that repeatedly scan whole DataFrames.
+These helpers preserve business semantics while replacing known hot paths and
+making exported action sheets easier for store users to read.
 """
 from __future__ import annotations
 
 import pandas as pd
+
+
+USER_ACTION_COLUMNS = [
+    "item_id", "item_name", "promo_uom", "program_source", "channel",
+    "campaign_name", "campaign_detail", "promo_from", "promo_to",
+    "normal_price", "promo_price", "product_type",
+    "store_id", "pog_code", "location_id", "facing",
+    "ngay_gan_tem", "ngay_thao_tem", "so_ngay_con_lai",
+    "scheduled_action", "action", "location_completeness", "location_status",
+    "location_needs_review", "reason",
+    "processing_status", "processed_by", "processed_at", "staff_note",
+]
+
+TECHNICAL_ACTION_COLUMNS = [
+    "task_id", "promotion_id", "pog_position_id", "item_key",
+    "target_month", "business_date", "pog_snapshot_month", "pog_position_count",
+    "source_sheet", "source_row_id", "source_row_ids", "source_row_count",
+    "duplicate_status", "pog_source_row_id", "pog_source_row_ids",
+    "pog_source_row_count", "pog_duplicate_status", "source_excel_row",
+    "logical_row_id", "promo_slot_id",
+]
+
+
+def prefer_raw_channel_mapping(mapping: dict, df: pd.DataFrame, *, normalize_header) -> dict:
+    """Map the original CTKM Channel column instead of collapsing to KEY Channel.
+
+    Company workbooks can contain both ``KEY Channel`` (ALL/OFFLINE/ONLINE scope)
+    and ``Channel`` (the original detailed business/program grouping). Store users
+    want the latter preserved so Excel filters expose the complete source values.
+    ``KEY Channel`` is now only a fallback when no detailed Channel column exists.
+    """
+    result = dict(mapping)
+    normalized_columns = {normalize_header(column): column for column in df.columns}
+    aliases = ("channel", "kenh ap dung", "sales channel", "kenh ban", "key channel")
+    for alias in aliases:
+        source = normalized_columns.get(alias)
+        if source is None:
+            continue
+        result = {column: target for column, target in result.items() if target != "channel"}
+        result[source] = "channel"
+        break
+    return result
+
+
+def prepare_action_sheet_user_first(df: pd.DataFrame) -> pd.DataFrame:
+    """Put store-facing fields first and audit IDs at the far right."""
+    if df is None or df.empty:
+        return df
+    ordered = [column for column in USER_ACTION_COLUMNS if column in df.columns]
+    middle = [
+        column for column in df.columns
+        if column not in ordered and column not in TECHNICAL_ACTION_COLUMNS
+    ]
+    technical = [column for column in TECHNICAL_ACTION_COLUMNS if column in df.columns]
+    result = df.loc[:, [*ordered, *middle, *technical]].copy()
+    sort_cols = [
+        column for column in ("store_id", "pog_code", "location_id", "item_id")
+        if column in result.columns
+    ]
+    if sort_cols:
+        result = result.sort_values(sort_cols, kind="stable", na_position="last")
+    return result.reset_index(drop=True)
+
+
+def hide_technical_columns(ws, *, get_column_letter, original_hide=None, action_sheet=False) -> None:
+    """Keep audit columns in the workbook but hide them from the default view."""
+    if callable(original_hide):
+        original_hide(ws, action_sheet=action_sheet)
+    if ws is None or ws.max_row < 1:
+        return
+    technical = set(TECHNICAL_ACTION_COLUMNS)
+    for index, cell in enumerate(ws[1], start=1):
+        header = str(cell.value or "").strip()
+        if header in technical:
+            ws.column_dimensions[get_column_letter(index)].hidden = True
 
 
 def build_ctkm_clearance_confirmation_fast(df_ctkm, df_clearance, *, make_item_key):
@@ -97,11 +172,12 @@ def build_ctkm_clearance_confirmation_fast(df_ctkm, df_clearance, *, make_item_k
 
 
 def install_performance_patches(main_mod) -> None:
-    """Patch only known internal hot paths; safe to call repeatedly."""
+    """Patch known hot paths and presentation defaults; safe to call repeatedly."""
     if getattr(main_mod, "_ctkm_performance_patched", False):
         return
 
     original_overlap = main_mod.RC.detect_campaign_time_overlaps
+    original_hide = main_mod.EX._hide_technical_columns
 
     def confirmation(df_ctkm, df_clearance):
         return build_ctkm_clearance_confirmation_fast(
@@ -111,13 +187,27 @@ def install_performance_patches(main_mod) -> None:
         )
 
     def overlap(frame):
-        # Exact business duplicates never produce a conflict in the original
-        # implementation, so collapse them before generating pair combinations.
-        # This cuts duplicate-heavy exports dramatically without changing warnings.
         collapse = getattr(main_mod.RC, "_collapse_exact_duplicates", None)
         prepared = collapse(frame) if callable(collapse) else frame
         return original_overlap(prepared)
 
+    def channel_mapping(mapping, df):
+        return prefer_raw_channel_mapping(
+            mapping, df, normalize_header=main_mod._normalized_header
+        )
+
+    def hide_columns(ws, *, action_sheet=False):
+        return hide_technical_columns(
+            ws,
+            get_column_letter=main_mod.EX.get_column_letter,
+            original_hide=original_hide,
+            action_sheet=action_sheet,
+        )
+
     main_mod._build_ctkm_clearance_confirmation = confirmation
+    main_mod._ensure_channel_mapping = channel_mapping
     main_mod.RC.detect_campaign_time_overlaps = overlap
+    main_mod.EX._prepare_action_sheet = prepare_action_sheet_user_first
+    main_mod.EX._hide_technical_columns = hide_columns
+    main_mod.EX._BILINGUAL_HEADERS["channel"] = "Kênh chương trình (Channel nguyên bản từ CTKM)"
     main_mod._ctkm_performance_patched = True
