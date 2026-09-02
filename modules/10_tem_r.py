@@ -13,6 +13,7 @@ import pandas as pd
 
 REQUIRED_COLUMNS = ("STOREID", "POGCODE", "FIXELID", "LOCATIONID", "ITEMID", "ITEMNAME")
 HEADER_SCAN_ROWS = 100
+HEADER_SCAN_COLUMNS = 512
 EXCEL_ERROR_VALUES = {"#N/A", "#VALUE!", "#REF!", "#DIV/0!", "#NAME?", "#NUM!", "#NULL!"}
 STOCK_SKIP_NO_DATA = "BỎ QUA - KHÔNG CÓ DỮ LIỆU TỒN KHO"
 STOCK_SKIP_INVALID = "BỎ QUA - TỒN KHO KHÔNG HỢP LỆ"
@@ -44,6 +45,46 @@ def _validate_headers(headers: list[Any], sheet_name: str) -> None:
             f"Sheet '{sheet_name}' có tên cột bị trùng: {', '.join(duplicates)}. "
             "Hãy đổi thành các tên cột khác nhau trước khi chạy Tem R."
         )
+
+
+def _sheet_bounds(worksheet) -> tuple[int, int]:
+    """Return safe worksheet bounds without trusting an inflated Excel used range."""
+    if worksheet.max_row is None or worksheet.max_column is None:
+        worksheet.calculate_dimension(force=True)
+    return worksheet.max_row or 0, min(worksheet.max_column or 0, HEADER_SCAN_COLUMNS)
+
+
+def _header_values(worksheet, header_row: int) -> list[Any]:
+    """Read only a bounded header range and trim trailing empty/format-only columns."""
+    _, max_column = _sheet_bounds(worksheet)
+    values = [worksheet.cell(header_row, col).value for col in range(1, max_column + 1)]
+    while values and not _clean_header(values[-1]):
+        values.pop()
+    return values
+
+
+def _find_header_row(worksheet, itemid_column: str = "ITEMID", *, allow_fallback: bool = False) -> int | None:
+    max_row, max_column = _sheet_bounds(worksheet)
+    wanted = itemid_column.strip().upper()
+    for row in range(1, min(HEADER_SCAN_ROWS, max_row) + 1):
+        if any(
+            str(worksheet.cell(row, col).value).strip().upper() == wanted
+            for col in range(1, max_column + 1)
+        ):
+            return row
+    if not allow_fallback:
+        return None
+
+    scored_rows: list[tuple[tuple[int, int], int]] = []
+    for row in range(1, min(HEADER_SCAN_ROWS, max_row) + 1):
+        values = [worksheet.cell(row, col).value for col in range(1, max_column + 1)]
+        nonempty = [value for value in values if value not in (None, "")]
+        text_cells = sum(isinstance(value, str) for value in nonempty)
+        scored_rows.append(((text_cells, len(nonempty)), row))
+    if not scored_rows:
+        return None
+    score, header_row = max(scored_rows, key=lambda item: item[0])
+    return header_row if score[1] >= 2 else None
 
 
 @dataclass(frozen=True)
@@ -109,7 +150,7 @@ def _stock_skip_details(value: Any) -> tuple[str, str]:
         return marker, f"Bỏ qua - tồn kho lỗi {text}"
     if not text or text in {"NA", "N/A", "NULL", "NONE", "<NA>", "NAN"}:
         return STOCK_SKIP_NO_DATA, "Bỏ qua - không có dữ liệu tồn kho"
-    return STOCK_SKIP_INVALID, "Bỏ qua - tồn kho không hợp lệ"
+    return STOCK_SKIP_INVALID, "Bỏ QUA - tồn kho không hợp lệ"
 
 
 def _as_location(value: Any) -> float | None:
@@ -354,39 +395,41 @@ def build_tem_r_plan(frame: pd.DataFrame, *, max_location_distance: float = 1, s
 def _find_export_sheet_and_header(workbook, itemid_column: str = "ITEMID", *, allow_fallback: bool = False):
     preferred = workbook["Export"] if "Export" in workbook.sheetnames else workbook.active
     worksheets = [preferred, *(sheet for sheet in workbook.worksheets if sheet != preferred)]
-    worksheet = preferred
-    header_row = None
-    wanted = itemid_column.strip().upper()
     for candidate_sheet in worksheets:
-        found = next(
-            (row for row in range(1, min(HEADER_SCAN_ROWS, candidate_sheet.max_row) + 1)
-             if any(str(candidate_sheet.cell(row, col).value).strip().upper() == wanted
-                    for col in range(1, candidate_sheet.max_column + 1))),
-            None,
+        header_row = _find_header_row(
+            candidate_sheet,
+            itemid_column=itemid_column,
+            allow_fallback=False,
         )
-        if found is not None:
-            worksheet, header_row = candidate_sheet, found
-            break
-    if header_row is None and allow_fallback:
-        scored_rows = []
+        if header_row is not None:
+            headers = _header_values(candidate_sheet, header_row)
+            _validate_headers(headers, candidate_sheet.title)
+            return candidate_sheet, header_row, headers
+
+    if allow_fallback:
+        fallback_candidates = []
         for candidate_sheet in worksheets:
-            for row in range(1, min(HEADER_SCAN_ROWS, candidate_sheet.max_row) + 1):
-                values = [candidate_sheet.cell(row, col).value for col in range(1, candidate_sheet.max_column + 1)]
-                nonempty = [value for value in values if value not in (None, "")]
-                text_cells = sum(isinstance(value, str) for value in nonempty)
-                # A header normally has several populated text cells. Prefer that over title/data rows.
-                scored_rows.append(((text_cells, len(nonempty)), candidate_sheet, row))
-        if scored_rows:
-            score, worksheet, header_row = max(scored_rows, key=lambda item: item[0])
-            if score[1] < 2:
-                header_row = None
-    if header_row is None:
-        raise ValueError(
-            f"Không tìm thấy dòng tiêu đề/cột {itemid_column} trong {HEADER_SCAN_ROWS} dòng đầu của các sheet file Tem R"
-        )
-    headers = [worksheet.cell(header_row, col).value for col in range(1, worksheet.max_column + 1)]
-    _validate_headers(headers, worksheet.title)
-    return worksheet, header_row, headers
+            header_row = _find_header_row(
+                candidate_sheet,
+                itemid_column=itemid_column,
+                allow_fallback=True,
+            )
+            if header_row is None:
+                continue
+            headers = _header_values(candidate_sheet, header_row)
+            score = (
+                sum(isinstance(value, str) and bool(_clean_header(value)) for value in headers),
+                sum(bool(_clean_header(value)) for value in headers),
+            )
+            fallback_candidates.append((score, candidate_sheet, header_row, headers))
+        if fallback_candidates:
+            _, worksheet, header_row, headers = max(fallback_candidates, key=lambda item: item[0])
+            _validate_headers(headers, worksheet.title)
+            return worksheet, header_row, headers
+
+    raise ValueError(
+        f"Không tìm thấy dòng tiêu đề/cột {itemid_column} trong {HEADER_SCAN_ROWS} dòng đầu của các sheet file Tem R"
+    )
 
 
 def inspect_tem_r_workbook(input_path: str | Path) -> dict:
@@ -403,6 +446,7 @@ def inspect_tem_r_workbook(input_path: str | Path) -> dict:
         if "encrypt" in message or "password" in message:
             raise ValueError("File Tem R đang được mã hóa/đặt mật khẩu. Hãy bỏ mật khẩu rồi tải lại.") from exc
         raise ValueError(f"Không thể mở file Tem R; file có thể bị hỏng: {exc}") from exc
+
     def normalized(value: str) -> str:
         value = unicodedata.normalize("NFD", value.lower())
         return "".join(char for char in value if unicodedata.category(char) != "Mn").replace(" ", "")
@@ -410,25 +454,11 @@ def inspect_tem_r_workbook(input_path: str | Path) -> dict:
     preferred = ("ton", "tonkho", "stock", "onhand", "inventory", "quantity", "qty")
     sheet_options = []
     for worksheet in workbook.worksheets:
-        # A number of POG exports omit the worksheet dimension element.  The
-        # cells are valid, but read-only openpyxl then reports max_row/max_column
-        # as None until it calculates the real bounds.
-        if worksheet.max_row is None or worksheet.max_column is None:
-            worksheet.calculate_dimension(force=True)
-        max_row = worksheet.max_row or 0
-        max_column = worksheet.max_column or 0
-        exact_row = next(
-            (row for row in range(1, min(HEADER_SCAN_ROWS, max_row) + 1)
-             if any(str(worksheet.cell(row, col).value).strip().upper() == "ITEMID"
-                    for col in range(1, max_column + 1))), None,
-        )
+        max_row, _ = _sheet_bounds(worksheet)
+        exact_row = _find_header_row(worksheet, itemid_column="ITEMID", allow_fallback=False)
         if exact_row is None:
-            rows = range(1, min(HEADER_SCAN_ROWS, max_row) + 1)
-            exact_row = max(rows, key=lambda row: sum(
-                isinstance(worksheet.cell(row, col).value, str) and bool(str(worksheet.cell(row, col).value).strip())
-                for col in range(1, max_column + 1)
-            ), default=None)
-        headers = [worksheet.cell(exact_row, col).value for col in range(1, max_column + 1)] if exact_row else []
+            exact_row = _find_header_row(worksheet, itemid_column="ITEMID", allow_fallback=True)
+        headers = _header_values(worksheet, exact_row) if exact_row else []
         try:
             _validate_headers(headers, worksheet.title)
         except ValueError as exc:
@@ -491,15 +521,24 @@ def create_tem_r_workbook(
             raise ValueError(f"Không tìm thấy sheet đã chọn: {sheet_name}")
         worksheet = workbook[sheet_name]
         value_worksheet = value_workbook[sheet_name]
-        if header_row is not None and not (1 <= header_row <= worksheet.max_row):
+        max_row, _ = _sheet_bounds(worksheet)
+        if header_row is not None and not (1 <= header_row <= max_row):
             raise ValueError(
                 f"Dòng tiêu đề {header_row} không hợp lệ cho sheet '{sheet_name}' "
-                f"(sheet có {worksheet.max_row} dòng)."
+                f"(sheet có {max_row} dòng)."
             )
         if not header_row:
-            _, header_row, headers = _find_export_sheet_and_header(workbook, itemid_column=itemid_column)
-        else:
-            headers = [worksheet.cell(header_row, col).value for col in range(1, worksheet.max_column + 1)]
+            header_row = _find_header_row(
+                worksheet,
+                itemid_column=itemid_column,
+                allow_fallback=False,
+            )
+            if header_row is None:
+                raise ValueError(
+                    f"Không tìm thấy dòng tiêu đề/cột {itemid_column} trong {HEADER_SCAN_ROWS} "
+                    f"dòng đầu của sheet '{sheet_name}'"
+                )
+        headers = _header_values(worksheet, header_row)
     else:
         worksheet, header_row, headers = _find_export_sheet_and_header(workbook, itemid_column=itemid_column)
         value_worksheet = value_workbook[worksheet.title]
@@ -508,9 +547,10 @@ def create_tem_r_workbook(
         _clean_header(value) or f"__unnamed_col_{index}"
         for index, value in enumerate(headers)
     ]
+    data_column_count = len(headers)
     records = []
     for excel_row in range(header_row + 1, worksheet.max_row + 1):
-        values = [value_worksheet.cell(excel_row, col).value for col in range(1, worksheet.max_column + 1)]
+        values = [value_worksheet.cell(excel_row, col).value for col in range(1, data_column_count + 1)]
         if all(value is None for value in values):
             continue
         record = dict(zip(headers, values))
@@ -550,7 +590,18 @@ def create_tem_r_workbook(
     stock_col_index = headers.index(stock_column) + 1 if stock_column in headers else None
     plan = build_tem_r_plan(frame, max_location_distance=max_location_distance, stock_column=stock_column)
 
-    tem_r_col = headers.index("TEM R") + 1 if "TEM R" in headers else worksheet.max_column + 1
+    # keep_links=False deliberately removes malformed external workbook links.
+    # Freeze formula-based stock cells to the cached values used for the Tem R
+    # calculation so the exported workbook stays self-contained and does not
+    # contain broken formulas that point to removed external links.
+    if stock_col_index:
+        for _, row in plan.rows.iterrows():
+            excel_row = int(row["_excel_row"])
+            output_stock_cell = worksheet.cell(excel_row, stock_col_index)
+            if output_stock_cell.data_type == "f":
+                output_stock_cell.value = value_worksheet.cell(excel_row, stock_col_index).value
+
+    tem_r_col = headers.index("TEM R") + 1 if "TEM R" in headers else max(worksheet.max_column, data_column_count) + 1
     if "TEM R" not in headers:
         worksheet.cell(header_row, tem_r_col, "TEM R")
     for _, row in plan.rows.iterrows():
@@ -587,4 +638,5 @@ def create_tem_r_workbook(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     workbook.save(output_path)
     value_workbook.close()
+    workbook.close()
     return plan
