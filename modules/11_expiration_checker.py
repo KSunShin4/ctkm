@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 from io import BytesIO
+import re
 from typing import BinaryIO
+import zipfile
 
+import openpyxl
 import pandas as pd
 
 REQUIRED_COLUMNS = ("ITEMID", "BATCHNUMER", "EXPDATE")
 OPTIONAL_COLUMNS = ("ITEMNAME", "INVENTUNIT", "ONHANDNEAREXPIRATION")
+MAX_EXPIRATION_ROWS = 250_000
+MAX_XLSX_UNCOMPRESSED_BYTES = 300 * 1024 * 1024
 
 
 def _text(value) -> str:
@@ -26,17 +31,129 @@ def _date_text(value) -> str:
     return "" if pd.isna(parsed) else parsed.strftime("%d/%m/%Y")
 
 
+def _source_bytes(source: bytes | BinaryIO) -> bytes:
+    if isinstance(source, bytes):
+        return source
+    position = None
+    try:
+        position = source.tell()
+    except (AttributeError, OSError):
+        pass
+    raw = source.read()
+    if position is not None:
+        try:
+            source.seek(position)
+        except (AttributeError, OSError):
+            pass
+    return raw
+
+
+def _sanitize_xlsx_bytes(raw: bytes) -> bytes:
+    if not raw:
+        raise ValueError("File hạn dùng đang rỗng.")
+    if not zipfile.is_zipfile(BytesIO(raw)):
+        raise ValueError(
+            "File hạn dùng không phải XLSX hợp lệ; file có thể bị hỏng, "
+            "đặt sai đuôi hoặc đang dùng định dạng XLS/XLSB."
+        )
+
+    try:
+        with zipfile.ZipFile(BytesIO(raw), "r") as archive:
+            infos = archive.infolist()
+            total_uncompressed = sum(info.file_size for info in infos)
+            if total_uncompressed > MAX_XLSX_UNCOMPRESSED_BYTES:
+                raise ValueError(
+                    "File hạn dùng giải nén quá lớn để xử lý an toàn. "
+                    "Hãy xuất lại file với đúng vùng dữ liệu cần kiểm tra."
+                )
+            names = {info.filename for info in infos}
+            if "xl/workbook.xml" not in names:
+                raise ValueError("File hạn dùng thiếu cấu trúc workbook XLSX bắt buộc.")
+            workbook_xml = archive.read("xl/workbook.xml").decode("utf-8", errors="ignore")
+            if "<definedNames>" not in workbook_xml:
+                return raw
+            cleaned_workbook_xml = re.sub(
+                r"<definedNames>.*?</definedNames>",
+                "",
+                workbook_xml,
+                flags=re.DOTALL,
+            ).encode("utf-8")
+            members = {
+                info.filename: (
+                    cleaned_workbook_xml
+                    if info.filename == "xl/workbook.xml"
+                    else archive.read(info.filename)
+                )
+                for info in infos
+            }
+    except zipfile.BadZipFile as exc:
+        raise ValueError("File hạn dùng có cấu trúc ZIP/XLSX bị hỏng.") from exc
+
+    output = BytesIO()
+    with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
+        for name, content in members.items():
+            archive.writestr(name, content)
+    return output.getvalue()
+
+
 def load_expiration_export(source: bytes | BinaryIO) -> tuple[pd.DataFrame, str]:
     """Return the first sheet containing the three expected export columns."""
-    content = BytesIO(source) if isinstance(source, bytes) else source
-    workbook = pd.ExcelFile(content)
-    for sheet_name in workbook.sheet_names:
-        frame = pd.read_excel(workbook, sheet_name=sheet_name, dtype=object)
-        lookup = {str(column).strip().upper(): column for column in frame.columns}
-        if all(column in lookup for column in REQUIRED_COLUMNS):
-            selected_names = list(REQUIRED_COLUMNS) + [column for column in OPTIONAL_COLUMNS if column in lookup]
-            selected = frame[[lookup[column] for column in selected_names]].copy()
-            selected.columns = selected_names
+    raw = _source_bytes(source)
+    safe = _sanitize_xlsx_bytes(raw)
+    workbook = None
+    try:
+        workbook = openpyxl.load_workbook(
+            BytesIO(safe),
+            read_only=True,
+            data_only=True,
+            keep_links=False,
+        )
+        for sheet_name in workbook.sheetnames:
+            worksheet = workbook[sheet_name]
+            if worksheet.max_column and worksheet.max_column > 2048:
+                worksheet.reset_dimensions()
+            rows = worksheet.iter_rows(values_only=True)
+            header_row = next(rows, None)
+            if header_row is None:
+                continue
+            headers = [str(value).strip() if value is not None else "" for value in header_row]
+            normalized_headers = [header.upper() for header in headers]
+            lookup = {
+                normalized: index
+                for index, normalized in enumerate(normalized_headers)
+                if normalized
+            }
+            if not all(column in lookup for column in REQUIRED_COLUMNS):
+                continue
+
+            selected_names = list(REQUIRED_COLUMNS) + [
+                column for column in OPTIONAL_COLUMNS if column in lookup
+            ]
+            duplicate_selected = sorted({
+                column
+                for column in selected_names
+                if normalized_headers.count(column) > 1
+            })
+            if duplicate_selected:
+                raise ValueError(
+                    "Sheet hạn dùng có tên cột bị trùng: " + ", ".join(duplicate_selected)
+                )
+
+            records = []
+            for row in rows:
+                record = [
+                    row[lookup[column]] if lookup[column] < len(row) else None
+                    for column in selected_names
+                ]
+                if all(value is None or str(value).strip() == "" for value in record):
+                    continue
+                records.append(record)
+                if len(records) > MAX_EXPIRATION_ROWS:
+                    raise ValueError(
+                        f"Sheet hạn dùng vượt quá {MAX_EXPIRATION_ROWS:,} dòng dữ liệu."
+                    )
+
+            selected = pd.DataFrame(records, columns=selected_names)
             selected["ITEMID"] = selected["ITEMID"].map(_text).str.upper()
             selected["BATCHNUMER"] = selected["BATCHNUMER"].map(_text)
             selected["EXPDATE"] = selected["EXPDATE"].map(_date_text)
@@ -44,6 +161,21 @@ def load_expiration_export(source: bytes | BinaryIO) -> tuple[pd.DataFrame, str]
                 if column in selected:
                     selected[column] = selected[column].map(_text)
             return selected, sheet_name
+    except ValueError:
+        raise
+    except Exception as exc:
+        message = str(exc).lower()
+        if "encrypt" in message or "password" in message or "agile" in message:
+            raise ValueError(
+                "File hạn dùng đang được mã hóa/đặt mật khẩu. Hãy bỏ mật khẩu rồi tải lại."
+            ) from exc
+        raise ValueError(
+            f"Không thể mở file hạn dùng; file có thể bị hỏng hoặc không đúng chuẩn XLSX: {exc}"
+        ) from exc
+    finally:
+        if workbook is not None:
+            workbook.close()
+
     raise ValueError(
         "Không tìm thấy sheet có đủ các cột ITEMID, BATCHNUMER và EXPDATE."
     )
@@ -55,8 +187,6 @@ def check_entries(frame: pd.DataFrame, raw_entries: str) -> list[dict]:
         raise ValueError("Hãy nhập ít nhất một dòng theo mẫu MÃ_P;SỐ_LÔ;DD/MM/YYYY.")
 
     results = []
-    # Build once per request instead of scanning the complete export for every
-    # entered item. Cached frames may also carry this index across requests.
     item_index = frame.attrs.get("item_index")
     if item_index is None:
         item_index = {
