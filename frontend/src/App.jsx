@@ -313,15 +313,12 @@ function useDropzone(onFile) {
   const onDrop = useCallback(e => {
     e.preventDefault(); setOver(false)
     const f = e.dataTransfer.files[0]
-    if (f?.name?.toLowerCase().endsWith(".xlsx")) onFile(f)
+    if (f?.name.endsWith(".xlsx")) onFile(f)
   }, [onFile])
   const onDrag = useCallback(e => { e.preventDefault(); setOver(true) }, [])
   const onLeave = useCallback(() => setOver(false), [])
   const onClick = () => ref.current?.click()
-  const onChange = e => {
-    const f = e.target.files[0]
-    if (f?.name?.toLowerCase().endsWith(".xlsx")) onFile(f)
-  }
+  const onChange = e => { const f = e.target.files[0]; if (f) onFile(f) }
   return { ref, over, onDrop, onDrag, onLeave, onClick, onChange }
 }
 
@@ -558,11 +555,11 @@ export default function App() {
   const [step, setStep]           = useState(STEPS.idle)
   const [stepIdx, setStepIdx]     = useState(0)
   const [jobId, setJobId]         = useState(null)
-  const [result, setResult]       = useState(null)
-  const [preview, setPreview]     = useState(null)
+  const [result, setResult]       = useState(null)   // {summary, warnings}
+  const [preview, setPreview]     = useState(null)   // {sheets:{...}}
   const [activeSheet, setActiveSheet] = useState(null)
   const [error, setError]         = useState(null)
-  const [backendStatus, setBackendStatus] = useState("checking")
+  const [backendStatus, setBackendStatus] = useState("checking") // checking | ok | offline
   const [queueStatus, setQueueStatus] = useState(null)
 
   useEffect(() => {
@@ -739,10 +736,7 @@ export default function App() {
         if (!cancelled) {
           const sheets = data.sheet_names || []
           setPogSheetOptions(sheets)
-          setPogSheetName(current => {
-            if (current && sheets.includes(current)) return current
-            return data.suggested_sheet || (sheets.length === 1 ? sheets[0] : "")
-          })
+          setPogSheetName(data.suggested_sheet || sheets[0] || "")
           setPogSnapshotMonth(data.snapshot_month || "")
         }
       } catch (e) {
@@ -805,7 +799,7 @@ export default function App() {
     setMappingError("")
     setCtkmMappingOverride({})
     setPogMappingOverride({})
-  }, [ctkmFile, ctkmSheetName, pogFile, pogSheetName])
+  }, [ctkmFile, ctkmSheetName, pogFile])
 
   useEffect(() => {
     writeJsonStorage(OUTPUT_PRESET_KEY, selectedOutputColumns)
@@ -841,6 +835,7 @@ export default function App() {
     }
   }
 
+  // Simulate progress steps during API call
   const simulateProgress = useCallback(() => {
     setStepIdx(0)
     let i = 0
@@ -890,6 +885,7 @@ export default function App() {
       if (!res.ok) {
         const err = await res.json()
         if (res.status === 429) {
+          // Rate limit — thông báo thân thiện hơn
           const detail = err.detail || {}
           const msg = typeof detail === "object"
             ? (detail.suggestion || detail.message || "Gemini free tier bị quá tải.")
@@ -909,7 +905,8 @@ export default function App() {
       setResult({ summary: data.summary, warnings: data.warnings })
       setStep(STEPS.done)
       refreshPresets()
-      const pres = await authFetch(`${API}/api/preview/${data.job_id}?rows=50`)
+      // Load preview
+      const pres = await authFetch(`${API}/api/preview/${data.job_id}?rows=100`)
       if (pres.ok) {
         const pdata = await pres.json()
         setPreview(pdata)
@@ -1132,17 +1129,25 @@ export default function App() {
         nextPog[src] = dst
       })
 
-      if (storedCtkm) setCtkmMappingOverride({ ...nextCtkm, ...storedCtkm })
-      else setCtkmMappingOverride(nextCtkm)
+      if (storedCtkm) {
+        setCtkmMappingOverride({ ...nextCtkm, ...storedCtkm })
+      } else {
+        setCtkmMappingOverride(nextCtkm)
+      }
 
-      if (storedPog) setPogMappingOverride({ ...nextPog, ...storedPog })
-      else setPogMappingOverride(nextPog)
+      if (storedPog) {
+        setPogMappingOverride({ ...nextPog, ...storedPog })
+      } else {
+        setPogMappingOverride(nextPog)
+      }
 
       if (Array.isArray(storedOutput)) {
         setSelectedOutputColumns(storedOutput.filter(x => typeof x === "string" && x.trim()))
       }
 
-      if (!sharedPreset && storedPreset) writeJsonStorage(presetKey, storedPreset)
+      if (!sharedPreset && storedPreset) {
+        writeJsonStorage(presetKey, storedPreset)
+      }
     } catch (e) {
       setMappingPreview(null)
       setMappingError(e.message)
@@ -1199,6 +1204,7 @@ export default function App() {
     ))
   }
 
+  // ── Summary stats from result.summary dict ─────────────────────────────────
   const S = result?.summary ?? {}
   const matched   = S["So dong khop (Matched)"]         ?? "—"
   const itemMatch = S["So item duy nhat khop"]           ?? "—"
@@ -1214,6 +1220,8 @@ export default function App() {
     <>
       <style>{css}</style>
       <div className="shell">
+
+        {/* Topbar */}
         <div className="topbar">
           <div className="topbar-logo">Pharma<span>Ops</span></div>
           <div className="topbar-sub">Kiểm tra hạn dùng và vận hành khuyến mãi</div>
@@ -1221,16 +1229,28 @@ export default function App() {
             <button
               className={activeModule === "expiration" ? "active" : ""}
               onClick={() => setActiveModule("expiration")}
-            >Kiểm tra hạn dùng</button>
+            >
+              Kiểm tra hạn dùng
+            </button>
             {isAdmin && <>
-              <button className={activeModule === "ctkm" ? "active" : ""}
-                onClick={() => { stopCamera(); setActiveModule("ctkm") }}>Công cụ CTKM</button>
-              <button className={activeModule === "temr" ? "active" : ""}
-                onClick={() => { stopCamera(); setActiveModule("temr") }}>Phân bổ Tem R</button>
+              <button
+                className={activeModule === "ctkm" ? "active" : ""}
+                onClick={() => { stopCamera(); setActiveModule("ctkm") }}
+              >
+                Công cụ CTKM
+              </button>
+              <button
+                className={activeModule === "temr" ? "active" : ""}
+                onClick={() => { stopCamera(); setActiveModule("temr") }}
+              >
+                Phân bổ Tem R
+              </button>
             </>}
           </nav>
           <div className="backend-status">
-            <span className={`status-dot ${backendStatus === "ok" ? "ok" : backendStatus === "checking" ? "warn" : "err"}`} />
+            <span className={`status-dot ${
+              backendStatus === "ok" ? "ok" : backendStatus === "checking" ? "warn" : "err"
+            }`} />
             {backendStatus === "ok" && "Backend kết nối"}
             {backendStatus === "checking" && "Đang kiểm tra backend…"}
             {backendStatus === "offline" && "Mất kết nối backend — hệ thống sẽ tự thử lại"}
@@ -1255,34 +1275,82 @@ export default function App() {
         </div>
 
         <div className={`main ${activeModule}-mode`}>
+
+          {/* ── Sidebar ─────────────────────────────────────────────────────── */}
           <div className="sidebar">
+
+            {/* File CTKM */}
             <div className="card">
               <div className="card-title">1 · File chương trình KM</div>
-              <Dropzone label="File CTKM (.xlsx)" sub="Kéo thả hoặc click để chọn" file={ctkmFile} onFile={setCtkmFile} />
-              {ctkmFile && <>
-                {ctkmSheetLoading && <div className="sheet-hint">Đang đọc sheet CTKM…</div>}
-                {!ctkmSheetLoading && ctkmSheetOptions.length > 0 && <>
-                  <select className="sheet-select" value={ctkmSheetName} onChange={e => setCtkmSheetName(e.target.value)}>
-                    {ctkmSheetOptions.map(sn => <option key={sn} value={sn}>{sn}</option>)}
-                  </select>
-                  <div className="sheet-hint">Chọn sheet CTKM cần tổng hợp trước khi chạy.</div>
-                </>}
-                {ctkmSheetError && <div className="sheet-hint" style={{color:"var(--red)"}}>{ctkmSheetError}</div>}
-                {ctkmAdvanced && ctkmSheetName && pogFile && <>
-                  <button className="btn btn-ghost" style={{marginTop:12}} onClick={() => handlePreviewMapping(false)} disabled={mappingLoading}>
-                    {mappingLoading ? "Đang lấy mapping…" : "Xem / duyệt mapping"}
-                  </button>
-                  <button className="btn btn-ghost" style={{marginTop:8}} onClick={() => handlePreviewMapping(true)} disabled={mappingLoading}>
-                    Mapping thủ công (không gọi Gemini)
-                  </button>
-                </>}
-                {mappingError && <div className="sheet-hint" style={{color:"var(--red)"}}>{mappingError}</div>}
-              </>}
+              <Dropzone
+                label="File CTKM (.xlsx)"
+                sub="Kéo thả hoặc click để chọn"
+                file={ctkmFile}
+                onFile={setCtkmFile}
+              />
+              {ctkmFile && (
+                <>
+                  {ctkmSheetLoading && (
+                    <div className="sheet-hint">Đang đọc sheet CTKM…</div>
+                  )}
+                  {!ctkmSheetLoading && ctkmSheetOptions.length > 0 && (
+                    <>
+                      <select
+                        className="sheet-select"
+                        value={ctkmSheetName}
+                        onChange={e => setCtkmSheetName(e.target.value)}
+                      >
+                        {ctkmSheetOptions.map(sn => (
+                          <option key={sn} value={sn}>{sn}</option>
+                        ))}
+                      </select>
+                      <div className="sheet-hint">
+                        Chọn sheet CTKM cần tổng hợp trước khi chạy.
+                      </div>
+                    </>
+                  )}
+                  {ctkmSheetError && (
+                    <div className="sheet-hint" style={{color:"var(--red)"}}>
+                      {ctkmSheetError}
+                    </div>
+                  )}
+                  {ctkmAdvanced && ctkmSheetName && pogFile && (
+                    <>
+                      <button
+                        className="btn btn-ghost"
+                        style={{marginTop:12}}
+                        onClick={() => handlePreviewMapping(false)}
+                        disabled={mappingLoading}
+                      >
+                        {mappingLoading ? "Đang lấy mapping…" : "Xem / duyệt mapping"}
+                      </button>
+                      <button
+                        className="btn btn-ghost"
+                        style={{marginTop:8}}
+                        onClick={() => handlePreviewMapping(true)}
+                        disabled={mappingLoading}
+                      >
+                        Mapping thủ công (không gọi Gemini)
+                      </button>
+                    </>
+                  )}
+                  {mappingError && (
+                    <div className="sheet-hint" style={{color:"var(--red)"}}>
+                      {mappingError}
+                    </div>
+                  )}
+                </>
+              )}
             </div>
 
             <div className="card">
               <div className="card-title">1b · File Clearance (tùy chọn)</div>
-              <Dropzone label="File Clearance (.xlsx)" sub="Bổ sung để tạo sheet xác nhận CTKM / Clearance" file={clearanceFile} onFile={setClearanceFile} />
+              <Dropzone
+                label="File Clearance (.xlsx)"
+                sub="Bổ sung để tạo sheet xác nhận CTKM / Clearance"
+                file={clearanceFile}
+                onFile={setClearanceFile}
+              />
             </div>
 
             {ctkmAdvanced && mappingPreview && (
@@ -1293,188 +1361,684 @@ export default function App() {
                   </div>
                 )}
                 <div className="card-title">Mapping CTKM cần duyệt</div>
-                <div className="sheet-hint" style={{marginBottom:12}}>Sheet: <b>{mappingPreview.ctkm_sheet_name}</b>. Sửa các cột mơ hồ trước khi chạy.</div>
+                <div className="sheet-hint" style={{marginBottom:12}}>
+                  Sheet: <b>{mappingPreview.ctkm_sheet_name}</b>. Sửa các cột mơ hồ trước khi chạy.
+                </div>
                 <div className="table-wrap mapping-table" style={{maxHeight:420, overflowY:"auto"}}>
-                  <table><thead><tr><th>Cột gốc</th><th>Gợi ý</th><th>Confidence</th><th>Chốt lại</th></tr></thead><tbody>
-                    {Object.entries(mappingPreview.ctkm_mapping?.mapping || {}).map(([src, dst]) => (
-                      <tr key={src}><td title={src}>{src}</td><td>{dst}</td><td>{fmt(mappingPreview.ctkm_mapping?.confidence?.[src])}</td><td>
-                        <select className="sheet-select" style={{marginTop:0, minWidth:190}} value={ctkmMappingOverride[src] || dst || ""} onChange={e => updateCtkmMapping(src, e.target.value)}>
-                          <option value="">(không map)</option>{FACT_FIELDS.map(f => <option key={f} value={f}>{f}</option>)}
-                        </select>
-                      </td></tr>
-                    ))}
-                    {(mappingPreview.ctkm_mapping?.unmapped || []).map(src => (
-                      <tr key={src}><td title={src}>{src}</td><td>(KHÔNG MAP)</td><td>—</td><td>
-                        <select className="sheet-select" style={{marginTop:0, minWidth:190}} value={ctkmMappingOverride[src] || ""} onChange={e => updateCtkmMapping(src, e.target.value)}>
-                          <option value="">(không map)</option>{FACT_FIELDS.map(f => <option key={f} value={f}>{f}</option>)}
-                        </select>
-                      </td></tr>
-                    ))}
-                  </tbody></table>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Cột gốc</th>
+                        <th>Gợi ý</th>
+                        <th>Confidence</th>
+                        <th>Chốt lại</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(Object.entries(mappingPreview.ctkm_mapping?.mapping || {})).map(([src, dst]) => (
+                        <tr key={src}>
+                          <td title={src}>{src}</td>
+                          <td>{dst}</td>
+                          <td>{fmt(mappingPreview.ctkm_mapping?.confidence?.[src])}</td>
+                          <td>
+                            <select
+                              className="sheet-select"
+                              style={{marginTop:0, minWidth:190}}
+                              value={ctkmMappingOverride[src] || dst || ""}
+                              onChange={e => updateCtkmMapping(src, e.target.value)}
+                            >
+                              <option value="">(không map)</option>
+                              {FACT_FIELDS.map(f => <option key={f} value={f}>{f}</option>)}
+                            </select>
+                          </td>
+                        </tr>
+                      ))}
+                      {(mappingPreview.ctkm_mapping?.unmapped || []).map(src => (
+                        <tr key={src}>
+                          <td title={src}>{src}</td>
+                          <td>(KHÔNG MAP)</td>
+                          <td>—</td>
+                          <td>
+                            <select
+                              className="sheet-select"
+                              style={{marginTop:0, minWidth:190}}
+                              value={ctkmMappingOverride[src] || ""}
+                              onChange={e => updateCtkmMapping(src, e.target.value)}
+                            >
+                              <option value="">(không map)</option>
+                              {FACT_FIELDS.map(f => <option key={f} value={f}>{f}</option>)}
+                            </select>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="sheet-hint" style={{marginTop:10}}>
+                  Mapping đã duyệt sẽ được gửi vào backend, nên lần chạy sau có thể dùng cache thay vì gọi Gemini lại.
                 </div>
                 <div className="card-title" style={{marginTop:20}}>Mapping POG cần duyệt</div>
-                <div className="sheet-hint" style={{marginBottom:12}}>Sheet: <b>{mappingPreview.pog_sheet_name}</b>. Kiểm tra kỹ các cột `item_id`, `store_id`, `pog_code` nếu có.</div>
-                <div className="table-wrap mapping-table" style={{maxHeight:320, overflowY:"auto"}}>
-                  <table><thead><tr><th>Cột gốc</th><th>Gợi ý</th><th>Confidence</th><th>Chốt lại</th></tr></thead><tbody>
-                    {Object.entries(mappingPreview.pog_mapping?.mapping || {}).map(([src, dst]) => (
-                      <tr key={src}><td title={src}>{src}</td><td>{dst}</td><td>{fmt(mappingPreview.pog_mapping?.confidence?.[src])}</td><td>
-                        <select className="sheet-select" style={{marginTop:0, minWidth:190}} value={pogMappingOverride[src] || dst || ""} onChange={e => updatePogMapping(src, e.target.value)}>
-                          <option value="">(không map)</option>{POG_FIELDS.map(f => <option key={f} value={f}>{f}</option>)}
-                        </select>
-                      </td></tr>
-                    ))}
-                    {(mappingPreview.pog_mapping?.unmapped || []).map(src => (
-                      <tr key={src}><td title={src}>{src}</td><td>(KHÔNG MAP)</td><td>—</td><td>
-                        <select className="sheet-select" style={{marginTop:0, minWidth:190}} value={pogMappingOverride[src] || ""} onChange={e => updatePogMapping(src, e.target.value)}>
-                          <option value="">(không map)</option>{POG_FIELDS.map(f => <option key={f} value={f}>{f}</option>)}
-                        </select>
-                      </td></tr>
-                    ))}
-                  </tbody></table>
+                <div className="sheet-hint" style={{marginBottom:12}}>
+                  Sheet: <b>{mappingPreview.pog_sheet_name}</b>. Kiểm tra kỹ các cột `item_id`, `store_id`, `pog_code` nếu có.
                 </div>
-                <button className="btn btn-primary" style={{marginTop:16}} onClick={saveApprovedMapping} disabled={mappingSaving}>
+                <div className="table-wrap mapping-table" style={{maxHeight:320, overflowY:"auto"}}>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Cột gốc</th>
+                        <th>Gợi ý</th>
+                        <th>Confidence</th>
+                        <th>Chốt lại</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(Object.entries(mappingPreview.pog_mapping?.mapping || {})).map(([src, dst]) => (
+                        <tr key={src}>
+                          <td title={src}>{src}</td>
+                          <td>{dst}</td>
+                          <td>{fmt(mappingPreview.pog_mapping?.confidence?.[src])}</td>
+                          <td>
+                            <select
+                              className="sheet-select"
+                              style={{marginTop:0, minWidth:190}}
+                              value={pogMappingOverride[src] || dst || ""}
+                              onChange={e => updatePogMapping(src, e.target.value)}
+                            >
+                              <option value="">(không map)</option>
+                              {POG_FIELDS.map(f => <option key={f} value={f}>{f}</option>)}
+                            </select>
+                          </td>
+                        </tr>
+                      ))}
+                      {(mappingPreview.pog_mapping?.unmapped || []).map(src => (
+                        <tr key={src}>
+                          <td title={src}>{src}</td>
+                          <td>(KHÔNG MAP)</td>
+                          <td>—</td>
+                          <td>
+                            <select
+                              className="sheet-select"
+                              style={{marginTop:0, minWidth:190}}
+                              value={pogMappingOverride[src] || ""}
+                              onChange={e => updatePogMapping(src, e.target.value)}
+                            >
+                              <option value="">(không map)</option>
+                              {POG_FIELDS.map(f => <option key={f} value={f}>{f}</option>)}
+                            </select>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <button
+                  className="btn btn-primary"
+                  style={{marginTop:16}}
+                  onClick={saveApprovedMapping}
+                  disabled={mappingSaving}
+                >
                   {mappingSaving ? <><div className="spinner" /> Đang lưu mapping…</> : "Lưu mapping đã xác nhận"}
                 </button>
                 {mappingSaved && <div className="sheet-hint" style={{color:"var(--green)"}}>{mappingSaved}</div>}
               </div>
             )}
 
+            {/* File POG */}
             <div className="card">
               <div className="card-title">2 · File vị trí kệ (POG)</div>
-              <Dropzone label="File POG (.xlsx)" sub="Snapshot tháng tương ứng" file={pogFile} onFile={setPogFile} />
-              {pogSheetLoading && <div className="sheet-hint">Đang đọc danh sách sheet POG…</div>}
-              {!pogSheetLoading && pogSheetOptions.length > 0 && <>
-                <select className="sheet-select" value={pogSheetName} onChange={e => {
-                  setPogSheetName(e.target.value)
-                  setMappingPreview(null)
-                  setPogMappingOverride({})
-                }}>
-                  {pogSheetOptions.length > 1 && <option value="">— Chọn sheet POG —</option>}
-                  {pogSheetOptions.map(sn => <option key={sn} value={sn}>{sn}</option>)}
-                </select>
-                <div className="sheet-hint">Chỉ sheet POG đã chọn sẽ được đọc đầy đủ.</div>
-                {pogSheetOptions.length > 1 && !pogSheetName && (
-                  <div className="sheet-hint" style={{color:"var(--accent)"}}>File POG có nhiều sheet. Hãy chọn đúng sheet trước khi chạy.</div>
-                )}
-              </>}
-              {pogFile && pogSnapshotMonth && <div className="sheet-hint">Snapshot POG đọc được: <b>{pogSnapshotMonth}</b></div>}
-              {pogFile && pogInspectError && <div className="sheet-hint" style={{color:"var(--red)"}}>{pogInspectError}</div>}
+              <Dropzone
+                label="File POG (.xlsx)"
+                sub="Snapshot tháng tương ứng"
+                file={pogFile}
+                onFile={setPogFile}
+              />
+              {pogSheetLoading && (
+                <div className="sheet-hint">Đang đọc danh sách sheet POG…</div>
+              )}
+              {!pogSheetLoading && pogSheetOptions.length > 0 && (
+                <>
+                  <select
+                    className="sheet-select"
+                    value={pogSheetName}
+                    onChange={e => {
+                      setPogSheetName(e.target.value)
+                      setMappingPreview(null)
+                      setPogMappingOverride({})
+                    }}
+                  >
+                    {pogSheetOptions.map(sn => (
+                      <option key={sn} value={sn}>{sn}</option>
+                    ))}
+                  </select>
+                  <div className="sheet-hint">Chỉ sheet POG đã chọn sẽ được đọc đầy đủ.</div>
+                </>
+              )}
+              {pogFile && pogSnapshotMonth && (
+                <div className="sheet-hint">
+                  Snapshot POG đọc được: <b>{pogSnapshotMonth}</b>
+                </div>
+              )}
+              {pogFile && pogInspectError && (
+                <div className="sheet-hint" style={{color:"var(--red)"}}>
+                  {pogInspectError}
+                </div>
+              )}
             </div>
 
+            {/* Tháng + options */}
             <div className="card">
               <div className="card-title">3 · Tháng báo cáo</div>
-              <input type="month" className="month-input" value={month} onChange={e => setMonth(e.target.value)} />
-              {pogSnapshotMonth && month && pogSnapshotMonth !== month && <div className="sheet-hint" style={{color:"var(--accent)"}}>POG đang là {pogSnapshotMonth}, còn tháng báo cáo là {month}.</div>}
-              {ctkmSheetOptions.length > 1 && !ctkmSheetName && <div className="sheet-hint" style={{color:"var(--accent)"}}>Hãy chọn sheet CTKM để tiếp tục.</div>}
-              {ctkmAdvanced && <>
-                <label style={{display:"flex", alignItems:"center", gap:8, marginTop:14, fontSize:12.5, color:"var(--text2)", cursor:"pointer"}}>
-                  <input type="checkbox" checked={strict} onChange={e => setStrict(e.target.checked)} /> Dừng nếu tháng POG không khớp
-                </label>
-                <label style={{display:"flex", alignItems:"center", gap:8, marginTop:10, fontSize:12.5, color:"var(--text2)", cursor:"pointer"}}>
-                  <input type="checkbox" checked={savedOnly} onChange={e => setSavedOnly(e.target.checked)} /> Chỉ dùng mapping đã lưu (không gọi Gemini)
-                </label>
-              </>}
+              <input
+                type="month"
+                className="month-input"
+                value={month}
+                onChange={e => setMonth(e.target.value)}
+              />
+              {pogSnapshotMonth && month && pogSnapshotMonth !== month && (
+                <div className="sheet-hint" style={{color:"var(--accent)"}}>
+                  POG đang là {pogSnapshotMonth}, còn tháng báo cáo là {month}.
+                </div>
+              )}
+              {ctkmSheetOptions.length > 1 && !ctkmSheetName && (
+                <div className="sheet-hint" style={{color:"var(--accent)"}}>
+                  Hãy chọn sheet CTKM để tiếp tục.
+                </div>
+              )}
+              {ctkmAdvanced && (
+                <>
+                  <label style={{
+                    display:"flex", alignItems:"center", gap:8,
+                    marginTop:14, fontSize:12.5, color:"var(--text2)", cursor:"pointer"
+                  }}>
+                    <input type="checkbox" checked={strict} onChange={e => setStrict(e.target.checked)} />
+                    Dừng nếu tháng POG không khớp
+                  </label>
+                  <label style={{
+                    display:"flex", alignItems:"center", gap:8,
+                    marginTop:10, fontSize:12.5, color:"var(--text2)", cursor:"pointer"
+                  }}>
+                    <input type="checkbox" checked={savedOnly} onChange={e => setSavedOnly(e.target.checked)} />
+                    Chỉ dùng mapping đã lưu (không gọi Gemini)
+                  </label>
+                </>
+              )}
             </div>
 
-            <button className="advanced-toggle" onClick={() => setCtkmAdvanced(value => !value)}>{ctkmAdvanced ? "− Ẩn thiết lập nâng cao" : "+ Thiết lập nâng cao"}</button>
+            <button className="advanced-toggle" onClick={() => setCtkmAdvanced(value => !value)}>
+              {ctkmAdvanced ? "− Ẩn thiết lập nâng cao" : "+ Thiết lập nâng cao"}
+            </button>
 
             <div className={`card advanced-card ${ctkmAdvanced ? "" : "hidden"}`}>
               <div className="card-title">4 · Cột output mong muốn</div>
-              <div className="sheet-hint">Chọn cột cần giữ trong file kết quả. Để trống nghĩa là dùng mặc định toàn bộ cột.</div>
+              <div className="sheet-hint">
+                Chọn cột cần giữ trong file kết quả. Để trống nghĩa là dùng mặc định toàn bộ cột.
+              </div>
               <div className="output-field-grid">
-                {OUTPUT_FIELDS.map(field => <label key={field} style={{display:"flex", gap:8, alignItems:"center", fontSize:12.5, color:"var(--text2)", cursor:"pointer"}}>
-                  <input type="checkbox" checked={selectedOutputColumns.includes(field)} onChange={() => toggleOutputColumn(field)} style={{accentColor:"var(--accent)"}} />{field}
-                </label>)}
+                {OUTPUT_FIELDS.map(field => (
+                  <label key={field} style={{display:"flex", gap:8, alignItems:"center", fontSize:12.5, color:"var(--text2)", cursor:"pointer"}}>
+                    <input
+                      type="checkbox"
+                      checked={selectedOutputColumns.includes(field)}
+                      onChange={() => toggleOutputColumn(field)}
+                      style={{accentColor:"var(--accent)"}}
+                    />
+                    {field}
+                  </label>
+                ))}
+              </div>
+              <div className="sheet-hint" style={{marginTop:10}}>
+                Nếu không chọn gì, hệ thống sẽ xuất theo cấu trúc mặc định hiện tại.
               </div>
             </div>
 
             <div className={`card advanced-card ${ctkmAdvanced ? "" : "hidden"}`}>
               <div className="card-title">5 · Preset đã lưu</div>
-              <button className="btn btn-ghost" style={{marginTop:12}} onClick={refreshPresets} disabled={presetLoading}>{presetLoading ? "Đang tải…" : "Làm mới preset"}</button>
-              {presetError && <div className="sheet-hint" style={{color:"var(--red)", marginTop:8}}>{presetError}</div>}
+              <div className="sheet-hint">
+                Các mapping và output đã chốt sẽ được lưu ở backend theo signature workbook.
+              </div>
+              <button className="btn btn-ghost" style={{marginTop:12}} onClick={refreshPresets} disabled={presetLoading}>
+                {presetLoading ? "Đang tải…" : "Làm mới preset"}
+              </button>
+              {presetError && (
+                <div className="sheet-hint" style={{color:"var(--red)", marginTop:8}}>{presetError}</div>
+              )}
               <div style={{display:"flex", flexDirection:"column", gap:10, marginTop:12}}>
-                {savedPresets.length === 0 && !presetLoading && <div className="sheet-hint">Chưa có preset nào.</div>}
-                {savedPresets.map(item => <div key={item.key} style={{border:"1px solid var(--border)", borderRadius:"var(--radius)", padding:"10px 12px", background:"var(--surface2)"}}>
-                  <div style={{fontSize:12, color:"var(--text)", fontFamily:"var(--mono)", wordBreak:"break-all"}}>{item.key.slice(0,36)}{item.key.length > 36 ? "…" : ""}</div>
-                  <button className="btn btn-ghost" style={{marginTop:8, padding:"8px 12px"}} onClick={() => deletePreset(item.key)}>Xoá preset</button>
-                </div>)}
+                {savedPresets.length === 0 && !presetLoading && (
+                  <div className="sheet-hint">Chưa có preset nào.</div>
+                )}
+                {savedPresets.map(item => (
+                  <div key={item.key} style={{
+                    border: "1px solid var(--border)", borderRadius: "var(--radius)", padding: "10px 12px",
+                    background: "var(--surface2)",
+                  }}>
+                    <div style={{fontSize:12, color:"var(--text)", fontFamily:"var(--mono)", wordBreak:"break-all"}}>
+                      {item.key.slice(0, 36)}{item.key.length > 36 ? "…" : ""}
+                    </div>
+                    <div className="sheet-hint">
+                      {item.updated_at ? `Cập nhật: ${item.updated_at}` : "Chưa rõ thời gian"}
+                      {item.has_ctkm_mapping ? " · CTKM" : ""}
+                      {item.has_pog_mapping ? " · POG" : ""}
+                      {item.has_output_columns ? " · Output" : ""}
+                    </div>
+                    <button
+                      className="btn btn-ghost"
+                      style={{marginTop:8, padding:"8px 12px"}}
+                      onClick={() => deletePreset(item.key)}
+                    >
+                      Xoá preset
+                    </button>
+                  </div>
+                ))}
               </div>
             </div>
 
             <div className="card tem-r-card">
               <div className="card-title">Tem R · phân bổ theo tồn và vị trí kệ</div>
-              <Dropzone label="File Tem R (.xlsx)" sub="Tải file lên rồi chọn các cột dùng để phân bổ" file={temRFile} onFile={file => {
-                setTemRFile(file); setTemRResult(null); localStorage.removeItem(TEM_R_RESULT_KEY)
-              }} />
+              <Dropzone
+                label="File Tem R (.xlsx)"
+                sub="Tải file lên rồi chọn các cột dùng để phân bổ"
+                file={temRFile}
+                onFile={file => {
+                  setTemRFile(file)
+                  setTemRResult(null)
+                  localStorage.removeItem(TEM_R_RESULT_KEY)
+                }}
+              />
               {temRInspecting && <div className="sheet-hint">Đang đọc danh sách cột…</div>}
-              {temRFile && !temRInspecting && !temRError && temRColumns.length === 0 && <div className="status-strip warn" style={{marginTop:10}}>Không đọc được cột nào trong file Tem R.</div>}
-              {temRFile && !temRInspecting && temRColumns.length > 0 && <>
-                {temRInspectInfo && <div className="sheet-hint" style={{color:"var(--green)"}}>Đã đọc sheet “{temRInspectInfo.sheetName}”, tiêu đề tại dòng {temRInspectInfo.headerRow}: {temRColumns.length} cột.</div>}
-                <label className="sheet-hint" style={{display:"block", marginTop:12}}>Sheet chứa mã P và tồn kho</label>
-                <select className="sheet-select" value={temRSheetName} onChange={e => {
-                  const option = temRSheetOptions.find(item => item.sheet_name === e.target.value)
-                  setTemRSheetName(e.target.value); setTemRColumns(option?.columns || []); setTemRItemColumn(option?.suggested_item_column || "")
-                  setTemRStockColumn(option?.suggested_stock_column || ""); setTemRColumnMapping(option?.suggested_mapping || {})
-                  setTemRInspectInfo(option ? {sheetName:option.sheet_name, headerRow:option.header_row} : null)
-                }}>{temRSheetOptions.map(option => <option key={option.sheet_name} value={option.sheet_name}>{option.sheet_name}</option>)}</select>
-                <div className="sheet-hint" style={{display:"block", marginTop:12}}>Xác nhận các cột bắt buộc</div>
-                {TEM_R_REQUIRED_COLUMNS.map(field => <div className="mapping-row" key={field}>
-                  <label className="sheet-hint">{TEM_R_FIELD_LABELS[field]}</label>
-                  <select className="sheet-select" value={temRColumnMapping[field] || ""} onChange={e => {
-                    const value=e.target.value; setTemRColumnMapping(current => ({...current,[field]:value})); if (field === "ITEMID") setTemRItemColumn(value)
-                  }}><option value="">— Chọn cột —</option>{temRColumns.map(column => <option key={column} value={column}>{column}</option>)}</select>
-                </div>)}
-                <label className="sheet-hint" style={{display:"block", marginTop:12}}>Cột nào chứa số lượng tồn kho?</label>
-                <select className="sheet-select" value={temRStockColumn} onChange={e => setTemRStockColumn(e.target.value)}>
-                  <option value="">— Chọn cột tồn kho —</option>{temRColumns.map(column => <option key={column} value={column}>{column}</option>)}
-                </select>
-                <label className="sheet-hint" style={{display:"block", marginTop:12}}>Khoảng cách vị trí tối đa được phép thay</label>
-                <input className="month-input" type="number" min="0.1" step="0.1" value={temRMaxDistance} onChange={e => setTemRMaxDistance(Number(e.target.value))} />
-              </>}
-              <button className="btn btn-primary" style={{marginTop:12}} disabled={!temRFile || !temRMappingComplete || temRInspecting || temRLoading || backendStatus !== "ok"} onClick={handleTemR}>
-                {temRLoading ? <><div className="spinner" /> {ownQueuePosition ? `Đang chờ · vị trí ${ownQueuePosition}…` : "Đang phân bổ Tem R…"}</> : "Phân bổ Tem R"}
+              {temRFile && !temRInspecting && !temRError && temRColumns.length === 0 && (
+                <div className="status-strip warn" style={{marginTop:10}}>Không đọc được cột nào trong file Tem R.</div>
+              )}
+              {temRFile && !temRInspecting && temRColumns.length > 0 && (
+                <>
+                  {temRInspectInfo && (
+                    <div className="sheet-hint" style={{color:"var(--green)"}}>
+                      Đã đọc sheet “{temRInspectInfo.sheetName}”, tiêu đề tại dòng {temRInspectInfo.headerRow}: {temRColumns.length} cột.
+                    </div>
+                  )}
+                  <label className="sheet-hint" style={{display:"block", marginTop:12}}>Sheet chứa mã P và tồn kho</label>
+                  <select className="sheet-select" value={temRSheetName} onChange={e => {
+                    const option = temRSheetOptions.find(item => item.sheet_name === e.target.value)
+                    setTemRSheetName(e.target.value)
+                    setTemRColumns(option?.columns || [])
+                    setTemRItemColumn(option?.suggested_item_column || "")
+                    setTemRStockColumn(option?.suggested_stock_column || "")
+                    setTemRColumnMapping(option?.suggested_mapping || {})
+                    setTemRInspectInfo(option ? {sheetName:option.sheet_name, headerRow:option.header_row} : null)
+                  }}>
+                    {temRSheetOptions.map(option => <option key={option.sheet_name} value={option.sheet_name}>{option.sheet_name}</option>)}
+                  </select>
+                  <div className="sheet-hint" style={{display:"block", marginTop:12}}>Xác nhận các cột bắt buộc</div>
+                  {TEM_R_REQUIRED_COLUMNS.map(field => (
+                    <div className="mapping-row" key={field}>
+                      <label className="sheet-hint">{TEM_R_FIELD_LABELS[field]}</label>
+                      <select
+                        className="sheet-select"
+                        value={temRColumnMapping[field] || ""}
+                        onChange={e => {
+                          const value = e.target.value
+                          setTemRColumnMapping(current => ({...current, [field]:value}))
+                          if (field === "ITEMID") setTemRItemColumn(value)
+                        }}
+                      >
+                        <option value="">— Chọn cột —</option>
+                        {temRColumns.map(column => <option key={column} value={column}>{column}</option>)}
+                      </select>
+                    </div>
+                  ))}
+                  <label className="sheet-hint" style={{display:"block", marginTop:12}}>
+                    Cột nào chứa số lượng tồn kho?
+                  </label>
+                  <select
+                    className="sheet-select"
+                    value={temRStockColumn}
+                    onChange={e => setTemRStockColumn(e.target.value)}
+                  >
+                    <option value="">— Chọn cột tồn kho —</option>
+                    {temRColumns.map(column => <option key={column} value={column}>{column}</option>)}
+                  </select>
+                  <div className="sheet-hint">
+                    Hệ thống chỉ gợi ý; hãy kiểm tra và xác nhận trước khi phân bổ.
+                  </div>
+                  <label className="sheet-hint" style={{display:"block", marginTop:12}}>
+                    Khoảng cách vị trí tối đa được phép thay
+                  </label>
+                  <input
+                    className="month-input"
+                    type="number"
+                    min="0.1"
+                    step="0.1"
+                    value={temRMaxDistance}
+                    onChange={e => setTemRMaxDistance(Number(e.target.value))}
+                  />
+                  {temRSelectedSources.length !== new Set(temRSelectedSources).size && (
+                    <div className="sheet-hint" style={{color:"var(--red)"}}>
+                      Mỗi trường phải sử dụng một cột khác nhau.
+                    </div>
+                  )}
+                </>
+              )}
+              <button
+                className="btn btn-primary"
+                style={{marginTop:12}}
+                disabled={!temRFile || !temRMappingComplete || temRInspecting || temRLoading || backendStatus !== "ok"}
+                onClick={handleTemR}
+              >
+                {temRLoading
+                  ? <><div className="spinner" /> {ownQueuePosition ? `Đang chờ · vị trí ${ownQueuePosition}…` : "Đang phân bổ Tem R…"}</>
+                  : "Phân bổ Tem R"}
               </button>
+              {temRLoading && queueHasWaiting && (
+                <div className="status-strip info" style={{marginTop:10}}>
+                  Tác vụ của bạn đang ở vị trí {ownQueuePosition || waitingJobs} trong hàng chờ. Không cần bấm lại.
+                </div>
+              )}
               {temRError && <div className="sheet-hint" style={{color:"var(--red)"}}>{temRError}</div>}
-              {temRResult && <><div className="sheet-hint" style={{color:"var(--green)"}}>Đã thay {fmt(temRResult.summary?.tem_r_replaced_rows)} vị trí; bỏ qua {fmt(temRResult.summary?.tem_r_skipped_stock_rows)} dòng thiếu/lỗi tồn kho; ngoại lệ {fmt(temRResult.summary?.tem_r_exceptions)}.</div>
-                <button className="btn btn-ghost" style={{marginTop:10}} onClick={downloadTemR}>Tải file Tem R kết quả</button></>}
+              {temRResult && (
+                <>
+                  <div className="sheet-hint" style={{color:"var(--green)"}}>
+                    Đã thay {fmt(temRResult.summary?.tem_r_replaced_rows)} vị trí;
+                    bỏ qua {fmt(temRResult.summary?.tem_r_skipped_stock_rows)} dòng thiếu/lỗi tồn kho;
+                    ngoại lệ {fmt(temRResult.summary?.tem_r_exceptions)}.
+                  </div>
+                  <button className="btn btn-ghost" style={{marginTop:10}} onClick={downloadTemR}>
+                    Tải file Tem R kết quả
+                  </button>
+                </>
+              )}
             </div>
 
-            {backendStatus === "offline" && <div className="status-strip error">⚠ Tạm thời mất kết nối backend. Hệ thống sẽ tự kiểm tra lại; dữ liệu bạn đã chọn vẫn được giữ nguyên.</div>}
+            {backendStatus === "offline" && (
+              <div className="status-strip error">
+                ⚠ Tạm thời mất kết nối backend. Hệ thống sẽ tự kiểm tra lại; dữ liệu bạn đã chọn vẫn được giữ nguyên.
+              </div>
+            )}
 
-            <button className="btn btn-primary" disabled={!canRun} onClick={handleRun}>
-              {step === STEPS.running ? <><div className="spinner" /> {ownQueuePosition ? `Đang chờ · vị trí ${ownQueuePosition}…` : "Đang xử lý…"}</> : "▶ Chạy pipeline"}
+            {/* Run button */}
+            <button
+              className="btn btn-primary"
+              disabled={!canRun}
+              onClick={handleRun}
+            >
+              {step === STEPS.running
+                ? <><div className="spinner" /> {ownQueuePosition ? `Đang chờ · vị trí ${ownQueuePosition}…` : "Đang xử lý…"}</>
+                : "▶ Chạy pipeline"}
             </button>
-            {step === STEPS.error && error && <div className="status-strip error">⚠ {error}</div>}
-            {warnings.length > 0 && <div><div className="card-title" style={{marginBottom:8}}>Cảnh báo</div><div className="warn-list">{warnings.map((w,i) => <div key={i} className="warn-item">{w}</div>)}</div></div>}
+
+            {/* Progress */}
+            {step === STEPS.running && (
+              <div className="progress-wrap">
+                <div className="progress-bar">
+                  <div className="progress-fill"
+                    style={{width:`${Math.round((stepIdx/STEP_LABELS.length)*100)}%`,
+                            transition:"width .4s"}} />
+                </div>
+                <div className="progress-label">
+                  {STEP_LABELS[Math.min(stepIdx, STEP_LABELS.length-1)]}
+                </div>
+              </div>
+            )}
+
+            {/* Error */}
+            {step === STEPS.error && error && (
+              <div className="status-strip error">⚠ {error}</div>
+            )}
+
+            {/* Warnings */}
+            {warnings.length > 0 && (
+              <div>
+                <div className="card-title" style={{marginBottom:8}}>Cảnh báo</div>
+                <div className="warn-list">
+                  {warnings.map((w,i) => (
+                    <div key={i} className="warn-item">{w}</div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
 
+          {/* ── Main content ─────────────────────────────────────────────── */}
           <div className="content">
             <div className="card expiration-card" style={{marginBottom:20}}>
-              <div className="expiration-header"><div><div className="expiration-kicker">Kiểm tra hạn dùng</div><h1 className="expiration-title">Quét và đối chiếu sản phẩm</h1><div className="expiration-subtitle">Tải dữ liệu tồn kho, sau đó nhập tay hoặc quét mã trên sản phẩm.</div></div><div className="format-pill">MÃ_P;SỐ_LÔ;DD/MM/YYYY</div></div>
-              <div className="expiration-grid">
-                <div><Dropzone label="File hạn dùng (.xlsx)" sub="Cần có ITEMID, BATCHNUMER, EXPDATE" file={expirationFile} onFile={file => { setExpirationFile(file); setExpirationResult(null); setExpirationError("") }} />
-                  <div className="camera-actions">{!cameraActive ? <button className="btn btn-ghost" onClick={startCamera}>Mở camera</button> : <button className="btn btn-ghost" onClick={stopCamera}>■ Tắt camera</button>}
-                    <button className="btn btn-ghost" onClick={() => { setExpirationEntries(""); setExpirationResult(null); setCameraMessage("") }} disabled={!expirationEntries}>Xóa danh sách</button></div>
-                  {cameraActive && <div className="camera-wrap"><video ref={cameraVideoRef} className="camera-video" playsInline muted /><div className="camera-guide" /></div>}
-                  {cameraMessage && <div className="status-strip info" style={{marginTop:10}}>{cameraMessage}</div>}{cameraError && <div className="status-strip error" style={{marginTop:10}}>⚠ {cameraError}</div>}
+              <div className="expiration-header">
+                <div>
+                  <div className="expiration-kicker">Kiểm tra hạn dùng</div>
+                  <h1 className="expiration-title">Quét và đối chiếu sản phẩm</h1>
+                  <div className="expiration-subtitle">Tải dữ liệu tồn kho, sau đó nhập tay hoặc quét mã trên sản phẩm.</div>
                 </div>
-                <div><textarea className="entry-input" value={expirationEntries} onChange={e => setExpirationEntries(e.target.value)} placeholder={"Mỗi sản phẩm một dòng, ví dụ:\nP29352;00526;18/03/2029"} spellCheck="false" />
-                  <button className="btn btn-primary" style={{marginTop:10}} onClick={handleExpirationCheck} disabled={!expirationFile || !expirationEntries.trim() || expirationLoading || backendStatus !== "ok"}>{expirationLoading ? <><div className="spinner" /> Đang kiểm tra…</> : "Kiểm tra dữ liệu"}</button>
+                <div className="format-pill">MÃ_P;SỐ_LÔ;DD/MM/YYYY</div>
+              </div>
+              <div className="expiration-grid">
+                <div>
+                  <Dropzone
+                    label="File hạn dùng (.xlsx)"
+                    sub="Cần có ITEMID, BATCHNUMER, EXPDATE"
+                    file={expirationFile}
+                    onFile={file => { setExpirationFile(file); setExpirationResult(null); setExpirationError("") }}
+                  />
+                  <div className="sheet-hint" style={{marginTop:8}}>
+                    Quét QR/barcode có nội dung: MÃ_P;SỐ_LÔ;DD/MM/YYYY
+                  </div>
+                  <div className="camera-actions">
+                    {!cameraActive ? (
+                      <button className="btn btn-ghost" onClick={startCamera}>Mở camera</button>
+                    ) : (
+                      <button className="btn btn-ghost" onClick={stopCamera}>■ Tắt camera</button>
+                    )}
+                    <button
+                      className="btn btn-ghost"
+                      onClick={() => { setExpirationEntries(""); setExpirationResult(null); setCameraMessage("") }}
+                      disabled={!expirationEntries}
+                    >
+                      Xóa danh sách
+                    </button>
+                  </div>
+                  {cameraActive && (
+                    <div className="camera-wrap">
+                      <video ref={cameraVideoRef} className="camera-video" playsInline muted />
+                      <div className="camera-guide" />
+                    </div>
+                  )}
+                  {cameraMessage && (
+                    <div className="status-strip info" style={{marginTop:10}}>{cameraMessage}</div>
+                  )}
+                  {cameraError && (
+                    <div className="status-strip error" style={{marginTop:10}}>⚠ {cameraError}</div>
+                  )}
+                </div>
+                <div>
+                  <textarea
+                    className="entry-input"
+                    value={expirationEntries}
+                    onChange={e => setExpirationEntries(e.target.value)}
+                    placeholder={"Mỗi sản phẩm một dòng, ví dụ:\nP29352;00526;18/03/2029"}
+                    spellCheck="false"
+                  />
+                  <button
+                    className="btn btn-primary"
+                    style={{marginTop:10}}
+                    onClick={handleExpirationCheck}
+                    disabled={!expirationFile || !expirationEntries.trim() || expirationLoading || backendStatus !== "ok"}
+                  >
+                    {expirationLoading ? <><div className="spinner" /> Đang kiểm tra…</> : "Kiểm tra dữ liệu"}
+                  </button>
                   {expirationError && <div className="status-strip error" style={{marginTop:10}}>⚠ {expirationError}</div>}
                 </div>
               </div>
-              {expirationResult && <div style={{marginTop:18}}><div className={`status-strip ${expirationResult.unmatched ? "warn" : "success"}`}>Sheet {expirationResult.sheet_name}: khớp {expirationResult.matched}/{expirationResult.total} dòng</div></div>}
+
+              {expirationResult && (
+                <div style={{marginTop:18}}>
+                  <div className={`status-strip ${expirationResult.unmatched ? "warn" : "success"}`}>
+                    Sheet {expirationResult.sheet_name}: khớp {expirationResult.matched}/{expirationResult.total} dòng
+                  </div>
+                  <div style={{display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginTop:12}}>
+                    <select className="sheet-select" style={{marginTop:0}} value={expirationFilter} onChange={e => setExpirationFilter(e.target.value)}>
+                      <option value="all">Tất cả dòng</option>
+                      <option value="matched">Chỉ dòng khớp chính xác</option>
+                      <option value="related">Chỉ lô/ngày khác cùng mã P</option>
+                    </select>
+                    <select className="sheet-select" style={{marginTop:0}} value={expirationSort} onChange={e => setExpirationSort(e.target.value)}>
+                      <option value="expiry_desc">Hạn tốt nhất trước</option>
+                      <option value="expiry_asc">Hạn gần nhất trước</option>
+                      <option value="item">Theo mã sản phẩm</option>
+                      <option value="input">Theo thứ tự nhập</option>
+                    </select>
+                  </div>
+                  <div className="table-wrap" style={{marginTop:12}}>
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>#</th><th>Sản phẩm</th><th>Số lô</th><th>Hạn dùng</th>
+                          <th>Tồn</th><th>Trạng thái</th><th>Đối chiếu</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {expirationDisplayRows(expirationResult, expirationFilter, expirationSort).map(row => (
+                          <tr key={row.rowKey}>
+                            <td>{row.line}</td>
+                            <td style={{minWidth:220}}>
+                              <div style={{fontFamily:"var(--mono)", fontWeight:650}}>{row.item_id || row.input}</div>
+                              {row.item_name && <div style={{fontFamily:"var(--font)", color:"var(--text2)", marginTop:3}}>{row.item_name}</div>}
+                            </td>
+                            <td>{row.batch_number || "—"}</td>
+                            <td>{row.exp_date || "—"}</td>
+                            <td>{row.on_hand ? `${row.on_hand}${row.inventory_unit ? ` ${row.inventory_unit}` : ""}` : "—"}</td>
+                            <td><span className={`result-status ${row.status}`}>{row.status === "matched" ? "Khớp chính xác" : row.status === "related" ? "Cùng mã P" : "Không khớp"}</span></td>
+                            <td style={{minWidth:220, whiteSpace:"normal", fontFamily:"var(--font)"}}>
+                              <div>{row.message}</div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
             </div>
 
-            {step === STEPS.idle && <div className="empty"><div className="empty-icon">📊</div><div className="empty-title">Chọn file và tháng để bắt đầu</div><div style={{fontSize:13,color:"var(--text3)",marginTop:6}}>Upload file CTKM + file POG, chọn tháng báo cáo rồi nhấn Chạy pipeline</div></div>}
-            {step === STEPS.running && <div className="empty"><div className="empty-icon">⚙️</div><div className="empty-title">Pipeline đang chạy…</div></div>}
-            {step === STEPS.done && result && <>
-              <div className="download-bar"><div style={{fontSize:24}}>📥</div><div className="download-info"><div className="download-name">tong_hop_ctkm_{month}.xlsx</div><div className="download-meta">Workbook thao tác và audit · sẵn sàng tải xuống</div></div><button className="btn btn-primary" style={{width:"auto",padding:"10px 20px"}} onClick={handleDownload}>Tải xuống</button></div>
-              <div className="section-title">Kết quả tháng {month}</div>
-              <div className="summary-grid" style={{marginBottom:28}}><StatBox num={matched} label="Dòng khớp (CTKM + kệ)" sub={`${fmt(itemMatch)} item duy nhất`} /><StatBox num={ctkmMiss} label="Thiếu vị trí POG" sub={hoaDon > 0 ? `${hoaDon} CTKM theo hóa đơn` : null} accent="var(--accent)" /><StatBox num={locationReview} label="Cần review vị trí POG" accent="var(--red)" /><StatBox num={pogMiss} label="POG không có CTKM phù hợp" accent="var(--blue)" /><StatBox num={overlapW} label="Cảnh báo trùng thời gian" accent={overlapW > 0 ? "var(--red)" : "var(--green)"} /></div>
-              {preview && <><div className="section-title">Xem trước dữ liệu<span>50 dòng đầu mỗi sheet</span></div><div className="tabs">{Object.entries(preview.sheets).map(([sn,sd]) => <button key={sn} className={`tab${activeSheet === sn ? " active" : ""}`} onClick={() => setActiveSheet(sn)}>{sn}<span className="tab-badge">{sd.total_rows.toLocaleString("vi-VN")}</span></button>)}</div>{activeSheet && preview.sheets[activeSheet] && <DataTable {...preview.sheets[activeSheet]} />}</>}
-            </>}
-            {step === STEPS.error && <div className="empty"><div className="empty-icon">❌</div><div className="empty-title">Pipeline gặp lỗi</div><div style={{marginTop:12,color:"var(--red)"}}>{error}</div></div>}
+
+            {/* Idle state */}
+            {step === STEPS.idle && (
+              <div className="empty">
+                <div className="empty-icon">📊</div>
+                <div className="empty-title">Chọn file và tháng để bắt đầu</div>
+                <div style={{fontSize:13,color:"var(--text3)",marginTop:6}}>
+                  Upload file CTKM + file POG, chọn tháng báo cáo rồi nhấn Chạy pipeline
+                </div>
+              </div>
+            )}
+
+            {/* Running state */}
+            {step === STEPS.running && (
+              <div className="empty">
+                <div className="empty-icon">⚙️</div>
+                <div className="empty-title">Pipeline đang chạy…</div>
+                <div style={{fontSize:13,color:"var(--text3)",marginTop:6}}>
+                  {queueHasWaiting
+                    ? `Tác vụ của bạn đang ở vị trí ${ownQueuePosition || waitingJobs} trong hàng chờ. Không cần bấm lại.`
+                    : `Gemini đang nhận diện cột, ghép CTKM với POG theo tháng ${month}`}
+                </div>
+                <div style={{maxWidth:320,margin:"20px auto 0"}}>
+                  {STEP_LABELS.map((label, i) => (
+                    <div key={i} style={{
+                      display:"flex", alignItems:"center", gap:10,
+                      padding:"6px 0", fontSize:12.5,
+                      color: i < stepIdx ? "var(--green)"
+                           : i === stepIdx ? "var(--text)"
+                           : "var(--text3)"
+                    }}>
+                      <span style={{fontFamily:"var(--mono)", fontSize:11, width:20, textAlign:"right"}}>
+                        {i < stepIdx ? "✓" : i === stepIdx ? "▶" : String(i+1).padStart(2,"0")}
+                      </span>
+                      {label}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Done state */}
+            {step === STEPS.done && result && (
+              <>
+                {/* Download bar */}
+                <div className="download-bar">
+                  <div style={{fontSize:24}}>📥</div>
+                  <div className="download-info">
+                    <div className="download-name">tong_hop_ctkm_{month}.xlsx</div>
+                    <div className="download-meta">Workbook thao tác và audit · sẵn sàng tải xuống</div>
+                  </div>
+                  <button className="btn btn-primary" style={{width:"auto",padding:"10px 20px"}}
+                    onClick={handleDownload}>
+                    Tải xuống
+                  </button>
+                </div>
+
+                {/* Summary stats */}
+                <div className="section-title">
+                  Kết quả tháng {month}
+                </div>
+                <div className="summary-grid" style={{marginBottom:28}}>
+                  <StatBox num={matched}   label="Dòng khớp (CTKM + kệ)" sub={`${fmt(itemMatch)} item duy nhất`} />
+                  <StatBox num={ctkmMiss}  label="Thiếu vị trí POG"
+                    sub={hoaDon > 0 ? `${hoaDon} CTKM theo hóa đơn` : null}
+                    accent="var(--accent)" />
+                  <StatBox num={locationReview} label="Cần review vị trí POG"
+                    sub="Gồm thiếu vị trí hoặc snapshot cần kiểm tra"
+                    accent="var(--red)" />
+                  <StatBox num={pogMiss}   label="POG không có CTKM phù hợp"
+                    accent="var(--blue)" />
+                  <StatBox num={overlapW}  label="Cảnh báo trùng thời gian"
+                    accent={overlapW > 0 ? "var(--red)" : "var(--green)"} />
+                </div>
+
+                {/* Preview tabs */}
+                {preview && (
+                  <>
+                    <div className="section-title">
+                      Xem trước dữ liệu
+                      <span>50 dòng đầu mỗi sheet</span>
+                    </div>
+                    <div className="tabs">
+                      {Object.entries(preview.sheets).map(([sn, sd]) => (
+                        <button
+                          key={sn}
+                          className={`tab${activeSheet === sn ? " active" : ""}`}
+                          onClick={() => setActiveSheet(sn)}
+                        >
+                          {sn}
+                          <span className="tab-badge">
+                            {sd.total_rows.toLocaleString("vi-VN")}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                    {activeSheet && preview.sheets[activeSheet] && (
+                      <DataTable {...preview.sheets[activeSheet]} />
+                    )}
+                  </>
+                )}
+              </>
+            )}
+
+            {/* Error state */}
+            {step === STEPS.error && (
+              <div className="empty">
+                <div className="empty-icon">❌</div>
+                <div className="empty-title">Pipeline gặp lỗi</div>
+                <div style={{
+                  marginTop:12, padding:"12px 16px", background:"var(--surface2)",
+                  border:"1px solid var(--border)", borderRadius:"var(--radius)",
+                  fontFamily:"var(--mono)", fontSize:12.5, color:"var(--red)",
+                  maxWidth:560, margin:"12px auto 0"
+                }}>
+                  {error}
+                </div>
+                <button className="btn btn-ghost" style={{width:"auto",padding:"10px 20px",marginTop:20}}
+                  onClick={() => setStep(STEPS.idle)}>
+                  Thử lại
+                </button>
+              </div>
+            )}
+
           </div>
         </div>
       </div>
