@@ -13,6 +13,7 @@ import pandas as pd
 
 REQUIRED_COLUMNS = ("STOREID", "POGCODE", "FIXELID", "LOCATIONID", "ITEMID", "ITEMNAME")
 HEADER_SCAN_ROWS = 100
+EXCEL_ERROR_VALUES = {"#N/A", "#VALUE!", "#REF!", "#DIV/0!", "#NAME?", "#NUM!", "#NULL!"}
 
 
 def _validate_xlsx_file(input_path: str | Path) -> Path:
@@ -58,7 +59,7 @@ def _as_stock(value: Any) -> int | None:
             raw_stock = float(value)
         else:
             text = str(value).strip().replace("\xa0", "").replace(" ", "")
-            if not text:
+            if not text or text.upper() in EXCEL_ERROR_VALUES | {"NA", "N/A", "NULL", "NONE", "<NA>"}:
                 return None
             if "," in text and "." in text:
                 decimal_mark = "," if text.rfind(",") > text.rfind(".") else "."
@@ -524,6 +525,27 @@ def create_tem_r_workbook(
                     f"Cột tồn kho '{stock_column}' có công thức nhưng chưa có kết quả lưu sẵn "
                     f"({len(missing_formula_cache)} dòng). Hãy mở file bằng Excel, tính lại công thức, "
                     "Save rồi tải lại."
+                )
+            formula_errors = [
+                (row, str(value_worksheet.cell(row, stock_col_index).value).strip().upper())
+                for row in range(header_row + 1, worksheet.max_row + 1)
+                if worksheet.cell(row, stock_col_index).data_type == "f"
+                and str(value_worksheet.cell(row, stock_col_index).value).strip().upper()
+                in EXCEL_ERROR_VALUES
+            ]
+            if formula_errors:
+                error_counts: dict[str, int] = {}
+                for _, error in formula_errors:
+                    error_counts[error] = error_counts.get(error, 0) + 1
+                summary = ", ".join(
+                    f"{error}: {count}" for error, count in sorted(error_counts.items())
+                )
+                sample_rows = ", ".join(str(row) for row, _ in formula_errors[:10])
+                raise ValueError(
+                    f"Cột tồn kho '{stock_column}' có {len(formula_errors)} kết quả công thức lỗi "
+                    f"({summary}); ví dụ dòng Excel: {sample_rows}. Hệ thống không thể coi "
+                    "lỗi tra cứu là tồn 0. Hãy sửa VLOOKUP/XLOOKUP, tính lại, hoặc dán "
+                    "cột tồn kho thành giá trị trước khi chạy Tem R."
                 )
     plan = build_tem_r_plan(frame, max_location_distance=max_location_distance, stock_column=stock_column)
 

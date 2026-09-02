@@ -120,6 +120,61 @@ def test_blank_stock_is_reported_as_an_exception():
     assert plan.exceptions.iloc[0]["reason"] == "Thiếu hoặc sai tồn kho"
 
 
+def test_na_stock_text_is_reported_as_an_exception_instead_of_zero_stock():
+    tem_r = _module()
+    frame = pd.DataFrame([
+        {"STOREID": "S1", "POGCODE": "G1", "FIXELID": "1/1", "LOCATIONID": 1,
+         "ITEMID": "P1", "ITEMNAME": "One", "TỒN": "NA"},
+        {"STOREID": "S1", "POGCODE": "G1", "FIXELID": "1/1", "LOCATIONID": 2,
+         "ITEMID": "P2", "ITEMNAME": "Two", "TỒN": "#N/A"},
+    ])
+
+    plan = tem_r.build_tem_r_plan(frame)
+
+    assert plan.rows["TEM R"].isna().all()
+    assert plan.exceptions["reason"].tolist() == [
+        "Thiếu hoặc sai tồn kho", "Thiếu hoặc sai tồn kho",
+    ]
+
+
+def test_workbook_rejects_cached_formula_error_in_stock_column(tmp_path):
+    tem_r = _module()
+    from openpyxl import Workbook
+    import re
+    import zipfile
+
+    source = tmp_path / "formula-error.xlsx"
+    output = tmp_path / "output.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Export"
+    sheet.append(["STOREID", "POGCODE", "FIXELID", "LOCATIONID", "ITEMID", "ITEMNAME", "TỒN"])
+    sheet.append(["S1", "G1", "1/1", 1, "P1", "One", "=NA()"])
+    workbook.save(source)
+
+    with zipfile.ZipFile(source, "r") as zin:
+        members = {name: zin.read(name) for name in zin.namelist()}
+    patched, replacements = re.subn(
+        br'<c r="G2"[^>]*><f>NA\(\)</f><v\s*/></c>',
+        b'<c r="G2" t="e"><f>NA()</f><v>#N/A</v></c>',
+        members["xl/worksheets/sheet1.xml"],
+    )
+    assert replacements == 1
+    members["xl/worksheets/sheet1.xml"] = patched
+    with zipfile.ZipFile(source, "w", zipfile.ZIP_DEFLATED) as zout:
+        for name, content in members.items():
+            zout.writestr(name, content)
+
+    try:
+        tem_r.create_tem_r_workbook(source, output)
+    except ValueError as exc:
+        assert "1 kết quả công thức lỗi" in str(exc)
+        assert "#N/A: 1" in str(exc)
+        assert "dòng Excel: 2" in str(exc)
+    else:
+        raise AssertionError("stock formula errors must stop Tem R allocation")
+
+
 def test_positive_fractional_stock_is_not_treated_as_zero():
     tem_r = _module()
     frame = pd.DataFrame([

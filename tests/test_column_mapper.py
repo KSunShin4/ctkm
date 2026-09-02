@@ -100,6 +100,18 @@ def test_prompt_tells_gemini_to_use_values_not_only_header_names():
     assert "SGPMC047 | HNPMC100" in prompt
 
 
+def test_key_channel_is_preferred_over_ambiguous_channel_column():
+    frame = pd.DataFrame({
+        "KEY Channel": ["ALL CHANNEL - EXCEPT MKP"],
+        "Channel": ["COMBO ĐI SINH"],
+    })
+
+    mapping = main._ensure_channel_mapping({"Channel": "channel"}, frame)
+
+    assert mapping["KEY Channel"] == "channel"
+    assert "Channel" not in mapping
+
+
 def test_normalizer_keeps_integral_excel_identifier_as_text():
     frame = pd.DataFrame({"item_id": [12345.0, "P00123", "#N/A"]})
 

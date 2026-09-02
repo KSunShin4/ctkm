@@ -163,7 +163,12 @@ def _normalized_header(value) -> str:
 def _ensure_channel_mapping(mapping: dict, df: pd.DataFrame) -> dict:
     """Nhận diện chắc chắn cột kênh khi mapping tay/Gemini bỏ sót."""
     mapping = dict(mapping)
-    aliases = ("kenh ap dung", "channel", "kenh ban", "sales channel", "key channel")
+    # File CTKM công ty có thể có đồng thời ``KEY Channel`` và
+    # ``Channel``. KEY Channel mới là phạm vi áp dụng (ALL/OFFLINE/ONLINE),
+    # còn Channel có thể chứa nhóm chương trình như COMBO ĐI SINH.
+    # Vì vậy cột có nghĩa “áp dụng” phải được ưu tiên; tên
+    # ``Channel`` trần chỉ là phương án cuối cùng.
+    aliases = ("kenh ap dung", "key channel", "sales channel", "kenh ban", "channel")
     normalized_columns = {_normalized_header(column): column for column in df.columns}
     for alias in aliases:
         if alias in normalized_columns:

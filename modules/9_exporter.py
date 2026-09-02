@@ -143,6 +143,17 @@ def _hide_technical_columns(ws, *, action_sheet: bool = False) -> None:
     technical_exact = {"reason", "target_month", "source_sheet", "pog_snapshot_month"}
     for idx, cell in enumerate(ws[1], start=1):
         header = str(cell.value or "")
+        normalized_header = _normalize_action_text(header)
+        while normalized_header.startswith("extra__"):
+            normalized_header = normalized_header[len("extra__"):]
+        # Kênh áp dụng là cột nghiệp vụ để người dùng tự lọc,
+        # không phải cột audit. Kể cả khi mapping bỏ sót và nó
+        # tạm mang tiền tố extra__, exporter vẫn phải để cột này hiển thị.
+        if normalized_header in {
+            "channel", "key channel", "kenh ap dung", "kenh ban", "sales channel",
+        }:
+            ws.column_dimensions[get_column_letter(idx)].hidden = False
+            continue
         if header.startswith("extra__") or header.startswith("source_sheet__") or (
             action_sheet and header in technical_exact
         ):
