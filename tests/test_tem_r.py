@@ -214,7 +214,7 @@ def test_workbook_skips_formula_without_cached_value_and_processes_other_rows(tm
     assert export.cell(4, 8).value == "P2"
 
 
-def test_positive_fractional_stock_is_not_treated_as_zero():
+def test_fractional_stock_below_one_is_treated_as_zero():
     tem_r = _module()
     frame = pd.DataFrame([
         {"STOREID": "S1", "POGCODE": "G1", "FIXELID": "1/1", "LOCATIONID": 1,
@@ -223,8 +223,9 @@ def test_positive_fractional_stock_is_not_treated_as_zero():
 
     plan = tem_r.build_tem_r_plan(frame)
 
-    assert pd.isna(plan.rows.loc[0, "TEM R"])
-    assert plan.rows.loc[0, "TEM_R_STATUS"] == "Còn tồn - không cần Tem R"
+    assert plan.rows.loc[0, "_stock"] == 0
+    assert plan.rows.loc[0, "TEM R"] == "KHÔNG CÓ SẢN PHẨM THAY THẾ"
+    assert plan.rows.loc[0, "TEM_R_STATUS"] == "Kệ không còn đủ tồn để thay"
 
 
 def test_earlier_product_with_enough_stock_fills_following_positions():
@@ -401,5 +402,9 @@ def test_stock_parser_supports_common_localized_numbers():
     assert tem_r._as_stock("1,000") == 1000
     assert tem_r._as_stock("1.000") == 1000
     assert tem_r._as_stock("2,5") == 2
-    assert tem_r._as_stock("0.166") == 1
+    assert tem_r._as_stock("0.166") == 0
+    assert tem_r._as_stock("0,5") == 0
+    assert tem_r._as_stock("0.999") == 0
+    assert tem_r._as_stock("1,5") == 1
+    assert tem_r._as_stock("2.9") == 2
     assert tem_r._as_stock("1,234.5") == 1234
