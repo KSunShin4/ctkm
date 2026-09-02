@@ -23,6 +23,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import secrets
 import sys
 import threading
@@ -194,6 +195,24 @@ async def _read_upload_limited(upload: UploadFile, max_bytes: int, label: str) -
     if not content:
         raise HTTPException(status_code=422, detail=f"{label} đang trống")
     return content
+
+
+def _validate_ctkm_request_dates(month: str, business_date: Optional[str]) -> Optional[str]:
+    """Validate report month/date before a heavy CTKM job enters the queue."""
+    month_text = str(month or "").strip()
+    if not re.fullmatch(r"\d{4}-(?:0[1-9]|1[0-2])", month_text):
+        raise HTTPException(status_code=422, detail="month phải có dạng YYYY-MM với tháng từ 01 đến 12")
+
+    if business_date is None or not str(business_date).strip():
+        return None
+    business_date_text = str(business_date).strip()
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", business_date_text):
+        raise HTTPException(status_code=422, detail="business_date phải có dạng YYYY-MM-DD")
+    try:
+        datetime.strptime(business_date_text, "%Y-%m-%d")
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="business_date phải là ngày hợp lệ dạng YYYY-MM-DD") from exc
+    return business_date_text
 
 
 def _cleanup_old_jobs() -> None:
@@ -540,16 +559,18 @@ async def enqueue_ctkm(
     business_date: Optional[str] = Form(None),
     mapping_mode: str = Form("auto"), _admin: str = Depends(require_admin),
 ):
-    import re
     _cleanup_old_jobs()
-    if not re.match(r"^\d{4}-\d{2}$", month):
-        raise HTTPException(status_code=422, detail="month phải có dạng YYYY-MM")
-    if not ctkm_file.filename.lower().endswith(".xlsx") or not pog_file.filename.lower().endswith(".xlsx"):
+    business_date = _validate_ctkm_request_dates(month, business_date)
+    if not ctkm_file.filename or not ctkm_file.filename.lower().endswith(".xlsx") \
+            or not pog_file.filename or not pog_file.filename.lower().endswith(".xlsx"):
         raise HTTPException(status_code=422, detail="CTKM và POG phải là file .xlsx")
     if clearance_file and (
         not clearance_file.filename or not clearance_file.filename.lower().endswith(".xlsx")
     ):
         raise HTTPException(status_code=422, detail="Clearance phải là file .xlsx")
+    if not pog_sheet_name or not pog_sheet_name.strip():
+        raise HTTPException(status_code=422, detail="Hãy chọn sheet POG trước khi chạy pipeline")
+    pog_sheet_name = pog_sheet_name.strip()
     if mapping_mode not in {"auto", "saved_only"}:
         raise HTTPException(status_code=422, detail="mapping_mode không hợp lệ")
     if mapping_mode == "auto":
@@ -592,15 +613,17 @@ async def enqueue_ctkm(
             )
             wb_pog = _main_mod.L.load_workbook_raw(
                 str(pog_path), is_pog_file=True,
-                selected_sheet_names=[pog_sheet_name] if pog_sheet_name else None,
+                selected_sheet_names=[pog_sheet_name],
             )
             _primary_name, primary_sheet = _main_mod._select_primary_ctkm_sheet(wb_ctkm, ctkm_sheet_name)
-            pog_name = next(iter(wb_pog.sheets)) if wb_pog.sheets else None
-            if pog_name:
-                preset = _get_saved_preset(list(primary_sheet.df.columns), list(wb_pog.sheets[pog_name].df.columns))
-                local_ctkm = local_ctkm or preset.get("ctkm_mapping")
-                local_pog = local_pog or preset.get("pog_mapping")
-                local_output = local_output or preset.get("output_columns")
+            if pog_sheet_name not in wb_pog.sheets:
+                available = ", ".join(wb_pog.sheets) or "(không có sheet dữ liệu)"
+                raise ValueError(f"Không tìm thấy sheet POG '{pog_sheet_name}'. Sheet có sẵn: {available}")
+            pog_name = pog_sheet_name
+            preset = _get_saved_preset(list(primary_sheet.df.columns), list(wb_pog.sheets[pog_name].df.columns))
+            local_ctkm = local_ctkm or preset.get("ctkm_mapping")
+            local_pog = local_pog or preset.get("pog_mapping")
+            local_output = local_output or preset.get("output_columns")
             if mapping_mode == "saved_only" and (not local_ctkm or not local_pog):
                 raise ValueError("Chưa có mapping đã lưu cho cấu trúc hai file này")
             current.update(progress=45, message="Đang ghép dữ liệu và xuất Excel")
@@ -833,7 +856,7 @@ async def inspect_ctkm_file(
     _admin: str = Depends(require_admin),
 ):
     """Doc 1 lan file CTKM de tra ve danh sach sheet co du lieu cho nguoi dung chon."""
-    if not ctkm_file.filename.endswith(".xlsx"):
+    if not ctkm_file.filename or not ctkm_file.filename.lower().endswith(".xlsx"):
         raise HTTPException(status_code=422, detail="ctkm_file phai la file .xlsx")
 
     tmp_path = _TMP_DIR / f"inspect_{uuid.uuid4().hex[:8]}.xlsx"
@@ -860,23 +883,37 @@ async def inspect_pog_file(
     pog_sheet_name: Optional[str] = Form(None, description="Sheet POG da chon"),
     _admin: str = Depends(require_admin),
 ):
-    """Doc 1 lan file POG de lay snapshot month truoc khi chay pipeline."""
-    if not pog_file.filename.endswith(".xlsx"):
+    """Doc file POG de lay danh sach sheet va snapshot month cua sheet da chon."""
+    if not pog_file.filename or not pog_file.filename.lower().endswith(".xlsx"):
         raise HTTPException(status_code=422, detail="pog_file phai la file .xlsx")
 
     tmp_path = _TMP_DIR / f"inspect_{uuid.uuid4().hex[:8]}_pog.xlsx"
     tmp_path.write_bytes(await _read_upload_limited(pog_file, _MAX_PIPELINE_BYTES, "File POG"))
     try:
         sheets = await asyncio.to_thread(_main_mod.L.inspect_workbook_sheets, str(tmp_path))
-        suggested = pog_sheet_name if pog_sheet_name in sheets else (sheets[0] if sheets else None)
+        selected = pog_sheet_name.strip() if pog_sheet_name and pog_sheet_name.strip() else None
+        if selected and selected not in sheets:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Không tìm thấy sheet POG '{selected}'. Sheet có sẵn: {', '.join(sheets)}",
+            )
+        suggested = selected or (sheets[0] if len(sheets) == 1 else None)
+        if not suggested:
+            return {
+                "snapshot_month": None,
+                "sheet_names": sheets,
+                "suggested_sheet": None,
+                "requires_sheet_selection": len(sheets) > 1,
+            }
         wb_pog = await asyncio.to_thread(
             _main_mod.L.load_workbook_raw, str(tmp_path), is_pog_file=True,
-            selected_sheet_names=[suggested] if suggested else None,
+            selected_sheet_names=[suggested],
         )
         return {
             "snapshot_month": wb_pog.pog_snapshot_month,
             "sheet_names": sheets,
             "suggested_sheet": suggested,
+            "requires_sheet_selection": False,
         }
     finally:
         try:
@@ -895,9 +932,9 @@ async def preview_mapping_job(
     _admin: str = Depends(require_admin),
 ):
     """Tra ve cot va mapping goi y; Gemini loi van cho phep mapping thu cong."""
-    if not ctkm_file.filename.endswith(".xlsx"):
+    if not ctkm_file.filename or not ctkm_file.filename.lower().endswith(".xlsx"):
         raise HTTPException(status_code=422, detail="ctkm_file phai la file .xlsx")
-    if not pog_file.filename.endswith(".xlsx"):
+    if not pog_file.filename or not pog_file.filename.lower().endswith(".xlsx"):
         raise HTTPException(status_code=422, detail="pog_file phai la file .xlsx")
 
     job_id = uuid.uuid4().hex[:8]
@@ -915,6 +952,8 @@ async def preview_mapping_job(
     try:
         if not pog_sheet_name:
             pog_sheets = await asyncio.to_thread(_main_mod.L.inspect_workbook_sheets, str(pog_path))
+            if len(pog_sheets) != 1:
+                raise HTTPException(status_code=422, detail="Hãy chọn rõ sheet POG trước khi xem mapping")
             pog_sheet_name = pog_sheets[0]
         wb_ctkm, wb_pog = await asyncio.gather(
             asyncio.to_thread(
@@ -930,7 +969,7 @@ async def preview_mapping_job(
             raise HTTPException(status_code=422, detail=f"Khong tim thay sheet CTKM '{ctkm_sheet_name}'")
         ctkm_sheet = wb_ctkm.sheets[ctkm_sheet_name]
         if pog_sheet_name not in wb_pog.sheets:
-            raise HTTPException(status_code=422, detail="File POG khong co sheet nao co du lieu.")
+            raise HTTPException(status_code=422, detail="File POG khong co sheet da chon hoac sheet khong co du lieu.")
 
         stored_preset = _get_saved_preset(list(ctkm_sheet.df.columns), list(wb_pog.sheets[pog_sheet_name].df.columns))
 
@@ -960,8 +999,6 @@ async def preview_mapping_job(
                 result = logs[-1] if logs else {}
                 return result, None
             except Exception as exc:
-                # Preview must remain usable when Gemini is unavailable. Do not
-                # expose credentials or a full upstream response to the browser.
                 return {
                     "mapping": {},
                     "confidence": {},
@@ -1065,10 +1102,7 @@ def download_result(job_id: str, _admin: str = Depends(require_admin)):
 
 @app.get("/api/preview/{job_id}")
 def preview_result(job_id: str, rows: int = 50, _admin: str = Depends(require_admin)):
-    """
-    Doc N dong dau cua moi sheet trong file Excel ket qua, tra ve JSON.
-    Frontend dung de hien thi bang preview ma khong can download file.
-    """
+    """Read only the requested preview rows; never materialize whole sheets in RAM."""
     import openpyxl
     job = _jobs.get(job_id)
     if not job:
@@ -1076,37 +1110,51 @@ def preview_result(job_id: str, rows: int = 50, _admin: str = Depends(require_ad
     path = Path(job["output_path"])
     if not path.exists():
         raise HTTPException(status_code=404, detail="File ket qua khong ton tai.")
+    if rows < 1 or rows > 500:
+        raise HTTPException(status_code=422, detail="rows phải nằm trong khoảng 1..500")
 
+    wb = None
     try:
         wb = openpyxl.load_workbook(path, data_only=True, read_only=True)
         sheets_data = {}
         for sn in wb.sheetnames:
-            ws  = wb[sn]
-            all_rows = list(ws.iter_rows(values_only=True))
-            if not all_rows:
+            ws = wb[sn]
+            max_row = ws.max_row or 0
+            if max_row == 0:
                 sheets_data[sn] = {"headers": [], "rows": [], "total_rows": 0}
                 continue
-            headers = [str(h) if h is not None else "" for h in all_rows[0]]
-            data_rows = []
-            for row in all_rows[1: rows + 1]:
-                data_rows.append([
-                    str(v) if v is not None else ""
-                    for v in row
-                ])
+            iterator = ws.iter_rows(
+                min_row=1,
+                max_row=min(max_row, rows + 1),
+                values_only=True,
+            )
+            header_row = next(iterator, None)
+            if header_row is None:
+                sheets_data[sn] = {"headers": [], "rows": [], "total_rows": 0}
+                continue
+            headers = [str(value) if value is not None else "" for value in header_row]
+            data_rows = [
+                [str(value) if value is not None else "" for value in row]
+                for row in iterator
+            ]
             sheets_data[sn] = {
-                "headers":    headers,
-                "rows":       data_rows,
-                "total_rows": max(0, len(all_rows) - 1),
+                "headers": headers,
+                "rows": data_rows,
+                "total_rows": max(0, max_row - 1),
             }
-        wb.close()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Loi doc file ket qua: {e}")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Loi doc file ket qua: {exc}") from exc
+    finally:
+        if wb is not None:
+            wb.close()
 
     return {
-        "job_id":  job_id,
-        "month":   job["month"],
+        "job_id": job_id,
+        "month": job["month"],
         "summary": job["summary"],
-        "sheets":  sheets_data,
+        "sheets": sheets_data,
     }
 
 
