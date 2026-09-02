@@ -16,15 +16,36 @@ if (fileNameDescriptor?.get && fileNameDescriptor.configurable) {
   })
 }
 
-// App.jsx historically falls back to the first returned POG sheet. When the
-// backend reports that a workbook has multiple candidate sheets, prepend an
-// empty choice so the existing dropdown requires an explicit user selection.
 const nativeFetch = window.fetch.bind(window)
 window.fetch = async (...args) => {
   const response = await nativeFetch(...args)
   const requestUrl = String(args[0] instanceof Request ? args[0].url : args[0] || '')
-  if (!response.ok || !requestUrl.includes('/api/inspect-pog')) return response
 
+  // App.jsx expects API error responses to be JSON. Render/proxies may return a
+  // plain-text or HTML 5xx body instead (for example "Internal Server Error").
+  // Convert only failed /api responses to JSON so the UI shows the real message
+  // instead of throwing "Unexpected token ... is not valid JSON".
+  if (!response.ok && requestUrl.includes('/api/')) {
+    const contentType = response.headers.get('content-type') || ''
+    if (!contentType.toLowerCase().includes('application/json')) {
+      const raw = (await response.clone().text()).trim()
+      const detail = raw && !raw.startsWith('<')
+        ? raw.slice(0, 1000)
+        : `Máy chủ trả lỗi HTTP ${response.status}. Hãy thử lại hoặc kiểm tra log backend.`
+      const headers = new Headers(response.headers)
+      headers.set('content-type', 'application/json')
+      return new Response(JSON.stringify({ detail }), {
+        status: response.status,
+        statusText: response.statusText,
+        headers,
+      })
+    }
+  }
+
+  // App.jsx historically falls back to the first returned POG sheet. When the
+  // backend reports multiple candidate sheets, prepend an empty option so the
+  // existing dropdown requires an explicit user selection.
+  if (!response.ok || !requestUrl.includes('/api/inspect-pog')) return response
   try {
     const data = await response.clone().json()
     if (!data?.requires_sheet_selection || !Array.isArray(data.sheet_names)) return response
