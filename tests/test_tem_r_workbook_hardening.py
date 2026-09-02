@@ -4,8 +4,6 @@ import re
 import sys
 import zipfile
 
-import pytest
-
 
 def _module():
     path = Path(__file__).resolve().parents[1] / "modules" / "10_tem_r.py"
@@ -89,9 +87,9 @@ def test_selected_sheet_finds_header_only_inside_that_sheet(tmp_path):
     assert result["Export"].max_column == 7
 
 
-def test_formula_stock_with_cached_numeric_value_is_rejected(tmp_path):
+def test_formula_stock_is_frozen_to_cached_value_in_output(tmp_path):
     tem_r = _module()
-    from openpyxl import Workbook
+    from openpyxl import Workbook, load_workbook
 
     source = tmp_path / "formula-stock.xlsx"
     output = tmp_path / "output.xlsx"
@@ -104,7 +102,7 @@ def test_formula_stock_with_cached_numeric_value_is_rejected(tmp_path):
     workbook.save(source)
 
     # openpyxl does not calculate formulas. Inject the cached value that a real
-    # Excel export may contain. Tem R must not trust that cached stock value.
+    # Pharmacity export already contains so data_only=True sees the value 2.
     with zipfile.ZipFile(source, "r") as zin:
         members = {name: zin.read(name) for name in zin.namelist()}
     patched, replacements = re.subn(
@@ -118,14 +116,16 @@ def test_formula_stock_with_cached_numeric_value_is_rejected(tmp_path):
         for name, content in members.items():
             zout.writestr(name, content)
 
-    with pytest.raises(ValueError, match="đang chứa công thức Excel") as exc_info:
-        tem_r.create_tem_r_workbook(source, output, stock_column="ton")
+    plan = tem_r.create_tem_r_workbook(source, output, stock_column="ton")
 
-    message = str(exc_info.value)
-    assert "ton" in message
-    assert "dòng 2" in message
-    assert "Paste Values" in message
-    assert not output.exists()
+    assert plan.rows.loc[0, "_stock"] == 2
+    assert plan.rows.loc[1, "TEM R"] == "P1"
+
+    values = load_workbook(output, data_only=True)["Export"]
+    formulas = load_workbook(output, data_only=False)["Export"]
+    assert values["G2"].value == 2
+    assert formulas["G2"].value == 2
+    assert formulas["G2"].data_type != "f"
 
 
 def test_header_scan_ignores_inflated_used_range(tmp_path):
