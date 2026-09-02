@@ -1735,7 +1735,9 @@ export default function App() {
               {temRResult && (
                 <>
                   <div className="sheet-hint" style={{color:"var(--green)"}}>
-                    Đã thay {fmt(temRResult.summary?.tem_r_replaced_rows)} vị trí; ngoại lệ {fmt(temRResult.summary?.tem_r_exceptions)}.
+                    Đã thay {fmt(temRResult.summary?.tem_r_replaced_rows)} vị trí;
+                    bỏ qua {fmt(temRResult.summary?.tem_r_skipped_stock_rows)} dòng thiếu/lỗi tồn kho;
+                    ngoại lệ {fmt(temRResult.summary?.tem_r_exceptions)}.
                   </div>
                   <button className="btn btn-ghost" style={{marginTop:10}} onClick={downloadTemR}>
                     Tải file Tem R kết quả

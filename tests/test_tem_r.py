@@ -117,7 +117,8 @@ def test_blank_stock_is_reported_as_an_exception():
     plan = tem_r.build_tem_r_plan(frame)
 
     assert len(plan.exceptions) == 1
-    assert plan.exceptions.iloc[0]["reason"] == "Thiếu hoặc sai tồn kho"
+    assert plan.rows.loc[0, "TEM R"] == "BỎ QUA - KHÔNG CÓ DỮ LIỆU TỒN KHO"
+    assert plan.exceptions.iloc[0]["reason"] == "Bỏ qua - không có dữ liệu tồn kho"
 
 
 def test_na_stock_text_is_reported_as_an_exception_instead_of_zero_stock():
@@ -131,13 +132,16 @@ def test_na_stock_text_is_reported_as_an_exception_instead_of_zero_stock():
 
     plan = tem_r.build_tem_r_plan(frame)
 
-    assert plan.rows["TEM R"].isna().all()
+    assert plan.rows["TEM R"].tolist() == [
+        "BỎ QUA - KHÔNG CÓ DỮ LIỆU TỒN KHO",
+        "BỎ QUA - TỒN KHO LỖI #N/A",
+    ]
     assert plan.exceptions["reason"].tolist() == [
-        "Thiếu hoặc sai tồn kho", "Thiếu hoặc sai tồn kho",
+        "Bỏ qua - không có dữ liệu tồn kho", "Bỏ qua - tồn kho lỗi #N/A",
     ]
 
 
-def test_workbook_rejects_cached_formula_error_in_stock_column(tmp_path):
+def test_workbook_skips_cached_formula_error_and_continues(tmp_path):
     tem_r = _module()
     from openpyxl import Workbook
     import re
@@ -150,6 +154,8 @@ def test_workbook_rejects_cached_formula_error_in_stock_column(tmp_path):
     sheet.title = "Export"
     sheet.append(["STOREID", "POGCODE", "FIXELID", "LOCATIONID", "ITEMID", "ITEMNAME", "TỒN"])
     sheet.append(["S1", "G1", "1/1", 1, "P1", "One", "=NA()"])
+    sheet.append(["S1", "G1", "1/1", 2, "P2", "Two", 2])
+    sheet.append(["S1", "G1", "1/1", 3, "P3", "Three", 0])
     workbook.save(source)
 
     with zipfile.ZipFile(source, "r") as zin:
@@ -165,14 +171,47 @@ def test_workbook_rejects_cached_formula_error_in_stock_column(tmp_path):
         for name, content in members.items():
             zout.writestr(name, content)
 
-    try:
-        tem_r.create_tem_r_workbook(source, output)
-    except ValueError as exc:
-        assert "1 kết quả công thức lỗi" in str(exc)
-        assert "#N/A: 1" in str(exc)
-        assert "dòng Excel: 2" in str(exc)
-    else:
-        raise AssertionError("stock formula errors must stop Tem R allocation")
+    plan = tem_r.create_tem_r_workbook(source, output)
+
+    assert plan.rows.loc[0, "TEM R"] == "BỎ QUA - TỒN KHO LỖI #N/A"
+    assert plan.rows.loc[0, "TEM_R_STATUS"] == "Bỏ qua - tồn kho lỗi #N/A"
+    assert plan.rows.loc[2, "TEM R"] == "P2"
+    assert plan.exceptions.iloc[0].to_dict() == {
+        "row": 2, "ITEMID": "P1", "reason": "Bỏ qua - tồn kho lỗi #N/A",
+    }
+
+    from openpyxl import load_workbook
+    result = load_workbook(output, data_only=False)
+    export = result["Export"]
+    assert export.cell(2, 8).value == "BỎ QUA - TỒN KHO LỖI #N/A"
+    assert export.cell(4, 8).value == "P2"
+    assert export.cell(2, 7).fill.fgColor.rgb == "00FCE4D6"
+    assert result["Tem R ngoại lệ"].cell(2, 1).value == 2
+
+
+def test_workbook_skips_formula_without_cached_value_and_processes_other_rows(tmp_path):
+    tem_r = _module()
+    from openpyxl import Workbook, load_workbook
+
+    source = tmp_path / "formula-without-cache.xlsx"
+    output = tmp_path / "output.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Export"
+    sheet.append(["STOREID", "POGCODE", "FIXELID", "LOCATIONID", "ITEMID", "ITEMNAME", "TỒN"])
+    sheet.append(["S1", "G1", "1/1", 1, "P1", "One", "=1+1"])
+    sheet.append(["S1", "G1", "1/1", 2, "P2", "Two", 2])
+    sheet.append(["S1", "G1", "1/1", 3, "P3", "Three", 0])
+    workbook.save(source)
+
+    plan = tem_r.create_tem_r_workbook(source, output)
+
+    assert plan.rows.loc[0, "TEM R"] == "BỎ QUA - KHÔNG CÓ DỮ LIỆU TỒN KHO"
+    assert plan.rows.loc[2, "TEM R"] == "P2"
+    assert plan.exceptions.iloc[0]["row"] == 2
+    export = load_workbook(output, data_only=False)["Export"]
+    assert export.cell(2, 8).value == "BỎ QUA - KHÔNG CÓ DỮ LIỆU TỒN KHO"
+    assert export.cell(4, 8).value == "P2"
 
 
 def test_positive_fractional_stock_is_not_treated_as_zero():

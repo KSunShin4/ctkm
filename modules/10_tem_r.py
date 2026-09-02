@@ -14,6 +14,8 @@ import pandas as pd
 REQUIRED_COLUMNS = ("STOREID", "POGCODE", "FIXELID", "LOCATIONID", "ITEMID", "ITEMNAME")
 HEADER_SCAN_ROWS = 100
 EXCEL_ERROR_VALUES = {"#N/A", "#VALUE!", "#REF!", "#DIV/0!", "#NAME?", "#NUM!", "#NULL!"}
+STOCK_SKIP_NO_DATA = "BỎ QUA - KHÔNG CÓ DỮ LIỆU TỒN KHO"
+STOCK_SKIP_INVALID = "BỎ QUA - TỒN KHO KHÔNG HỢP LỆ"
 
 
 def _validate_xlsx_file(input_path: str | Path) -> Path:
@@ -91,6 +93,25 @@ def _as_stock(value: Any) -> int | None:
     return max(1, int(raw_stock))
 
 
+def _stock_skip_details(value: Any) -> tuple[str, str]:
+    """Return the visible marker and audit reason for an unusable stock value."""
+    if value is None:
+        return STOCK_SKIP_NO_DATA, "Bỏ qua - không có dữ liệu tồn kho"
+    try:
+        if pd.isna(value):
+            return STOCK_SKIP_NO_DATA, "Bỏ qua - không có dữ liệu tồn kho"
+    except (TypeError, ValueError):
+        pass
+
+    text = str(value).strip().upper()
+    if text in EXCEL_ERROR_VALUES:
+        marker = f"BỎ QUA - TỒN KHO LỖI {text}"
+        return marker, f"Bỏ qua - tồn kho lỗi {text}"
+    if not text or text in {"NA", "N/A", "NULL", "NONE", "<NA>", "NAN"}:
+        return STOCK_SKIP_NO_DATA, "Bỏ qua - không có dữ liệu tồn kho"
+    return STOCK_SKIP_INVALID, "Bỏ qua - tồn kho không hợp lệ"
+
+
 def _as_location(value: Any) -> float | None:
     try:
         location = float(value)
@@ -116,6 +137,9 @@ def _clean_input(frame: pd.DataFrame, stock_column: str) -> pd.DataFrame:
         else None
     )
     df["_stock"] = df[stock_column].map(_as_stock)
+    stock_skip_details = df[stock_column].map(_stock_skip_details)
+    df["_stock_skip_marker"] = stock_skip_details.map(lambda details: details[0])
+    df["_stock_skip_reason"] = stock_skip_details.map(lambda details: details[1])
     df["_location"] = df["LOCATIONID"].map(_as_location)
     df["_group"] = list(zip(
         df["STOREID"].fillna("").astype(str).str.strip(),
@@ -133,7 +157,8 @@ def _clean_input(frame: pd.DataFrame, stock_column: str) -> pd.DataFrame:
         invalid = df[column].isna() | df[column].astype(str).str.strip().isin(("", "nan", "None"))
         df.loc[invalid & df["_input_error"].isna(), "_input_error"] = reason
     df.loc[df["_location"].isna() & df["_input_error"].isna(), "_input_error"] = "Thiếu hoặc sai vị trí kệ"
-    df.loc[df["_stock"].isna() & df["_input_error"].isna(), "_input_error"] = "Thiếu hoặc sai tồn kho"
+    invalid_stock = df["_stock"].isna() & df["_input_error"].isna()
+    df.loc[invalid_stock, "_input_error"] = df.loc[invalid_stock, "_stock_skip_reason"]
     return df.reset_index(drop=True)
 
 
@@ -153,7 +178,10 @@ def build_tem_r_plan(frame: pd.DataFrame, *, max_location_distance: float = 1, s
     for idx in invalid_rows:
         reason = str(df.at[idx, "_input_error"])
         df.at[idx, "TEM_R_STATUS"] = reason
-        exceptions.append({"row": idx, "ITEMID": df.at[idx, "ITEMID"], "reason": reason})
+        if pd.isna(df.at[idx, "_stock"]):
+            df.at[idx, "TEM R"] = df.at[idx, "_stock_skip_marker"]
+        excel_row = df.at[idx, "_excel_row"] if "_excel_row" in df.columns else idx + 2
+        exceptions.append({"row": int(excel_row), "ITEMID": df.at[idx, "ITEMID"], "reason": reason})
 
     valid_df = df[df["_input_error"].isna()]
     for _, group_frame in valid_df.groupby("_group", sort=False):
@@ -512,41 +540,10 @@ def create_tem_r_workbook(
         raise ValueError(
             "Chưa ánh xạ đủ cột bắt buộc cho Tem R: " + ", ".join(missing_required)
         )
-    if stock_column in frame.columns:
-        stock_col_index = headers.index(stock_column) + 1 if stock_column in headers else None
-        if stock_col_index:
-            missing_formula_cache = [
-                row for row in range(header_row + 1, worksheet.max_row + 1)
-                if worksheet.cell(row, stock_col_index).data_type == "f"
-                and value_worksheet.cell(row, stock_col_index).value is None
-            ]
-            if missing_formula_cache:
-                raise ValueError(
-                    f"Cột tồn kho '{stock_column}' có công thức nhưng chưa có kết quả lưu sẵn "
-                    f"({len(missing_formula_cache)} dòng). Hãy mở file bằng Excel, tính lại công thức, "
-                    "Save rồi tải lại."
-                )
-            formula_errors = [
-                (row, str(value_worksheet.cell(row, stock_col_index).value).strip().upper())
-                for row in range(header_row + 1, worksheet.max_row + 1)
-                if worksheet.cell(row, stock_col_index).data_type == "f"
-                and str(value_worksheet.cell(row, stock_col_index).value).strip().upper()
-                in EXCEL_ERROR_VALUES
-            ]
-            if formula_errors:
-                error_counts: dict[str, int] = {}
-                for _, error in formula_errors:
-                    error_counts[error] = error_counts.get(error, 0) + 1
-                summary = ", ".join(
-                    f"{error}: {count}" for error, count in sorted(error_counts.items())
-                )
-                sample_rows = ", ".join(str(row) for row, _ in formula_errors[:10])
-                raise ValueError(
-                    f"Cột tồn kho '{stock_column}' có {len(formula_errors)} kết quả công thức lỗi "
-                    f"({summary}); ví dụ dòng Excel: {sample_rows}. Hệ thống không thể coi "
-                    "lỗi tra cứu là tồn 0. Hãy sửa VLOOKUP/XLOOKUP, tính lại, hoặc dán "
-                    "cột tồn kho thành giá trị trước khi chạy Tem R."
-                )
+    # Công thức chưa có cache hoặc trả về lỗi không được xem là tồn 0. Các dòng
+    # này sẽ được cách ly, đánh dấu rõ trong cột TEM R và ghi vào sheet ngoại lệ;
+    # những dòng có tồn hợp lệ vẫn tiếp tục được phân bổ bình thường.
+    stock_col_index = headers.index(stock_column) + 1 if stock_column in headers else None
     plan = build_tem_r_plan(frame, max_location_distance=max_location_distance, stock_column=stock_column)
 
     tem_r_col = headers.index("TEM R") + 1 if "TEM R" in headers else worksheet.max_column + 1
@@ -564,9 +561,15 @@ def create_tem_r_workbook(
         group = row["_group"]
         if group not in shelf_color_index:
             shelf_color_index[group] = len(shelf_color_index) % len(shelf_colors)
-        fill = PatternFill(fill_type="solid", fgColor=shelf_colors[shelf_color_index[group]])
+        stock_is_unusable = pd.isna(row["_stock"])
+        fill = PatternFill(
+            fill_type="solid",
+            fgColor="FCE4D6" if stock_is_unusable else shelf_colors[shelf_color_index[group]],
+        )
         excel_row = int(row["_excel_row"])
         worksheet.cell(excel_row, tem_r_col).fill = fill
+        if stock_is_unusable and stock_col_index:
+            worksheet.cell(excel_row, stock_col_index).fill = fill
 
     for name in ("Tem R phân bổ", "Tem R theo kệ", "Tem R ngoại lệ"):
         if name in workbook.sheetnames:

@@ -514,6 +514,7 @@ async def enqueue_tem_r(
             summary = {
                 "tem_r_total_rows": len(plan.rows),
                 "tem_r_replaced_rows": int(plan.rows["TEM_R_REPRESENTATIVE"].notna().sum()),
+                "tem_r_skipped_stock_rows": int(plan.rows["_stock"].isna().sum()),
                 "tem_r_exceptions": len(plan.exceptions),
             }
             return summary, plan.exceptions["reason"].tolist()
@@ -712,6 +713,7 @@ async def run_tem_r(
         "summary": {
             "tem_r_total_rows": len(plan.rows),
             "tem_r_replaced_rows": int(plan.rows["TEM_R_REPRESENTATIVE"].notna().mul(plan.rows["TEM R"].notna()).sum()),
+            "tem_r_skipped_stock_rows": int(plan.rows["_stock"].isna().sum()),
             "tem_r_exceptions": len(plan.exceptions),
         },
         "warnings": plan.exceptions["reason"].tolist(),
