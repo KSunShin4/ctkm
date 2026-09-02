@@ -395,7 +395,9 @@ def inspect_tem_r_workbook(input_path: str | Path) -> dict:
 
     input_path = _validate_xlsx_file(input_path)
     try:
-        workbook = load_workbook(input_path, read_only=True, data_only=True)
+        # Tem R never needs external workbook links. Some vendor exports contain
+        # malformed externalLink XML, so do not parse or preserve those links.
+        workbook = load_workbook(input_path, read_only=True, data_only=True, keep_links=False)
     except Exception as exc:
         message = str(exc).lower()
         if "encrypt" in message or "password" in message:
@@ -479,8 +481,10 @@ def create_tem_r_workbook(
 
     input_path, output_path = _validate_xlsx_file(input_path), Path(output_path)
     # Keep the original workbook for output, but read cached results for formula-based stock columns.
-    workbook = load_workbook(input_path)
-    value_workbook = load_workbook(input_path, data_only=True)
+    # External workbook links are not needed by Tem R and may contain malformed XML
+    # in exports from third-party systems, so explicitly skip them in both loads.
+    workbook = load_workbook(input_path, keep_links=False)
+    value_workbook = load_workbook(input_path, data_only=True, keep_links=False)
     itemid_column = (column_mapping or {}).get("ITEMID", "ITEMID")
     if sheet_name:
         if sheet_name not in workbook.sheetnames:
