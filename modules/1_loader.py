@@ -51,8 +51,6 @@ def _install_ctkm_performance_patches() -> None:
             performance = importlib.import_module("modules.ctkm_performance")
             performance.install_performance_patches(main_mod)
         except Exception:
-            # Optimization must never make workbook loading fail. The original
-            # implementation remains available if the optional patch cannot load.
             pass
 
 
@@ -163,6 +161,11 @@ def _detect_header_from_rows(rows, min_ratio) -> int:
 
 
 def _is_garbage(row_values) -> bool:
+    """Legacy helper for metadata/header inspection only.
+
+    Post-header rows are never removed based on guessed text such as TOTAL or
+    Applied filter; user source rows must not disappear silently.
+    """
     cells = [str(v).strip().lower() for v in row_values if v is not None and str(v).strip()]
     if not cells:
         return GARBAGE_CONFIG.get("garbage_row_if_first_cell_empty_and_rest_empty", True)
@@ -305,9 +308,9 @@ def load_workbook_raw(filepath: str, is_pog_file: bool = False,
                     if snapshot:
                         result.pog_snapshot_month = snapshot
                 vals = list(row[:len(headers)]) if len(headers) else []
+                # Only completely blank rows are structural emptiness. Do not
+                # infer that a populated business row is garbage from its text.
                 if all(v is None or str(v).strip() == '' for v in vals):
-                    continue
-                if _is_garbage(vals):
                     continue
                 rows.append(vals)
                 source_excel_rows.append(excel_row)
