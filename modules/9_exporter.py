@@ -36,6 +36,7 @@ _BILINGUAL_HEADERS = {
     "reason": "Lý do phân loại (reason)",
     "task_id": "Mã công việc (task_id)",
     "promotion_id": "Mã chương trình ổn định (promotion_id)",
+    "pog_position_id": "Mã vị trí POG ổn định (pog_position_id)",
     "item_key": "Khóa SKU đối chiếu (item_key)",
     "source_row_id": "Dòng nguồn chính (source_row_id)",
     "source_row_ids": "Các dòng nguồn (source_row_ids)",
@@ -96,7 +97,7 @@ def _prepare_action_sheet(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or df.empty:
         return df
     preferred = [
-        "task_id", "promotion_id", "item_id", "item_key", "item_name", "promo_uom", "program_source", "store_id", "channel", "pog_code", "location_id", "facing",
+        "task_id", "promotion_id", "pog_position_id", "item_id", "item_key", "item_name", "promo_uom", "program_source", "store_id", "channel", "pog_code", "location_id", "facing",
         "location_completeness", "has_multiple_pog_positions", "pog_month_status", "location_needs_review", "location_status", "campaign_name", "campaign_detail", "promo_from", "promo_to",
         "normal_price", "promo_price", "product_type", "ngay_gan_tem", "ngay_thao_tem",
         "so_ngay_con_lai", "scheduled_action", "action", "processing_status", "processed_by", "processed_at",

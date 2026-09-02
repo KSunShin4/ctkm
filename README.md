@@ -15,7 +15,7 @@ ctkm_pipeline/
 ├── requirements.txt                ← Deps cho CLI
 │
 ├── backend/
-│   ├── main_api.py                 ← FastAPI: /api/run, /api/preview, /api/download
+│   ├── main_api.py                 ← FastAPI: /api/jobs/ctkm, /api/preview, /api/download
 │   └── requirements_backend.txt   ← Deps cho backend (gồm cả pipeline deps)
 │
 ├── frontend/
@@ -155,7 +155,8 @@ print(result.summary)           # dict số liệu tổng quan
 | Method | Endpoint | Mô tả |
 |---|---|---|
 | `GET` | `/api/health` | Health check |
-| `POST` | `/api/run` | Upload 2 file + chọn tháng → chạy pipeline |
+| `POST` | `/api/jobs/ctkm` | Luồng chính: upload CTKM, POG, Clearance tùy chọn, ngày nghiệp vụ và đưa vào queue |
+| `POST` | `/api/run` | Alias deprecated, chuyển toàn bộ tham số sang `/api/jobs/ctkm` và trả job queue tương tự |
 | `GET` | `/api/preview/{job_id}` | JSON preview dữ liệu (N dòng đầu mỗi sheet) |
 | `GET` | `/api/download/{job_id}` | Download file Excel kết quả |
 | `GET` | `/api/jobs` | Lịch sử job trong session hiện tại |

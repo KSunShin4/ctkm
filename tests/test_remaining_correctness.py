@@ -1,6 +1,8 @@
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
+import pytest
 from openpyxl import Workbook, load_workbook
 
 import main
@@ -144,6 +146,23 @@ def test_same_channel_different_offer_is_blocking_and_only_affected_rows_review(
     assert actions == {"A": "review", "B": "review", "Later": "chờ gắn tem", "Other": "gắn tem"}
 
 
+def test_same_channel_same_offer_overlapping_different_periods_are_blocking_only_for_pair():
+    frame = pd.DataFrame([
+        _promo("P1", promo_from=pd.Timestamp("2026-08-01"), promo_to=pd.Timestamp("2026-08-20")),
+        _promo("P1", promo_from=pd.Timestamp("2026-08-10"), promo_to=pd.Timestamp("2026-08-31")),
+        _promo("P1", promo_from=pd.Timestamp("2026-09-01"), promo_to=pd.Timestamp("2026-09-30")),
+        _promo("P2"),
+    ])
+
+    warnings = main.RC.detect_campaign_time_overlaps(frame)
+    result = _actions(frame.to_dict("records"), warnings=warnings)
+
+    assert len(warnings) == 1
+    assert warnings[0].conflict_type == "blocking_conflict"
+    assert warnings[0].is_blocking is True
+    assert result["scheduled_action"].tolist() == ["review", "review", "chờ gắn tem", "gắn tem"]
+
+
 def test_ctkm_clearance_overlap_blocks_even_when_channels_differ():
     frame = main._build_promo_action_source(
         pd.DataFrame([_promo(channel="OFFLINE")]),
@@ -194,6 +213,70 @@ def test_exact_duplicate_pog_creates_one_task_with_pog_lineage():
     assert result.loc[0, "pog_source_row_ids"] == "POG:Sheet:6 | POG:Sheet:9"
     assert result.loc[0, "pog_duplicate_status"] == "Đã gom dòng POG trùng hoàn toàn"
     assert result.loc[0, "pog_position_count"] == 1
+
+
+def test_pog_facing_is_part_of_stable_task_identity():
+    pog = [_pog(facing=1), _pog(facing=2)]
+
+    first = _actions([_promo()], pog)
+    reordered = _actions([_promo()], list(reversed(pog)))
+
+    assert first["task_id"].nunique() == 2
+    assert first.set_index("facing")["task_id"].to_dict() == reordered.set_index("facing")["task_id"].to_dict()
+
+
+def test_pog_snapshot_month_is_part_of_task_identity():
+    result = _actions([_promo()], [
+        _pog(pog_snapshot_month="2026-07"),
+        _pog(pog_snapshot_month="2026-08"),
+    ])
+
+    assert len(result) == 2
+    assert result["task_id"].nunique() == 2
+    assert result["pog_position_id"].nunique() == 2
+
+
+@pytest.mark.parametrize("value", [None, pd.NA, np.nan, "", "   "])
+def test_is_sku_handles_missing_values_without_boolean_ambiguity(value):
+    assert main.RC.is_sku(value) is False
+
+
+def test_missing_item_survives_join_and_report_without_counting_as_bill():
+    joined = main.JN.join_ctkm_pog(
+        pd.DataFrame([{"item_id": pd.NA, "item_key": pd.NA, "campaign_name": "Broken"}]),
+        pd.DataFrame([{"item_id": "P1", "store_id": "S1"}]),
+    )
+
+    report = main.RC.build_reconciliation_report(
+        joined.df_matched, joined.df_ctkm_only, joined.df_pog_only, [],
+    )
+    actions = _actions([_promo(pd.NA)])
+
+    assert report.non_sku_ctkm_count == 0
+    assert report.missing_item_ctkm_count == 1
+    assert actions.loc[0, "scheduled_action"] == "review"
+    assert actions.loc[0, "reason"] == "thieu_ma_san_pham"
+
+
+def test_report_distinguishes_bill_from_invalid_item_codes():
+    joined = main.JN.join_ctkm_pog(
+        pd.DataFrame([
+            {"item_id": "Bill", "item_key": "BILL"},
+            {"item_id": "UNKNOWN", "item_key": "UNKNOWN"},
+        ]),
+        pd.DataFrame([{"item_id": "P1", "store_id": "S1"}]),
+    )
+
+    report = main.RC.build_reconciliation_report(
+        joined.df_matched, joined.df_ctkm_only, joined.df_pog_only, [],
+    )
+    actions = _actions([_promo("UNKNOWN")])
+
+    assert report.non_sku_ctkm_count == 1
+    assert report.invalid_item_ctkm_count == 1
+    assert report.missing_item_ctkm_count == 0
+    assert actions.loc[0, "scheduled_action"] == "review"
+    assert actions.loc[0, "reason"] == "ma_san_pham_khong_hop_le"
 
 
 def test_multiple_complete_locations_are_not_missing_or_review_errors():
@@ -297,3 +380,70 @@ def test_export_uses_business_date_for_remaining_days_and_pog_review(tmp_path):
     assert workbook["Gắn tem"].auto_filter.ref is not None
     summary_values = [cell.value for row in workbook["Tom tat"] for cell in row]
     assert "Ngay nghiep vu" in summary_values
+
+
+def test_integrated_pipeline_workbook_has_conflicts_stable_tasks_and_missing_summary(tmp_path):
+    ctkm_path = tmp_path / "ctkm.xlsx"
+    pog_path = tmp_path / "pog.xlsx"
+    output_path = tmp_path / "integrated.xlsx"
+
+    ctkm_book = Workbook()
+    ctkm_sheet = ctkm_book.active
+    ctkm_sheet.title = "CTKM"
+    ctkm_sheet.append([
+        "Item", "Name", "UoM", "Campaign", "Detail", "From", "To",
+        "Normal", "Promo", "Channel",
+    ])
+    ctkm_sheet.append(["P1", "Product 1", "Hộp", "Same", "Giảm 10%", "2026-08-01", "2026-08-20", 100, 90, "OFFLINE"])
+    ctkm_sheet.append(["P1", "Product 1", "Hộp", "Same", "Giảm 10%", "2026-08-10", "2026-08-31", 100, 90, "OFFLINE"])
+    ctkm_sheet.append(["P2", "Product 2", "Hộp", "Other", "Giảm 5%", "2026-08-01", "2026-08-31", 100, 95, "OFFLINE"])
+    ctkm_sheet.append([None, "Broken", "Hộp", "Missing code", "Giảm 5%", "2026-08-01", "2026-08-31", 100, 95, "OFFLINE"])
+    ctkm_book.save(ctkm_path)
+
+    pog_book = Workbook()
+    pog_sheet = pog_book.active
+    pog_sheet.title = "POG"
+    pog_sheet.append(["Applied filters DATEID 8/31/2026"])
+    pog_sheet.append(["Item", "Store", "POG", "Location", "Facing"])
+    pog_sheet.append(["P1", "S1", "A", "1", 1])
+    pog_sheet.append(["P1", "S1", "A", "1", 2])
+    pog_sheet.append(["P2", "S1", "B", "2", 1])
+    pog_book.save(pog_path)
+
+    result = main.run_pipeline(
+        ctkm_filepath=ctkm_path,
+        pog_filepath=pog_path,
+        target_month="2026-08",
+        output_path=output_path,
+        ctkm_sheet_name="CTKM",
+        pog_sheet_name="POG",
+        business_date="2026-08-15",
+        ctkm_mapping_override={
+            "Item": "item_id", "Name": "item_name", "UoM": "promo_uom",
+            "Campaign": "campaign_name", "Detail": "campaign_detail",
+            "From": "promo_from", "To": "promo_to", "Normal": "normal_price",
+            "Promo": "promo_price", "Channel": "channel",
+        },
+        pog_mapping_override={
+            "Item": "item_id", "Store": "store_id", "POG": "pog_code",
+            "Location": "location_id", "Facing": "facing",
+        },
+    )
+
+    workbook = load_workbook(result.output_filepath, data_only=False)
+    audit = workbook["Audit hành động"]
+    headers = [cell.value for cell in audit[1]]
+    task_column = headers.index("Mã công việc (task_id)") + 1
+    task_ids = [audit.cell(row=row, column=task_column).value for row in range(2, audit.max_row + 1)]
+    review_values = [cell.value for row in workbook["Cần review"] for cell in row]
+    warning_values = [cell.value for row in workbook["Canh bao trung thoi gian"] for cell in row]
+    summary_values = [cell.value for row in workbook["Tom tat"] for cell in row]
+
+    assert audit.max_row == 7
+    assert len(task_ids) == len(set(task_ids)) == 6
+    assert review_values.count("thieu_ma_san_pham") == 1
+    assert "blocking_conflict" in warning_values
+    assert True in warning_values
+    assert "So dong CTKM thieu ma san pham" in summary_values
+    assert result.summary["So dong CTKM thieu ma san pham"] == 1
+    assert result.summary["  Trong do CTKM theo hoa don"] == 0

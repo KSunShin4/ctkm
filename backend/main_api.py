@@ -3,7 +3,8 @@
 FastAPI Backend — CTKM Pipeline API
 =====================================
 Endpoints:
-  POST /api/run        — upload 2 file, chon thang, chay pipeline, tra ket qua
+  POST /api/jobs/ctkm  — luong queue chinh cho CTKM, POG va Clearance
+  POST /api/run        — alias deprecated cua /api/jobs/ctkm
   GET  /api/download   — download file Excel ket qua
   GET  /api/preview    — lay du lieu preview (JSON, N dong dau moi sheet)
   GET  /api/health     — health check
@@ -604,11 +605,20 @@ async def enqueue_ctkm(
                 raise ValueError("Chưa có mapping đã lưu cho cấu trúc hai file này")
             current.update(progress=45, message="Đang ghép dữ liệu và xuất Excel")
             result = run_pipeline(
-                str(ctkm_path), str(pog_path), month, str(output_path), strict_month,
-                ctkm_sheet_name, local_ctkm, local_pog, local_output,
-                pog_sheet_name,
-                str(clearance_path) if clearance_content is not None else None,
-                clearance_sheet_name,
+                ctkm_filepath=str(ctkm_path),
+                pog_filepath=str(pog_path),
+                target_month=month,
+                output_path=str(output_path),
+                fail_on_month_mismatch=strict_month,
+                ctkm_sheet_name=ctkm_sheet_name,
+                ctkm_mapping_override=local_ctkm,
+                pog_mapping_override=local_pog,
+                selected_output_columns=local_output,
+                pog_sheet_name=pog_sheet_name,
+                clearance_filepath=(
+                    str(clearance_path) if clearance_content is not None else None
+                ),
+                clearance_sheet_name=clearance_sheet_name,
                 business_date=business_date,
             )
             return result.summary, result.warnings
@@ -1001,180 +1011,40 @@ async def preview_mapping_job(
             pass
 
 
-@app.post("/api/run")
+@app.post("/api/run", status_code=202, deprecated=True)
 async def run_job(
-    ctkm_file:  UploadFile = File(..., description="File Excel CTKM (.xlsx)"),
-    pog_file:   UploadFile = File(..., description="File Excel POG (.xlsx)"),
-    month:      str        = Form(..., description="Thang bao cao, dang YYYY-MM (vd 2026-05)"),
-    strict_month: bool     = Form(False, description="Dung pipeline neu lech thang POG/CTKM"),
-    ctkm_sheet_name: Optional[str] = Form(None, description="Ten sheet CTKM tong hop can xu ly"),
-    pog_sheet_name: Optional[str] = Form(None, description="Ten sheet POG can xu ly"),
-    ctkm_mapping_override: Optional[str] = Form(None, description="JSON mapping override cho sheet CTKM"),
-    pog_mapping_override: Optional[str] = Form(None, description="JSON mapping override cho sheet POG"),
-    selected_output_columns: Optional[str] = Form(None, description="JSON array cac cot output can giu lai"),
-    mapping_mode: str = Form("auto", description="auto hoac saved_only"),
+    ctkm_file: UploadFile = File(...),
+    pog_file: UploadFile = File(...),
+    clearance_file: Optional[UploadFile] = File(None),
+    month: str = Form(...),
+    strict_month: bool = Form(False),
+    ctkm_sheet_name: Optional[str] = Form(None),
+    clearance_sheet_name: Optional[str] = Form(None),
+    pog_sheet_name: Optional[str] = Form(None),
+    ctkm_mapping_override: Optional[str] = Form(None),
+    pog_mapping_override: Optional[str] = Form(None),
+    selected_output_columns: Optional[str] = Form(None),
+    business_date: Optional[str] = Form(None),
+    mapping_mode: str = Form("auto"),
     _admin: str = Depends(require_admin),
 ):
-    """
-    Upload 2 file Excel + chon thang -> chay pipeline -> tra ket qua.
-    Tra ve job_id de frontend dung goi /api/download va /api/preview.
-    """
-    # Validate month format
-    import re
-    if not re.match(r"^\d{4}-\d{2}$", month):
-        raise HTTPException(status_code=422, detail="month phai co dang YYYY-MM, vd 2026-05")
-
-    if not ctkm_file.filename.endswith(".xlsx"):
-        raise HTTPException(status_code=422, detail="ctkm_file phai la file .xlsx")
-    if not pog_file.filename.endswith(".xlsx"):
-        raise HTTPException(status_code=422, detail="pog_file phai la file .xlsx")
-    if mapping_mode not in {"auto", "saved_only"}:
-        raise HTTPException(status_code=422, detail="mapping_mode phai la auto hoac saved_only")
-    if mapping_mode == "auto":
-        _enforce_gemini_cooldown()
-
-    # Luu file upload tam thoi
-    job_id   = str(uuid.uuid4())[:8]
-    job_dir  = _TMP_DIR / job_id
-    job_dir.mkdir(parents=True, exist_ok=True)
-
-    ctkm_path = job_dir / "ctkm.xlsx"
-    pog_path  = job_dir / "pog.xlsx"
-    out_path  = _OUT_DIR / f"tong_hop_ctkm_{month}_{job_id}.xlsx"
-
-    ctkm_content, pog_content = await asyncio.gather(
-        _read_upload_limited(ctkm_file, _MAX_PIPELINE_BYTES, "File CTKM"),
-        _read_upload_limited(pog_file, _MAX_PIPELINE_BYTES, "File POG"),
+    """Deprecated compatibility alias for the canonical queued CTKM workflow."""
+    return await enqueue_ctkm(
+        ctkm_file=ctkm_file,
+        pog_file=pog_file,
+        clearance_file=clearance_file,
+        month=month,
+        strict_month=strict_month,
+        ctkm_sheet_name=ctkm_sheet_name,
+        clearance_sheet_name=clearance_sheet_name,
+        pog_sheet_name=pog_sheet_name,
+        ctkm_mapping_override=ctkm_mapping_override,
+        pog_mapping_override=pog_mapping_override,
+        selected_output_columns=selected_output_columns,
+        business_date=business_date,
+        mapping_mode=mapping_mode,
+        _admin=_admin,
     )
-    ctkm_path.write_bytes(ctkm_content)
-    pog_path.write_bytes(pog_content)
-
-    try:
-        await asyncio.to_thread(_heavy_queue.acquire, job_id, "ctkm")
-    except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-
-    # Chay pipeline
-    try:
-        parsed_ctkm_override = json.loads(ctkm_mapping_override) if ctkm_mapping_override else None
-        parsed_pog_override = json.loads(pog_mapping_override) if pog_mapping_override else None
-        parsed_output_columns = json.loads(selected_output_columns) if selected_output_columns else None
-
-        wb_ctkm, wb_pog = await asyncio.gather(
-            asyncio.to_thread(
-                _main_mod.L.load_workbook_raw, str(ctkm_path), is_pog_file=False,
-                selected_sheet_names=[ctkm_sheet_name] if ctkm_sheet_name else None,
-            ),
-            asyncio.to_thread(
-                _main_mod.L.load_workbook_raw, str(pog_path), is_pog_file=True,
-                selected_sheet_names=[pog_sheet_name] if pog_sheet_name else None,
-            ),
-        )
-        primary_ctkm_name, primary_ctkm_sheet = _main_mod._select_primary_ctkm_sheet(wb_ctkm, ctkm_sheet_name)
-        pog_sheet_name = pog_sheet_name or (next(iter(wb_pog.sheets)) if wb_pog.sheets else None)
-        if pog_sheet_name:
-            saved_preset = _get_saved_preset(
-                list(primary_ctkm_sheet.df.columns),
-                list(wb_pog.sheets[pog_sheet_name].df.columns),
-            )
-            if parsed_ctkm_override is None:
-                parsed_ctkm_override = saved_preset.get("ctkm_mapping")
-            if parsed_pog_override is None:
-                parsed_pog_override = saved_preset.get("pog_mapping")
-            if parsed_output_columns is None:
-                parsed_output_columns = saved_preset.get("output_columns")
-            if mapping_mode == "saved_only" and (not parsed_ctkm_override or not parsed_pog_override):
-                raise ValueError(
-                    "Chưa có mapping đã lưu cho cấu trúc hai file này. Hãy dùng chế độ tự động và lưu mapping sau khi duyệt."
-                )
-            _store_preset(
-                list(primary_ctkm_sheet.df.columns),
-                list(wb_pog.sheets[pog_sheet_name].df.columns),
-                ctkm_mapping=parsed_ctkm_override,
-                pog_mapping=parsed_pog_override,
-                output_columns=parsed_output_columns,
-            )
-
-        result = await asyncio.to_thread(
-            run_pipeline,
-            ctkm_filepath=str(ctkm_path),
-            pog_filepath=str(pog_path),
-            target_month=month,
-            output_path=str(out_path),
-            fail_on_month_mismatch=strict_month,
-            ctkm_sheet_name=ctkm_sheet_name,
-            ctkm_mapping_override=parsed_ctkm_override,
-            pog_mapping_override=parsed_pog_override,
-            selected_output_columns=parsed_output_columns,
-            pog_sheet_name=pog_sheet_name,
-        )
-    except Exception as e:
-        # Phan loai loi de frontend hien thi thong bao phu hop
-        err_cls = type(e).__name__
-
-        # 429 Rate Limit — nguoi dung can cho, khong phai loi server
-        if "GeminiRateLimitError" in err_cls or (
-            GeminiRateLimitError and isinstance(e, GeminiRateLimitError)
-        ):
-            category = getattr(e, "category", "unknown")
-            retry_after = max(60, int(getattr(e, "retry_after", 0) or 0))
-            _set_gemini_cooldown(retry_after)
-            suggestions = {
-                "daily_quota": "Quota theo ngày của Gemini đã hết. Hãy dùng mapping đã lưu, chờ quota làm mới hoặc bật billing.",
-                "token_quota": "Quota token của Gemini đã hết. Hãy giảm số cột/mẫu dữ liệu, chờ vài phút hoặc bật billing.",
-                "rate_quota": "Quota theo phút của Gemini đã hết. Không chạy song song; chờ vài phút rồi thử lại.",
-                "service_overload": "Gemini đang quá tải. Hãy chờ vài phút rồi thử lại; không cần sửa file dữ liệu.",
-                "unknown": "Gemini từ chối yêu cầu do giới hạn tạm thời. Hãy chờ vài phút hoặc dùng mapping đã lưu.",
-            }
-            raise HTTPException(
-                status_code=429,
-                detail={
-                    "type": "rate_limit",
-                    "category": category,
-                    "quota": getattr(e, "quota", None),
-                    "request_id": getattr(e, "request_id", None),
-                    "message": str(e),
-                    "suggestion": suggestions.get(category, suggestions["unknown"]),
-                },
-                headers={"Retry-After": str(retry_after)},
-            )
-
-        # Loi API key chua cau hinh
-        if "GeminiMappingError" in err_cls and "your_gemini_api_key" in str(e).lower():
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "GEMINI_API_KEY chua duoc cau hinh. "
-                    "Mo file .env va dien API key that tu Google AI Studio."
-                ),
-            )
-
-        # Loi nghiep vu (thang bao cao sai format, file rong...)
-        if isinstance(e, ValueError):
-            raise HTTPException(status_code=400, detail=str(e))
-
-        # Loi bat ngo khac
-        raise HTTPException(status_code=500, detail=f"Loi pipeline [{err_cls}]: {e}")
-    finally:
-        _heavy_queue.release(job_id)
-
-    # Luu job info
-    _jobs[job_id] = {
-        "job_id":      job_id,
-        "month":       month,
-        "output_path": str(out_path),
-        "output_name": out_path.name,
-        "summary":     result.summary,
-        "warnings":    result.warnings,
-        "created_at":  datetime.now().isoformat(),
-    }
-
-    return {
-        "job_id":   job_id,
-        "summary":  result.summary,
-        "warnings": result.warnings,
-        "has_output": out_path.exists(),
-    }
 
 
 @app.get("/api/download/{job_id}")

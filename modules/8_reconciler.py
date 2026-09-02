@@ -15,7 +15,21 @@ import pandas as pd
 _SKU_PAT = re.compile(r"^[Pp]\d+$")
 
 def is_sku(item_id) -> bool:
-    return bool(_SKU_PAT.match(str(item_id).strip())) if item_id else False
+    """Return whether a scalar item code follows the current P-number convention."""
+    if item_id is None:
+        return False
+    try:
+        if bool(pd.isna(item_id)):
+            return False
+    except (TypeError, ValueError):
+        return False
+    text = str(item_id).strip()
+    return bool(text and _SKU_PAT.fullmatch(text))
+
+
+def is_bill_program(item_id) -> bool:
+    """Recognize only the explicit invoice-level convention; do not infer it."""
+    return _item_key(item_id) == "BILL"
 
 @dataclass
 class OverlapWarning:
@@ -41,6 +55,8 @@ class ReconciliationReport:
     pog_only_unique_items: int
     non_sku_ctkm_count: int = 0
     overlap_warnings: list = dc_field(default_factory=list)
+    missing_item_ctkm_count: int = 0
+    invalid_item_ctkm_count: int = 0
 
 _BUSINESS_COLUMNS = [
     "item_id", "item_key", "item_name", "promo_uom", "campaign_name", "campaign_detail",
@@ -51,6 +67,10 @@ _BUSINESS_COLUMNS = [
 _PROMOTION_ID_COLUMNS = [
     "program_source", "item_key", "campaign_name", "campaign_detail",
     "promo_from", "promo_to", "normal_price", "promo_price", "promo_uom", "channel",
+]
+
+_POG_POSITION_ID_COLUMNS = [
+    "item_key", "store_id", "pog_code", "location_id", "facing", "pog_snapshot_month",
 ]
 
 
@@ -94,6 +114,23 @@ def _stable_id(prefix: str, values: list) -> str:
         separators=(",", ":"),
     )
     return f"{prefix}-{hashlib.sha256(payload.encode('utf-8')).hexdigest()[:24].upper()}"
+
+
+def _attach_task_ids(actions: pd.DataFrame) -> pd.DataFrame:
+    result = actions.copy()
+    result["pog_position_id"] = result.apply(
+        lambda row: _stable_id(
+            "POGPOS", [row.get(column) for column in _POG_POSITION_ID_COLUMNS],
+        ),
+        axis=1,
+    )
+    result["task_id"] = result.apply(
+        lambda row: _stable_id("TASK", [
+            row.get("promotion_id"), row.get("scheduled_action"), row.get("pog_position_id"),
+        ]),
+        axis=1,
+    )
+    return result
 
 
 def _ensure_source_lineage(frame: pd.DataFrame) -> pd.DataFrame:
@@ -218,14 +255,9 @@ def detect_campaign_time_overlaps(df_ctkm) -> list:
                 cross_source_clearance = (
                     source_a != source_b and {source_a, source_b} == {"ctkm", "clearance"}
                 )
-                material_fields = (
-                    "campaign_name", "campaign_detail", "normal_price", "promo_price", "promo_uom"
-                )
-                material_difference = any(
-                    _fingerprint_value(a.get(field)) != _fingerprint_value(b.get(field))
-                    for field in material_fields
-                )
-                is_blocking = cross_source_clearance or (not raw_channels_differ and material_difference)
+                # Any overlapping, non-identical rows in the exact same raw channel
+                # are ambiguous, including when only their date ranges differ.
+                is_blocking = cross_source_clearance or not raw_channels_differ
                 conflict_type = (
                     "blocking_conflict" if is_blocking
                     else "potential_cross_channel_overlap" if raw_channels_differ
@@ -312,6 +344,8 @@ def build_fefo_action_frame(
     def _classify(row):
         if _item_key(row.get("item_key")) is None:
             return "review", "thieu_ma_san_pham"
+        if not is_sku(row.get("item_key")) and not is_bill_program(row.get("item_key")):
+            return "review", "ma_san_pham_khong_hop_le"
         campaign_name = row.get("campaign_name")
         if pd.isna(campaign_name) or not str(campaign_name).strip():
             return "review", "thieu_ten_chuong_trinh"
@@ -416,13 +450,7 @@ def build_fefo_action_frame(
         actions["has_multiple_pog_positions"] = False
         actions["location_needs_review"] = True
         actions["location_status"] = actions["location_completeness"]
-        actions["task_id"] = actions.apply(
-            lambda row: _stable_id("TASK", [
-                row.get("promotion_id"), row.get("scheduled_action"),
-                row.get("store_id"), row.get("pog_code"), row.get("location_id"),
-            ]), axis=1,
-        )
-        return actions
+        return _attach_task_ids(actions)
 
     pog = _ensure_item_key(df_pog)
     pog = pog[pog["item_key"].notna()].copy().reset_index(drop=True)
@@ -503,18 +531,13 @@ def build_fefo_action_frame(
     )
     actions["pog_position_count"] = actions["pog_position_count"].fillna(0).astype(int)
     actions["pog_source_row_count"] = actions["pog_source_row_count"].fillna(0).astype(int)
-    actions["task_id"] = actions.apply(
-        lambda row: _stable_id("TASK", [
-            row.get("promotion_id"), row.get("scheduled_action"),
-            row.get("store_id"), row.get("pog_code"), row.get("location_id"),
-        ]), axis=1,
-    )
+    actions = _attach_task_ids(actions)
     actions = actions.drop(columns=["_pog_match"])
     return actions.loc[:, [
         *out_cols, "promotion_id", *location_cols, "pog_source_row_id", "pog_source_row_ids",
         "pog_source_row_count", "pog_duplicate_status", "pog_position_count",
         "location_completeness", "has_multiple_pog_positions", "pog_month_status",
-        "location_needs_review", "location_status", "task_id",
+        "location_needs_review", "location_status", "pog_position_id", "task_id",
     ]].reset_index(drop=True)
 
 
@@ -522,11 +545,31 @@ def build_reconciliation_report(df_matched, df_ctkm_only, df_pog_only, overlap_w
     def _uniq(df):
         key = "item_key" if "item_key" in df.columns else "item_id"
         return df[key].nunique() if not df.empty and key in df.columns else 0
-    non_sku = 0
-    if not df_ctkm_only.empty and "item_id" in df_ctkm_only.columns:
-        non_sku = int((~df_ctkm_only["item_id"].apply(is_sku)).sum())
+    bill_count = 0
+    missing_count = 0
+    invalid_count = 0
+    if not df_ctkm_only.empty:
+        raw_keys = (
+            df_ctkm_only["item_key"]
+            if "item_key" in df_ctkm_only.columns
+            else df_ctkm_only.get("item_id", pd.Series(index=df_ctkm_only.index, dtype=object))
+        )
+        item_keys = raw_keys.apply(_item_key)
+        missing_mask = item_keys.isna()
+        bill_mask = item_keys.apply(is_bill_program)
+        sku_mask = item_keys.apply(is_sku)
+        bill_count = int(bill_mask.sum())
+        missing_count = int(missing_mask.sum())
+        invalid_count = int((~missing_mask & ~bill_mask & ~sku_mask).sum())
     return ReconciliationReport(
-        len(df_matched), len(df_ctkm_only), len(df_pog_only),
-        _uniq(df_matched), _uniq(df_ctkm_only), _uniq(df_pog_only),
-        non_sku, overlap_warnings,
+        matched_count=len(df_matched),
+        ctkm_only_count=len(df_ctkm_only),
+        pog_only_count=len(df_pog_only),
+        matched_unique_items=_uniq(df_matched),
+        ctkm_only_unique_items=_uniq(df_ctkm_only),
+        pog_only_unique_items=_uniq(df_pog_only),
+        non_sku_ctkm_count=bill_count,
+        overlap_warnings=overlap_warnings,
+        missing_item_ctkm_count=missing_count,
+        invalid_item_ctkm_count=invalid_count,
     )
