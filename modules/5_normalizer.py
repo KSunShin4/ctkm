@@ -7,17 +7,13 @@ import pandas as pd
 
 DATE_FIELDS   = {"promo_from","promo_to","row_update_date"}
 NUMBER_FIELDS = {"normal_price","promo_price","facing"}
-STRING_FIELDS = {"item_id","item_name","promo_uom","campaign_name","campaign_detail","channel",
+STRING_FIELDS = {"item_id","item_name","promo_uom","campaign_name","campaign_detail","key_channel","channel",
                  "product_type","store_id","pog_code","location_id","condition_note"}
 
-# WHITELIST: chi cac field nay moi duoc phep co nhieu slot -> nhan dong khi unpivot.
-# Field nao khac bi trung slot (do mapping sai) se KHONG nhan dong — chi rename sang
-# extra__ va ghi canh bao, tranh loi nhan dong am tham lam sai so lieu.
 UNPIVOTABLE_FIELDS = {"campaign_detail", "promo_price"}
 EXCEL_ERROR_VALUES = {"#N/A", "#VALUE!", "#REF!", "#DIV/0!", "#NAME?", "#NUM!", "#NULL!"}
 
 def _parse_identifier(v):
-    """Keep identifiers as text and undo Excel's harmless integral-float form."""
     if pd.isna(v) or v is None:
         return None
     text = str(v).replace("\xa0", " ").strip()
@@ -29,7 +25,6 @@ def _parse_identifier(v):
 
 
 def _preserve_item_id(v):
-    """Preserve source spelling/spacing while still handling Excel numeric IDs."""
     if v is None or pd.isna(v):
         return None
     if isinstance(v, str):
@@ -41,7 +36,6 @@ def _preserve_item_id(v):
 
 
 def make_item_key(v):
-    """Technical SKU key; empty values never become matchable keys."""
     if v is None or pd.isna(v):
         return None
     key = str(v).strip().upper()
@@ -49,16 +43,12 @@ def make_item_key(v):
 
 
 def _preserve_channel(v):
-    """Keep the source channel verbatim; users decide channel scope in Excel."""
+    """Keep KEY Channel/Channel exactly as source text for Excel filtering."""
     if v is None or pd.isna(v):
         return None
     return v if isinstance(v, str) else str(v)
 
 def apply_mapping(df: pd.DataFrame, mapping: dict) -> pd.DataFrame:
-    """
-    Doi ten cot theo mapping. Neu nhieu cot goc cung map ve 1 canonical field,
-    tu dong danh so suffix __1, __2,... (day la tin hieu cho unpivot_multi_promo).
-    """
     canonical_count: dict = {}
     final_names: dict = {}
     for col in df.columns:
@@ -100,7 +90,7 @@ def clean_values(df: pd.DataFrame) -> pd.DataFrame:
             df[col] = df[col].apply(_parse_number)
         elif col == "item_id":
             df[col] = df[col].apply(_preserve_item_id)
-        elif col == "channel":
+        elif col in {"key_channel", "channel"}:
             df[col] = df[col].apply(_preserve_channel)
         elif col in STRING_FIELDS:
             df[col] = df[col].apply(_parse_identifier)
@@ -126,12 +116,6 @@ def attach_pog_snapshot_month(df: pd.DataFrame, month) -> pd.DataFrame:
     df = df.copy(); df["pog_snapshot_month"] = month; return df
 
 def unpivot_multi_promo(df: pd.DataFrame, max_slots: int = 5):
-    """
-    Phat hien cot co suffix __N (do apply_mapping tao ra khi nhieu cot map ve 1 field),
-    tach thanh nhieu dong NEU field nam trong UNPIVOTABLE_FIELDS.
-    Field khac bi trung slot -> giu slot dau, day sang extra__, ghi canh bao.
-    Tra ve (df_result, list_warnings).
-    """
     suffix_pat = re.compile(r"^(.+)__(\d+)$")
     slot_groups: dict = {}
     for col in df.columns:
