@@ -2,6 +2,8 @@ import importlib.util
 from pathlib import Path
 import sys
 
+import pytest
+
 
 def _loader_module():
     root = Path(__file__).resolve().parents[1]
@@ -26,12 +28,13 @@ def _loader_module():
     return module
 
 
-def test_loader_disables_external_link_parsing(tmp_path, monkeypatch):
+@pytest.mark.parametrize("is_pog_file", [False, True])
+def test_shared_loader_disables_external_link_parsing(tmp_path, monkeypatch, is_pog_file):
     from openpyxl import Workbook
     import openpyxl
 
     loader = _loader_module()
-    source = tmp_path / "pog.xlsx"
+    source = tmp_path / ("pog.xlsx" if is_pog_file else "ctkm-or-clearance.xlsx")
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "Export"
@@ -48,9 +51,15 @@ def test_loader_disables_external_link_parsing(tmp_path, monkeypatch):
 
     monkeypatch.setattr(openpyxl, "load_workbook", recording_load_workbook)
 
-    loaded = loader.load_workbook_raw(str(source), is_pog_file=True, selected_sheet_names=["Export"])
+    loaded = loader.load_workbook_raw(
+        str(source),
+        is_pog_file=is_pog_file,
+        selected_sheet_names=["Export"],
+    )
 
     assert "Export" in loaded.sheets
     assert len(loaded.sheets["Export"].df) == 1
     assert calls
     assert calls[0].get("keep_links") is False
+    assert calls[0].get("read_only") is True
+    assert calls[0].get("data_only") is True
