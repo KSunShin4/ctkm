@@ -2,6 +2,8 @@
 """Module 8: Reconciler — dem so lieu, phat hien campaign trung thoi gian cung item."""
 from __future__ import annotations
 import calendar
+import hashlib
+import json
 import re
 import unicodedata
 from datetime import datetime
@@ -26,6 +28,8 @@ class OverlapWarning:
     channel_b: str = "(không rõ)"
     source_row_id_a: str = ""
     source_row_id_b: str = ""
+    conflict_type: str = "blocking_conflict"
+    is_blocking: bool = True
 
 @dataclass
 class ReconciliationReport:
@@ -39,10 +43,57 @@ class ReconciliationReport:
     overlap_warnings: list = dc_field(default_factory=list)
 
 _BUSINESS_COLUMNS = [
-    "item_id", "item_name", "promo_uom", "campaign_name", "campaign_detail",
+    "item_id", "item_key", "item_name", "promo_uom", "campaign_name", "campaign_detail",
     "promo_from", "promo_to", "normal_price", "promo_price", "channel",
     "product_type", "program_source", "source_sheet",
 ]
+
+_PROMOTION_ID_COLUMNS = [
+    "program_source", "item_key", "campaign_name", "campaign_detail",
+    "promo_from", "promo_to", "normal_price", "promo_price", "promo_uom", "channel",
+]
+
+
+def _item_key(value):
+    if value is None or pd.isna(value):
+        return None
+    key = str(value).strip().upper()
+    return key or None
+
+
+def _ensure_item_key(frame: pd.DataFrame) -> pd.DataFrame:
+    df = frame.copy()
+    if "item_key" in df.columns:
+        df["item_key"] = df["item_key"].apply(_item_key)
+    else:
+        df["item_key"] = df.get("item_id", pd.Series(index=df.index, dtype=object)).apply(_item_key)
+    return df
+
+
+def _canonical_value(value):
+    """Serialize business values consistently for deterministic identifiers."""
+    if value is None or pd.isna(value):
+        return None
+    if isinstance(value, (pd.Timestamp, datetime)):
+        return pd.Timestamp(value).isoformat()
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        if value.is_integer():
+            return str(int(value))
+        return format(value, ".15g")
+    return str(value)
+
+
+def _stable_id(prefix: str, values: list) -> str:
+    payload = json.dumps(
+        [_canonical_value(value) for value in values],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return f"{prefix}-{hashlib.sha256(payload.encode('utf-8')).hexdigest()[:24].upper()}"
 
 
 def _ensure_source_lineage(frame: pd.DataFrame) -> pd.DataFrame:
@@ -91,7 +142,10 @@ def _display_value(value, fallback="(không rõ)") -> str:
 def _collapse_exact_duplicates(frame: pd.DataFrame) -> pd.DataFrame:
     """Consolidate only byte-for-byte business duplicates and retain full lineage."""
     df = _ensure_source_lineage(frame)
-    lineage = {"source_row_id", "source_row_ids", "source_row_count", "duplicate_status"}
+    lineage = {
+        "source_row_id", "source_row_ids", "source_row_count", "duplicate_status",
+        "source_excel_row", "logical_row_id", "promo_slot_id",
+    }
     identity_columns = [column for column in df.columns if column not in lineage]
     groups: dict[tuple, list[int]] = {}
     for idx, row in df.iterrows():
@@ -135,16 +189,16 @@ def detect_campaign_time_overlaps(df_ctkm) -> list:
     warnings = []
     if not {"item_id","promo_from","promo_to"}.issubset(df_ctkm.columns):
         return warnings
-    df = df_ctkm.copy()
+    df = _ensure_item_key(df_ctkm)
     df["_overlap_from"] = df["promo_from"].apply(_parse_date)
     df["_overlap_to"] = df["promo_to"].apply(_parse_date)
     df = df[df["_overlap_from"].notna() & df["_overlap_to"].notna()].copy()
     if df.empty:
         return warnings
-    df = df[df["item_id"].apply(is_sku)]
+    df = df[df["item_key"].apply(is_sku)]
     df = _ensure_source_lineage(df)
 
-    for item_id, grp in df.groupby("item_id"):
+    for item_key, grp in df.groupby("item_key"):
         if len(grp) < 2: continue
         rows = grp.to_dict("records")
         for a, b in combinations(rows, 2):
@@ -156,14 +210,37 @@ def detect_campaign_time_overlaps(df_ctkm) -> list:
                 # Dòng giống hệt nhau là duplicate có lineage, không phải hai campaign xung đột.
                 if _same_campaign_row(a, b):
                     continue
+                channel_a = a.get("channel")
+                channel_b = b.get("channel")
+                raw_channels_differ = _fingerprint_value(channel_a) != _fingerprint_value(channel_b)
+                source_a = _normalize_text(a.get("program_source"))
+                source_b = _normalize_text(b.get("program_source"))
+                cross_source_clearance = (
+                    source_a != source_b and {source_a, source_b} == {"ctkm", "clearance"}
+                )
+                material_fields = (
+                    "campaign_name", "campaign_detail", "normal_price", "promo_price", "promo_uom"
+                )
+                material_difference = any(
+                    _fingerprint_value(a.get(field)) != _fingerprint_value(b.get(field))
+                    for field in material_fields
+                )
+                is_blocking = cross_source_clearance or (not raw_channels_differ and material_difference)
+                conflict_type = (
+                    "blocking_conflict" if is_blocking
+                    else "potential_cross_channel_overlap" if raw_channels_differ
+                    else "potential_overlap"
+                )
                 warnings.append(OverlapWarning(
-                    str(item_id), ca, cb,
+                    str(item_key), ca, cb,
                     f"{af.date()} -> {at.date()}",
                     f"{bf.date()} -> {bt.date()}",
                     _display_value(a.get("channel")),
                     _display_value(b.get("channel")),
                     _display_value(a.get("source_row_id"), ""),
                     _display_value(b.get("source_row_id"), ""),
+                    conflict_type,
+                    is_blocking,
                 ))
     return warnings
 
@@ -213,7 +290,7 @@ def build_fefo_action_frame(
                                      "target_month", "business_date", "store_id", "pog_code",
                                      "location_id", "facing", "pog_snapshot_month", "location_status"])
 
-    df = _collapse_exact_duplicates(df_ctkm)
+    df = _collapse_exact_duplicates(_ensure_item_key(df_ctkm))
     base_cols = _BUSINESS_COLUMNS.copy()
     for col in base_cols:
         if col not in df.columns:
@@ -233,6 +310,11 @@ def build_fefo_action_frame(
     month_start, month_end = _get_month_bounds(target_month)
 
     def _classify(row):
+        if _item_key(row.get("item_key")) is None:
+            return "review", "thieu_ma_san_pham"
+        campaign_name = row.get("campaign_name")
+        if pd.isna(campaign_name) or not str(campaign_name).strip():
+            return "review", "thieu_ten_chuong_trinh"
         promo_from = _parse_date(row.get("promo_from"))
         promo_to = _parse_date(row.get("promo_to"))
         if pd.isna(promo_from) or pd.isna(promo_to):
@@ -282,6 +364,8 @@ def build_fefo_action_frame(
         overlap_warnings = detect_campaign_time_overlaps(df)
     conflicts: dict[str, list[str]] = {}
     for warning in overlap_warnings or []:
+        if not getattr(warning, "is_blocking", True):
+            continue
         detail = (
             f"{warning.campaign_a} [{warning.channel_a}] ↔ "
             f"{warning.campaign_b} [{warning.channel_b}]"
@@ -296,7 +380,10 @@ def build_fefo_action_frame(
         details = list(dict.fromkeys(
             detail for row_id in lineage_ids for detail in conflicts.get(row_id, [])
         ))
-        if details:
+        if details and row["reason"] not in {
+            "thieu_ma_san_pham", "thieu_ten_chuong_trinh",
+            "thieu_thong_tin_ngay", "ngay_bat_dau_sau_ngay_ket_thuc",
+        }:
             df.at[idx, "scheduled_action"] = "review"
             df.at[idx, "action"] = "review"
             df.at[idx, "reason"] = "xung_dot_thoi_gian: " + " | ".join(details)
@@ -306,29 +393,73 @@ def build_fefo_action_frame(
         "ngay_gan_tem", "ngay_thao_tem", "scheduled_action", "action", "reason",
         "target_month", "business_date", "in_report_scope", "report_scope_reason",
     ]
+    for technical_column in ("source_excel_row", "logical_row_id", "promo_slot_id"):
+        if technical_column in df.columns:
+            out_cols.append(technical_column)
     actions = df.loc[:, out_cols].reset_index(drop=True)
+    actions["promotion_id"] = actions.apply(
+        lambda row: _stable_id("PROMO", [row.get(column) for column in _PROMOTION_ID_COLUMNS]),
+        axis=1,
+    )
 
     location_cols = ["store_id", "pog_code", "location_id", "facing", "pog_snapshot_month"]
     if df_pog is None or df_pog.empty or "item_id" not in df_pog.columns:
         for col in location_cols:
             actions[col] = pd.NA
         actions["pog_source_row_id"] = pd.NA
+        actions["pog_source_row_ids"] = pd.NA
+        actions["pog_source_row_count"] = 0
+        actions["pog_duplicate_status"] = "Không có dòng POG"
         actions["pog_position_count"] = 0
         actions["pog_month_status"] = "Không có snapshot POG"
-        actions["location_status"] = "Không tìm thấy SKU trong POG"
-        actions["task_id"] = [f"TASK-{idx:06d}" for idx in range(1, len(actions) + 1)]
+        actions["location_completeness"] = "Không tìm thấy SKU trong POG"
+        actions["has_multiple_pog_positions"] = False
+        actions["location_needs_review"] = True
+        actions["location_status"] = actions["location_completeness"]
+        actions["task_id"] = actions.apply(
+            lambda row: _stable_id("TASK", [
+                row.get("promotion_id"), row.get("scheduled_action"),
+                row.get("store_id"), row.get("pog_code"), row.get("location_id"),
+            ]), axis=1,
+        )
         return actions
 
-    available = [col for col in location_cols if col in df_pog.columns]
-    locations = df_pog.loc[:, ["item_id", *available]].copy().reset_index(drop=True)
-    if "source_row_id" in df_pog.columns:
-        locations["pog_source_row_id"] = df_pog["source_row_id"].reset_index(drop=True).map(
+    pog = _ensure_item_key(df_pog)
+    pog = pog[pog["item_key"].notna()].copy().reset_index(drop=True)
+    for col in location_cols:
+        if col not in pog.columns:
+            pog[col] = pd.NA
+    if "source_row_id" in pog.columns:
+        pog["pog_source_row_id"] = pog["source_row_id"].map(
             lambda value: str(value) if str(value).startswith("POG:") else f"POG:{value}"
         )
     else:
-        locations["pog_source_row_id"] = [f"POG:Sheet1:{idx}" for idx in range(2, len(locations) + 2)]
-    locations["pog_position_count"] = locations.groupby("item_id", dropna=False)["item_id"].transform("size")
-    actions = actions.merge(locations, on="item_id", how="left", indicator="_pog_match")
+        pog["pog_source_row_id"] = [f"POG:Sheet1:{idx}" for idx in range(2, len(pog) + 2)]
+
+    position_key = ["item_key", *location_cols]
+    location_rows = []
+    for _, group in pog.groupby(position_key, dropna=False, sort=False):
+        first = group.iloc[0].copy()
+        row_ids = list(dict.fromkeys(group["pog_source_row_id"].astype(str).tolist()))
+        first["pog_source_row_id"] = row_ids[0]
+        first["pog_source_row_ids"] = " | ".join(row_ids)
+        first["pog_source_row_count"] = len(group)
+        first["pog_duplicate_status"] = (
+            "Đã gom dòng POG trùng hoàn toàn" if len(group) > 1 else "Dòng POG duy nhất"
+        )
+        location_rows.append(first)
+    locations = pd.DataFrame(location_rows)
+    if locations.empty:
+        return build_fefo_action_frame(
+            df_ctkm, target_month, None, business_date=business_date,
+            overlap_warnings=overlap_warnings,
+        )
+    locations["pog_position_count"] = locations.groupby("item_key")["item_key"].transform("size")
+    keep_location_cols = [
+        "item_key", *location_cols, "pog_source_row_id", "pog_source_row_ids",
+        "pog_source_row_count", "pog_duplicate_status", "pog_position_count",
+    ]
+    actions = actions.merge(locations.loc[:, keep_location_cols], on="item_key", how="left", indicator="_pog_match")
     for col in location_cols:
         if col not in actions.columns:
             actions[col] = pd.NA
@@ -340,7 +471,7 @@ def build_fefo_action_frame(
 
     def _location_state(row):
         if row["_pog_match"] != "both":
-            return "Không tìm thấy SKU trong POG", "Không có snapshot POG"
+            return "Không tìm thấy SKU trong POG", "Không có snapshot POG", False, True
         snapshot = row.get("pog_snapshot_month")
         month_status = (
             "POG lệch tháng"
@@ -350,28 +481,47 @@ def build_fefo_action_frame(
         )
         complete = all(pd.notna(row[col]) and str(row[col]).strip() for col in required_location)
         if not complete:
-            return "Thiếu một phần thông tin vị trí", month_status
-        if month_status == "POG lệch tháng":
-            return "POG lệch tháng", month_status
-        if int(row.get("pog_position_count") or 0) > 1:
-            return "Nhiều vị trí POG", month_status
-        return "Đủ vị trí", month_status
+            completeness = "Thiếu một phần thông tin vị trí"
+        else:
+            completeness = "Đủ vị trí"
+        multiple = int(row.get("pog_position_count") or 0) > 1
+        needs_review = completeness != "Đủ vị trí" or month_status in {"POG lệch tháng", "Không rõ tháng POG"}
+        return completeness, month_status, multiple, needs_review
 
     states = actions.apply(_location_state, axis=1)
-    actions["location_status"] = [state[0] for state in states]
+    actions["location_completeness"] = [state[0] for state in states]
     actions["pog_month_status"] = [state[1] for state in states]
+    actions["has_multiple_pog_positions"] = [state[2] for state in states]
+    actions["location_needs_review"] = [state[3] for state in states]
+    # Legacy status remains descriptive for older integrations; completeness is the metric.
+    actions["location_status"] = actions.apply(
+        lambda row: (
+            "POG lệch tháng" if row["pog_month_status"] == "POG lệch tháng"
+            else "Nhiều vị trí POG" if row["has_multiple_pog_positions"] and row["location_completeness"] == "Đủ vị trí"
+            else row["location_completeness"]
+        ), axis=1,
+    )
     actions["pog_position_count"] = actions["pog_position_count"].fillna(0).astype(int)
-    actions["task_id"] = [f"TASK-{idx:06d}" for idx in range(1, len(actions) + 1)]
+    actions["pog_source_row_count"] = actions["pog_source_row_count"].fillna(0).astype(int)
+    actions["task_id"] = actions.apply(
+        lambda row: _stable_id("TASK", [
+            row.get("promotion_id"), row.get("scheduled_action"),
+            row.get("store_id"), row.get("pog_code"), row.get("location_id"),
+        ]), axis=1,
+    )
     actions = actions.drop(columns=["_pog_match"])
     return actions.loc[:, [
-        *out_cols, *location_cols, "pog_source_row_id", "pog_position_count",
-        "pog_month_status", "location_status", "task_id",
+        *out_cols, "promotion_id", *location_cols, "pog_source_row_id", "pog_source_row_ids",
+        "pog_source_row_count", "pog_duplicate_status", "pog_position_count",
+        "location_completeness", "has_multiple_pog_positions", "pog_month_status",
+        "location_needs_review", "location_status", "task_id",
     ]].reset_index(drop=True)
 
 
 def build_reconciliation_report(df_matched, df_ctkm_only, df_pog_only, overlap_warnings) -> ReconciliationReport:
     def _uniq(df):
-        return df["item_id"].nunique() if not df.empty and "item_id" in df.columns else 0
+        key = "item_key" if "item_key" in df.columns else "item_id"
+        return df[key].nunique() if not df.empty and key in df.columns else 0
     non_sku = 0
     if not df_ctkm_only.empty and "item_id" in df_ctkm_only.columns:
         non_sku = int((~df_ctkm_only["item_id"].apply(is_sku)).sum())

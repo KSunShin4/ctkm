@@ -35,13 +35,21 @@ _BILINGUAL_HEADERS = {
     "action": "Công việc (action)",
     "reason": "Lý do phân loại (reason)",
     "task_id": "Mã công việc (task_id)",
+    "promotion_id": "Mã chương trình ổn định (promotion_id)",
+    "item_key": "Khóa SKU đối chiếu (item_key)",
     "source_row_id": "Dòng nguồn chính (source_row_id)",
     "source_row_ids": "Các dòng nguồn (source_row_ids)",
     "source_row_count": "Số dòng nguồn (source_row_count)",
     "duplicate_status": "Trạng thái trùng dòng (duplicate_status)",
     "pog_position_count": "Số vị trí POG",
     "pog_month_status": "Tình trạng tháng POG",
-    "so_ngay_con_lai": "Số ngày còn lại (công thức)",
+    "location_completeness": "Độ đầy đủ vị trí (location_completeness)",
+    "has_multiple_pog_positions": "Có nhiều vị trí POG",
+    "location_needs_review": "Vị trí cần review",
+    "pog_source_row_ids": "Các dòng nguồn POG",
+    "pog_source_row_count": "Số dòng nguồn POG",
+    "pog_duplicate_status": "Trạng thái trùng dòng POG",
+    "so_ngay_con_lai": "Số ngày còn lại theo ngày nghiệp vụ",
     "processing_status": "Đã xử lý (processing_status)",
     "processed_by": "Người thực hiện (processed_by)",
     "processed_at": "Thời gian xử lý (processed_at)",
@@ -88,12 +96,13 @@ def _prepare_action_sheet(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or df.empty:
         return df
     preferred = [
-        "task_id", "item_id", "item_name", "promo_uom", "program_source", "store_id", "channel", "pog_code", "location_id", "facing",
-        "location_status", "campaign_name", "campaign_detail", "promo_from", "promo_to",
+        "task_id", "promotion_id", "item_id", "item_key", "item_name", "promo_uom", "program_source", "store_id", "channel", "pog_code", "location_id", "facing",
+        "location_completeness", "has_multiple_pog_positions", "pog_month_status", "location_needs_review", "location_status", "campaign_name", "campaign_detail", "promo_from", "promo_to",
         "normal_price", "promo_price", "product_type", "ngay_gan_tem", "ngay_thao_tem",
         "so_ngay_con_lai", "scheduled_action", "action", "processing_status", "processed_by", "processed_at",
         "staff_note", "reason", "target_month",
-        "pog_snapshot_month", "pog_month_status", "pog_position_count", "source_sheet",
+        "pog_snapshot_month", "pog_position_count", "pog_source_row_id", "pog_source_row_ids",
+        "pog_source_row_count", "pog_duplicate_status", "source_sheet",
         "source_row_id", "source_row_ids", "source_row_count", "duplicate_status",
     ]
     ordered = [col for col in preferred if col in df.columns]
@@ -241,7 +250,8 @@ def _configure_confirmation_inputs(ws) -> None:
 
 
 def _create_guide_sheet(workbook, df_gan, df_thao, df_wait, df_review,
-                        df_location_issues, summary, df_confirmation=None) -> None:
+                        df_location_issues, summary, df_confirmation=None,
+                        df_location_review=None, df_pog_review=None) -> None:
     ws = workbook.create_sheet("HƯỚNG DẪN", 0)
     ws.sheet_view.showGridLines = False
     ws.sheet_properties.tabColor = "1F4E78"
@@ -255,6 +265,14 @@ def _create_guide_sheet(workbook, df_gan, df_thao, df_wait, df_review,
     target_month = summary.get("Thang bao cao", "") if isinstance(summary, dict) else ""
     ws["A4"] = "Tháng báo cáo"
     ws["B4"] = target_month
+    business_date = summary.get("Ngay nghiep vu", "") if isinstance(summary, dict) else ""
+    ws["A5"] = "Ngày nghiệp vụ"
+    if pd.notna(business_date) and business_date != "":
+        parsed_business_date = pd.to_datetime(business_date, errors="coerce")
+        ws["B5"] = (
+            parsed_business_date.to_pydatetime() if pd.notna(parsed_business_date) else business_date
+        )
+        ws["B5"].number_format = "dd/mm/yyyy"
     ws["D4"] = "Cách sử dụng"
     ws["D4"].font = Font(bold=True, color="1F4E78")
     instructions = [
@@ -272,7 +290,9 @@ def _create_guide_sheet(workbook, df_gan, df_thao, df_wait, df_review,
         ("Tháo tem", len(df_thao) if df_thao is not None else 0, "FCE4D6", "Tháo tem"),
         ("Chờ gắn", len(df_wait) if df_wait is not None else 0, "FFF2CC", "Chờ gắn"),
         ("Cần review", len(df_review) if df_review is not None else 0, "E4DFEC", "Cần review"),
-        ("Cần kiểm tra vị trí", len(df_location_issues) if df_location_issues is not None else 0, "FFC7CE", "CTKM thieu vi tri ke"),
+        ("Thiếu vị trí", len(df_location_issues) if df_location_issues is not None else 0, "FFC7CE", "CTKM thieu vi tri ke"),
+        ("Review vị trí", len(df_location_review) if df_location_review is not None else 0, "F4CCCC", "POG cần kiểm tra"),
+        ("POG cần review", len(df_pog_review) if df_pog_review is not None else 0, "FCE5CD", "POG cần review"),
         ("Xác nhận CTKM / Clearance", len(df_confirmation) if df_confirmation is not None else 0,
          "DDEBF7", "Xác nhận CTKM Clearance"),
     ]
@@ -297,7 +317,8 @@ def _create_guide_sheet(workbook, df_gan, df_thao, df_wait, df_review,
     ws.freeze_panes = "A4"
 
 
-def _add_remaining_days_formula(ws, df: pd.DataFrame, formula_col_name: str = "so_ngay_con_lai"):
+def _add_remaining_days_formula(ws, df: pd.DataFrame, business_date,
+                                formula_col_name: str = "so_ngay_con_lai"):
     if df is None or df.empty:
         return
     if formula_col_name not in df.columns:
@@ -305,20 +326,19 @@ def _add_remaining_days_formula(ws, df: pd.DataFrame, formula_col_name: str = "s
 
     headers = [ws.cell(row=1, column=i).value for i in range(1, ws.max_column + 1)]
     try:
-        col_from = headers.index("promo_from") + 1
         col_to = headers.index("promo_to") + 1
         col_formula = headers.index(formula_col_name) + 1
     except ValueError:
         return
 
+    report_date = pd.to_datetime(business_date, errors="coerce")
+    if pd.isna(report_date):
+        return
+    report_date = report_date.normalize()
     for row_idx in range(2, len(df) + 2):
-        col_from_letter = get_column_letter(col_from)
-        col_to_letter = get_column_letter(col_to)
-        formula = (
-            f'=IF(OR({col_from_letter}{row_idx}="",{col_to_letter}{row_idx}=""),"",'
-            f'MAX(0,{col_to_letter}{row_idx}-TODAY()))'
-        )
-        ws.cell(row=row_idx, column=col_formula, value=formula)
+        promo_to = pd.to_datetime(ws.cell(row=row_idx, column=col_to).value, errors="coerce")
+        value = "" if pd.isna(promo_to) else max(0, (promo_to.normalize() - report_date).days)
+        ws.cell(row=row_idx, column=col_formula, value=value)
 
 
 def _apply_professional_style(ws, sheet_name: str, df: pd.DataFrame | None = None):
@@ -334,9 +354,7 @@ def _apply_professional_style(ws, sheet_name: str, df: pd.DataFrame | None = Non
 
     action_sheet_names = {"Gắn tem", "Tháo tem", "Chờ gắn", "Cần review"}
     ws.freeze_panes = "C2" if sheet_name in action_sheet_names else "A2"
-    # Không ghi AutoFilter vào file xuất. Một số phiên bản Excel xử lý vùng lọc
-    # do openpyxl tạo không ổn định; người dùng sẽ tự bật bộ lọc khi cần.
-    ws.auto_filter.ref = None
+    ws.auto_filter.ref = ws.dimensions if ws.max_row >= 1 and ws.max_column >= 1 else None
     ws.sheet_view.showGridLines = False
     ws.page_setup.orientation = "landscape"
     ws.page_setup.fitToWidth = 1
@@ -400,8 +418,9 @@ def _apply_professional_style(ws, sheet_name: str, df: pd.DataFrame | None = Non
                         ws.cell(row=row_idx, column=col_idx).fill = PatternFill(fill_type="solid", fgColor="FFF3E0")
 
         headers = [ws.cell(row=1, column=i).value for i in range(1, max_col + 1)]
-        if "location_status" in headers:
-            status_col_idx = headers.index("location_status") + 1
+        completeness_header = "location_completeness" if "location_completeness" in headers else "location_status"
+        if completeness_header in headers:
+            status_col_idx = headers.index(completeness_header) + 1
             for row_idx in range(2, max_row + 1):
                 status_cell = ws.cell(row=row_idx, column=status_col_idx)
                 if isinstance(status_cell.value, str) and status_cell.value != "Đủ vị trí":
@@ -417,6 +436,8 @@ def _apply_professional_style(ws, sheet_name: str, df: pd.DataFrame | None = Non
         "Cần review": "7030A0",
         "Audit hành động": "5B5EA6",
         "POG không có CTKM": "9BBB59",
+        "POG cần review": "C65911",
+        "POG cần kiểm tra": "C0504D",
         "Canh bao trung thoi gian": "C79B00",
         "Xác nhận CTKM Clearance": "00A6A6",
         "Mapping log": "5B5EA6",
@@ -439,7 +460,8 @@ def export_final_report(output_path, df_matched, df_ctkm_only, df_pog_only,
                          snapshot_alignment_warning=None,
                          selected_output_columns=None,
                          df_fefo_actions=None,
-                         df_ctkm_clearance_confirmation=None) -> str:
+                         df_ctkm_clearance_confirmation=None,
+                         df_pog_review=None) -> str:
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     # Luôn có Kênh áp dụng trên các sheet để dược sĩ lọc công việc tại cửa hàng.
     for frame in (df_matched, df_ctkm_only, df_pog_only):
@@ -467,12 +489,22 @@ def export_final_report(output_path, df_matched, df_ctkm_only, df_pog_only,
         ].copy()
         df_fefo_wait = df_action_audit[in_scope & action_norm.eq("cho gan tem")].copy()
         df_fefo_review = df_action_audit[in_scope & action_norm.eq("review")].copy()
-        if "location_status" in df_action_audit.columns:
+        if "location_completeness" in df_action_audit.columns:
+            df_location_issues = df_action_audit[
+                in_scope & ~df_action_audit["location_completeness"].eq("Đủ vị trí")
+            ].copy()
+        elif "location_status" in df_action_audit.columns:
             df_location_issues = df_action_audit[
                 in_scope & ~df_action_audit["location_status"].eq("Đủ vị trí")
             ].copy()
         else:
             df_location_issues = pd.DataFrame(columns=df_action_audit.columns)
+        if "location_needs_review" in df_action_audit.columns:
+            df_location_review = df_action_audit[
+                in_scope & df_action_audit["location_needs_review"].fillna(False).astype(bool)
+            ].copy()
+        else:
+            df_location_review = df_location_issues.copy()
     else:
         action_columns = [
             "task_id", "item_id", "item_name", "promo_uom", "program_source",
@@ -486,6 +518,7 @@ def export_final_report(output_path, df_matched, df_ctkm_only, df_pog_only,
         df_fefo_wait = df_fefo_gan.copy()
         df_fefo_review = df_fefo_gan.copy()
         df_location_issues = df_fefo_gan.copy()
+        df_location_review = df_fefo_gan.copy()
 
     for df in (df_fefo_gan, df_fefo_thao, df_fefo_wait, df_fefo_review):
         if df is not None and "so_ngay_con_lai" not in df.columns:
@@ -496,30 +529,29 @@ def export_final_report(output_path, df_matched, df_ctkm_only, df_pog_only,
     df_fefo_wait = _prepare_action_sheet(_add_work_tracking_columns(df_fefo_wait))
     df_fefo_review = _prepare_action_sheet(_add_work_tracking_columns(df_fefo_review))
     df_location_issues = _prepare_action_sheet(df_location_issues)
+    df_location_review = _prepare_action_sheet(df_location_review)
     df_action_audit = _prepare_action_sheet(df_action_audit)
 
     if overlap_warnings:
         pair_rows = [{
             "item_id": x.item_id,
-            "cap_xung_dot": f"{x.campaign_a} [{x.channel_a}] ↔ {x.campaign_b} [{x.channel_b}]",
-            "thoi_gian": f"{x.period_a} ↔ {x.period_b}",
+            "campaign_a": x.campaign_a, "campaign_b": x.campaign_b,
+            "period_a": x.period_a, "period_b": x.period_b,
+            "channel_a": x.channel_a, "channel_b": x.channel_b,
+            "source_row_id_a": x.source_row_id_a, "source_row_id_b": x.source_row_id_b,
+            "conflict_type": getattr(x, "conflict_type", "blocking_conflict"),
+            "is_blocking": getattr(x, "is_blocking", True),
         } for x in overlap_warnings]
-        grouped_rows = []
-        for item_id, group in pd.DataFrame(pair_rows).groupby("item_id", sort=False):
-            grouped_rows.append({
-                "item_id": item_id,
-                "so_cap_chuong_trinh_can_kiem_tra": len(group),
-                "cac_chuong_trinh_va_kenh": " | ".join(dict.fromkeys(group["cap_xung_dot"])),
-                "cac_khoang_thoi_gian": " | ".join(dict.fromkeys(group["thoi_gian"])),
-            })
-        df_ov = pd.DataFrame(grouped_rows)
+        df_ov = pd.DataFrame(pair_rows)
     else:
         df_ov = pd.DataFrame({"Ghi chu": ["Khong phat hien campaign nao trung thoi gian."]})
 
     with pd.ExcelWriter(output_path, engine="openpyxl") as w:
         _safe(df_matched,   "Khong co dong nao co ca CTKM va vi tri ke.").to_excel(w, sheet_name="Tong hop", index=False)
         _safe(df_location_issues, "Không có công việc nào cần kiểm tra vị trí POG.").to_excel(w, sheet_name="CTKM thieu vi tri ke", index=False)
+        _safe(df_location_review, "Không có vị trí POG nào cần review.").to_excel(w, sheet_name="POG cần kiểm tra", index=False)
         _safe(df_pog_only,  "Không có SKU POG nào thiếu CTKM phù hợp trong dữ liệu/tháng đang xét.").to_excel(w, sheet_name="POG không có CTKM", index=False)
+        _safe(df_pog_review, "Không có dòng POG lỗi cần review.").to_excel(w, sheet_name="POG cần review", index=False)
         _safe(df_fefo_gan,  "Không có CTKM cần gắn tem.").to_excel(w, sheet_name="Gắn tem", index=False)
         _safe(df_fefo_thao, "Không có CTKM cần tháo tem.").to_excel(w, sheet_name="Tháo tem", index=False)
         _safe(df_fefo_wait, "Không có CTKM đang chờ đến ngày gắn.").to_excel(w, sheet_name="Chờ gắn", index=False)
@@ -531,10 +563,11 @@ def export_final_report(output_path, df_matched, df_ctkm_only, df_pog_only,
             "Không có dữ liệu CTKM hoặc Clearance để xác nhận.",
         ).to_excel(w, sheet_name="Xác nhận CTKM Clearance", index=False)
 
-        _add_remaining_days_formula(w.sheets["Gắn tem"], df_fefo_gan, "so_ngay_con_lai")
-        _add_remaining_days_formula(w.sheets["Tháo tem"], df_fefo_thao, "so_ngay_con_lai")
-        _add_remaining_days_formula(w.sheets["Chờ gắn"], df_fefo_wait, "so_ngay_con_lai")
-        _add_remaining_days_formula(w.sheets["Cần review"], df_fefo_review, "so_ngay_con_lai")
+        business_date = reconciliation_summary.get("Ngay nghiep vu") if isinstance(reconciliation_summary, dict) else None
+        _add_remaining_days_formula(w.sheets["Gắn tem"], df_fefo_gan, business_date, "so_ngay_con_lai")
+        _add_remaining_days_formula(w.sheets["Tháo tem"], df_fefo_thao, business_date, "so_ngay_con_lai")
+        _add_remaining_days_formula(w.sheets["Chờ gắn"], df_fefo_wait, business_date, "so_ngay_con_lai")
+        _add_remaining_days_formula(w.sheets["Cần review"], df_fefo_review, business_date, "so_ngay_con_lai")
 
         if mapping_logs:
             rows = []
@@ -561,12 +594,15 @@ def export_final_report(output_path, df_matched, df_ctkm_only, df_pog_only,
         _create_guide_sheet(
             w.book, df_fefo_gan, df_fefo_thao, df_fefo_wait, df_fefo_review,
             df_location_issues, reconciliation_summary, df_ctkm_clearance_confirmation,
+            df_location_review, df_pog_review,
         )
 
         sheet_frames = [
             ("Tong hop", df_matched),
             ("CTKM thieu vi tri ke", df_location_issues),
+            ("POG cần kiểm tra", df_location_review),
             ("POG không có CTKM", df_pog_only),
+            ("POG cần review", df_pog_review),
             ("Gắn tem", df_fefo_gan),
             ("Tháo tem", df_fefo_thao),
             ("Chờ gắn", df_fefo_wait),
@@ -604,7 +640,7 @@ def export_final_report(output_path, df_matched, df_ctkm_only, df_pog_only,
         # Thu tu uu tien cong viec tai quay; cac sheet ky thuat van duoc giu lai.
         preferred_order = [
             "HƯỚNG DẪN", "Gắn tem", "Tháo tem", "Chờ gắn", "Cần review",
-            "CTKM thieu vi tri ke", "Tong hop", "POG không có CTKM",
+            "CTKM thieu vi tri ke", "POG cần kiểm tra", "Tong hop", "POG không có CTKM", "POG cần review",
             "Audit hành động", "Canh bao trung thoi gian",
             "Xác nhận CTKM Clearance", "Tom tat", "Mapping log",
         ]

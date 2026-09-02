@@ -135,16 +135,18 @@ print(result.summary)           # dict số liệu tổng quan
 | Sheet | Nội dung |
 |---|---|
 | `Tong hop` | CTKM phù hợp phạm vi tháng và có vị trí POG để đối chiếu |
-| `CTKM thieu vi tri ke` | Các công việc cần kiểm tra vị trí POG; hành động theo lịch vẫn được giữ nguyên |
+| `CTKM thieu vi tri ke` | Chỉ các công việc không tìm thấy SKU hoặc thiếu một phần thông tin vị trí |
+| `POG cần kiểm tra` | Vị trí cần review riêng, gồm thiếu vị trí hoặc snapshot POG lệch/không rõ tháng |
 | `POG không có CTKM` | SKU có trên POG nhưng không có CTKM phù hợp trong dữ liệu/tháng đang xét — cần kiểm tra |
-| `Canh bao trung thoi gian` | Campaign chồng ngày nhau cùng SKU; các dòng liên quan đồng thời nằm trong `Cần review` |
+| `POG cần review` | Dòng POG thiếu mã sản phẩm hoặc không đủ khóa để đối chiếu |
+| `Canh bao trung thoi gian` | Cặp campaign chồng ngày, có `conflict_type` và `is_blocking`; chỉ xung đột chặn mới vào `Cần review` |
 | `Mapping log` | Gemini map cột nào, confidence bao nhiêu — để audit |
 | `Tom tat` | Số liệu tổng + cảnh báo lệch tháng POG/CTKM |
 | `Gắn tem` | Danh sách CTKM cần gắn tem, kèm vị trí kệ |
 | `Tháo tem` | Danh sách CTKM cần tháo tem, kèm vị trí kệ |
 | `Chờ gắn` | CTKM chưa đến ngày gắn theo ngày nghiệp vụ |
-| `Cần review` | Dòng thiếu/sai ngày hoặc có xung đột cần người dùng xác nhận |
-| `Audit hành động` | Toàn bộ dữ liệu hành động, kể cả dòng ngoài phạm vi tháng, kèm lineage |
+| `Cần review` | Dòng thiếu mã/tên chương trình, thiếu/sai ngày hoặc có xung đột chặn cần xác nhận |
+| `Audit hành động` | Toàn bộ dữ liệu hành động, kể cả dòng ngoài phạm vi tháng, kèm lineage và ID ổn định |
 
 ---
 

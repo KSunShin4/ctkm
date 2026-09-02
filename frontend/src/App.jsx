@@ -1209,6 +1209,7 @@ export default function App() {
   const matched   = S["So dong khop (Matched)"]         ?? "—"
   const itemMatch = S["So item duy nhat khop"]           ?? "—"
   const ctkmMiss  = S["So dong CTKM thieu vi tri ke"]    ?? "—"
+  const locationReview = S["So dong can kiem tra vi tri"] ?? "—"
   const pogMiss   = S["So dong POG khong co CTKM phu hop"] ?? S["So dong len ke thieu CTKM"] ?? "—"
   const overlapW  = S["So canh bao trung thoi gian"]     ?? "—"
   const hoaDon    = S["  Trong do CTKM theo hoa don"]    ?? 0
@@ -1977,9 +1978,12 @@ export default function App() {
                 </div>
                 <div className="summary-grid" style={{marginBottom:28}}>
                   <StatBox num={matched}   label="Dòng khớp (CTKM + kệ)" sub={`${fmt(itemMatch)} item duy nhất`} />
-                  <StatBox num={ctkmMiss}  label="Cần kiểm tra vị trí POG"
+                  <StatBox num={ctkmMiss}  label="Thiếu vị trí POG"
                     sub={hoaDon > 0 ? `${hoaDon} CTKM theo hóa đơn` : null}
                     accent="var(--accent)" />
+                  <StatBox num={locationReview} label="Cần review vị trí POG"
+                    sub="Gồm thiếu vị trí hoặc snapshot cần kiểm tra"
+                    accent="var(--red)" />
                   <StatBox num={pogMiss}   label="POG không có CTKM phù hợp"
                     accent="var(--blue)" />
                   <StatBox num={overlapW}  label="Cảnh báo trùng thời gian"

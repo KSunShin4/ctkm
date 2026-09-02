@@ -16,6 +16,7 @@ class LoadedSheet:
     sheet_name: str
     header_row_index: int
     df: pd.DataFrame
+    source_excel_rows: list[int] = field(default_factory=list)
     source_file: str = ""
 
 @dataclass
@@ -212,12 +213,16 @@ def load_workbook_raw(filepath: str, is_pog_file: bool = False,
                 f"{MAX_DATA_COLUMNS:,}. Hãy xóa các cột định dạng dư trong Excel."
             )
         rows = []
-        data_iterator = itertools.chain(scanned_rows[hi + 1:], row_iterator)
-        for row in data_iterator:
+        source_excel_rows = []
+        scanned_data = enumerate(scanned_rows[hi + 1:], start=hi + 2)
+        remaining_data = enumerate(row_iterator, start=len(scanned_rows) + 1)
+        data_iterator = itertools.chain(scanned_data, remaining_data)
+        for excel_row, row in data_iterator:
             vals = list(row[:len(headers)]) if len(headers) else []
             if all(v is None or str(v).strip()=='' for v in vals): continue
             if _is_garbage(vals): continue
             rows.append(vals)
+            source_excel_rows.append(excel_row)
             if len(rows) > MAX_DATA_ROWS_PER_SHEET or len(rows) * max(len(headers), 1) > MAX_DATA_CELLS_PER_SHEET:
                 raise ValueError(
                     f"Sheet '{sn}' quá lớn để xử lý an toàn "
@@ -225,7 +230,9 @@ def load_workbook_raw(filepath: str, is_pog_file: bool = False,
                     f"{MAX_DATA_CELLS_PER_SHEET:,} ô dữ liệu)."
                 )
         df = pd.DataFrame(rows, columns=headers) if rows else pd.DataFrame(columns=headers)
-        result.sheets[sn] = LoadedSheet(sn, hi, df, Path(filepath).name)
+        result.sheets[sn] = LoadedSheet(
+            sn, hi, df, source_excel_rows=source_excel_rows, source_file=Path(filepath).name,
+        )
     wb.close()
     if not any(not sheet.df.empty for sheet in result.sheets.values()):
         raise ValueError(

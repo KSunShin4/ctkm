@@ -129,8 +129,10 @@ def test_unknown_channel_is_byte_for_byte_preserved_and_does_not_hide_overlap():
     assert len(warnings) == 1
     assert warnings[0].channel_a == channel_a
     assert warnings[0].channel_b == channel_b
+    assert warnings[0].conflict_type == "potential_cross_channel_overlap"
+    assert warnings[0].is_blocking is False
     assert result["channel"].tolist() == [channel_a, channel_b]
-    assert set(result["scheduled_action"]) == {"review"}
+    assert set(result["scheduled_action"]) == {"gắn tem"}
 
 
 def test_process_preserves_channel_and_source_excel_row():

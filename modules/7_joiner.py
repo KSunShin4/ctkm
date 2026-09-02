@@ -9,20 +9,71 @@ class JoinResult:
     df_matched:   pd.DataFrame
     df_ctkm_only: pd.DataFrame
     df_pog_only:  pd.DataFrame
+    df_pog_review: pd.DataFrame
+
+
+def _item_key(value):
+    if value is None or pd.isna(value):
+        return None
+    key = str(value).strip().upper()
+    return key or None
+
+
+def _with_item_key(frame: pd.DataFrame) -> pd.DataFrame:
+    result = frame.copy()
+    if "item_key" not in result.columns:
+        result["item_key"] = result["item_id"].apply(_item_key)
+    else:
+        result["item_key"] = result["item_key"].apply(_item_key)
+    return result
+
+
+def _add_display_item_id(frame: pd.DataFrame, *, prefer_ctkm: bool) -> pd.DataFrame:
+    result = frame.copy()
+    primary = "item_id__ctkm" if prefer_ctkm else "item_id__pog"
+    secondary = "item_id__pog" if prefer_ctkm else "item_id__ctkm"
+    if primary in result.columns:
+        result["item_id"] = result[primary]
+        if secondary in result.columns:
+            result["item_id"] = result["item_id"].combine_first(result[secondary])
+    return result
 
 def join_ctkm_pog(df_ctkm, df_pog) -> JoinResult:
     if "item_id" not in df_ctkm.columns:
         raise ValueError("df_ctkm thieu cot 'item_id'.")
     if "item_id" not in df_pog.columns:
         raise ValueError("df_pog thieu cot 'item_id'.")
-    overlap = (set(df_ctkm.columns) & set(df_pog.columns)) - {"item_id"}
-    df_c = df_ctkm.rename(columns={c: f"{c}__ctkm" for c in overlap})
-    df_p = df_pog.rename(columns={c:  f"{c}__pog"  for c in overlap})
-    merged = pd.merge(df_c, df_p, on="item_id", how="outer", indicator=True)
-    matched   = merged[merged["_merge"]=="both"].drop(columns=["_merge"]).reset_index(drop=True)
-    ctkm_only = merged[merged["_merge"]=="left_only"].drop(columns=["_merge"]).reset_index(drop=True)
-    pog_only  = merged[merged["_merge"]=="right_only"].drop(columns=["_merge"]).reset_index(drop=True)
-    return JoinResult(matched, ctkm_only, pog_only)
+    source_ctkm = _with_item_key(df_ctkm)
+    source_pog = _with_item_key(df_pog)
+    pog_review = source_pog[source_pog["item_key"].isna()].copy()
+    if not pog_review.empty:
+        pog_review["reason"] = "thieu_ma_san_pham_pog"
+
+    overlap = (set(source_ctkm.columns) & set(source_pog.columns)) - {"item_key"}
+    df_c = source_ctkm.rename(columns={c: f"{c}__ctkm" for c in overlap})
+    df_p = source_pog.rename(columns={c: f"{c}__pog" for c in overlap})
+    valid_c = df_c[df_c["item_key"].notna()].copy()
+    invalid_c = df_c[df_c["item_key"].isna()].copy()
+    valid_p = df_p[df_p["item_key"].notna()].copy()
+    merged = pd.merge(valid_c, valid_p, on="item_key", how="outer", indicator=True)
+
+    if not invalid_c.empty:
+        for column in valid_p.columns:
+            if column != "item_key" and column not in invalid_c.columns:
+                invalid_c[column] = pd.NA
+        invalid_c["_merge"] = "left_only"
+        merged = pd.concat([merged, invalid_c.reindex(columns=merged.columns)], ignore_index=True)
+
+    matched = _add_display_item_id(
+        merged[merged["_merge"] == "both"].drop(columns=["_merge"]), prefer_ctkm=True,
+    ).reset_index(drop=True)
+    ctkm_only = _add_display_item_id(
+        merged[merged["_merge"] == "left_only"].drop(columns=["_merge"]), prefer_ctkm=True,
+    ).reset_index(drop=True)
+    pog_only = _add_display_item_id(
+        merged[merged["_merge"] == "right_only"].drop(columns=["_merge"]), prefer_ctkm=False,
+    ).reset_index(drop=True)
+    return JoinResult(matched, ctkm_only, pog_only, pog_review.reset_index(drop=True))
 
 def apply_dimension_conditions(join_result: JoinResult, dimension_frames: dict) -> JoinResult:
     """
@@ -33,13 +84,13 @@ def apply_dimension_conditions(join_result: JoinResult, dimension_frames: dict) 
     if not dimension_frames: return join_result
     df = join_result.df_matched.copy()
     if df.empty: return join_result
-    item_dims = {n: d for n, d in dimension_frames.items()
+    item_dims = {n: _with_item_key(d) for n, d in dimension_frames.items()
                  if "item_id" in d.columns and d["item_id"].notna().any()}
     if not item_dims: return join_result
     all_dim_items = set()
     for d in item_dims.values():
-        all_dim_items |= set(d["item_id"].dropna().astype(str).str.strip())
-    df["dimension_check_flag"] = df["item_id"].astype(str).str.strip().apply(
+        all_dim_items |= set(d["item_key"].dropna())
+    df["dimension_check_flag"] = df["item_key"].apply(
         lambda x: "" if x in all_dim_items else "khong_xuat_hien_trong_dimension_sheet"
     )
     join_result.df_matched = df.reset_index(drop=True)

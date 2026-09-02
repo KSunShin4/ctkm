@@ -117,4 +117,6 @@ def test_normalizer_keeps_integral_excel_identifier_as_text():
 
     result = main.NM.clean_values(frame)
 
-    assert result["item_id"].tolist() == ["12345", "P00123"]
+    assert result["item_id"].iloc[:2].tolist() == ["12345", "P00123"]
+    assert pd.isna(result.loc[2, "item_id"])
+    assert pd.isna(result.loc[2, "item_key"])

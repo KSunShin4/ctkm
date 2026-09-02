@@ -218,7 +218,7 @@ def _build_ctkm_clearance_confirmation(df_ctkm: pd.DataFrame,
                                        df_clearance: pd.DataFrame | None) -> pd.DataFrame:
     """Tao danh sach de nguoi dung xac nhan CTKM va Clearance trong cung mot sheet."""
     columns = [
-        "item_id", "item_name", "promo_uom", "campaign_name", "campaign_detail",
+        "item_id", "item_key", "item_name", "promo_uom", "campaign_name", "campaign_detail",
         "promo_from", "promo_to", "channel", "normal_price", "promo_price",
         "product_type", "source_sheet",
     ]
@@ -233,6 +233,7 @@ def _build_ctkm_clearance_confirmation(df_ctkm: pd.DataFrame,
         for column in columns:
             if column not in result.columns:
                 result[column] = pd.NA
+        result["item_key"] = result["item_id"].apply(NM.make_item_key)
         result = result.loc[:, columns]
         result.insert(0, "nguon_chuong_trinh", source)
         row_ids = []
@@ -251,11 +252,11 @@ def _build_ctkm_clearance_confirmation(df_ctkm: pd.DataFrame,
         result.insert(1, "trang_thai_doi_chieu", "Chỉ CTKM")
     else:
         clearance = tagged(df_clearance, "CLEARANCE")
-        ctkm_items = set(ctkm["item_id"].dropna().astype(str).str.strip())
-        clearance_items = set(clearance["item_id"].dropna().astype(str).str.strip())
+        ctkm_items = set(ctkm["item_key"].dropna())
+        clearance_items = set(clearance["item_key"].dropna())
         both = ctkm_items & clearance_items
         result = pd.concat([ctkm, clearance], ignore_index=True)
-        item_keys = result["item_id"].fillna("").astype(str).str.strip()
+        item_keys = result["item_key"]
         result.insert(1, "trang_thai_doi_chieu", [
             "Có cả CTKM và Clearance" if item in both
             else ("Chỉ CTKM" if source == "CTKM" else "Chỉ Clearance")
@@ -264,13 +265,12 @@ def _build_ctkm_clearance_confirmation(df_ctkm: pd.DataFrame,
 
     def time_relation(row):
         both_items = both if df_clearance is not None and not df_clearance.empty else set()
-        raw_item = row.get("item_id")
-        item = "" if pd.isna(raw_item) else str(raw_item).strip()
+        item = row.get("item_key")
         if not item or item not in both_items:
             return "Không có nguồn còn lại để đối chiếu"
         other_source = "CLEARANCE" if row["nguon_chuong_trinh"] == "CTKM" else "CTKM"
         candidates = result[
-            result["item_id"].fillna("").astype(str).str.strip().eq(item)
+            result["item_key"].eq(item)
             & result["nguon_chuong_trinh"].eq(other_source)
         ]
         row_from = pd.to_datetime(row.get("promo_from"), errors="coerce")
@@ -327,9 +327,12 @@ def _build_promo_action_source(df_ctkm: pd.DataFrame,
         clearance.loc[blank_campaign, "campaign_name"] = "CLEARANCE"
     return pd.concat([ctkm, clearance], ignore_index=True)
 
-def _process(sheet_name, df, schema_section, mapping_logs, is_fact, all_warnings, mapping_override=None):
+def _process(sheet_name, df, schema_section, mapping_logs, is_fact, all_warnings,
+             mapping_override=None, source_excel_rows=None, source_prefix=None):
     df = df.copy()
-    source_row_ids = [f"{sheet_name}:{position}" for position in range(2, len(df) + 2)]
+    excel_rows = list(source_excel_rows or range(2, len(df) + 2))
+    if len(excel_rows) != len(df):
+        raise ValueError(f"Không khớp lineage dòng Excel cho sheet '{sheet_name}'.")
     if mapping_override:
         result = _build_manual_mapping_result(sheet_name, mapping_override, df, schema_section)
         mapping_logs.append({**MC.mapping_result_to_dict_safe(result), "sheet_name": sheet_name})
@@ -340,7 +343,9 @@ def _process(sheet_name, df, schema_section, mapping_logs, is_fact, all_warnings
         mapping = _ensure_channel_mapping(mapping, df)
         mapping = _ensure_promo_uom_mapping(mapping, df)
     df = NM.apply_mapping(df, mapping)
-    df["source_row_id"] = source_row_ids
+    df["source_excel_row"] = excel_rows
+    source_label = f"{source_prefix}:" if source_prefix else ""
+    df["source_row_id"] = [f"{source_label}{sheet_name}:{row}" for row in excel_rows]
     df = NM.clean_values(df)
     if is_fact:
         df, unpivot_warns = NM.unpivot_multi_promo(df)
@@ -385,6 +390,8 @@ def run_pipeline(ctkm_filepath, pog_filepath, target_month, output_path,
         True,
         warnings,
         mapping_override=ctkm_mapping_override,
+        source_excel_rows=primary_ctkm_sheet.source_excel_rows,
+        source_prefix="CTKM",
     )
     df_ctkm_all["program_source"] = "CTKM"
 
@@ -408,6 +415,8 @@ def run_pipeline(ctkm_filepath, pog_filepath, target_month, output_path,
             True,
             warnings,
             mapping_override=clearance_override or None,
+            source_excel_rows=clearance_sheet.source_excel_rows,
+            source_prefix="CLEARANCE",
         )
         df_clearance_all["program_source"] = "CLEARANCE"
 
@@ -423,6 +432,8 @@ def run_pipeline(ctkm_filepath, pog_filepath, target_month, output_path,
         False,
         warnings,
         mapping_override=pog_mapping_override,
+        source_excel_rows=wb_pog.sheets[pog_sn].source_excel_rows,
+        source_prefix="POG",
     )
     df_pog  = NM.attach_pog_snapshot_month(df_pog, pog_snapshot_month)
 
@@ -470,32 +481,46 @@ def run_pipeline(ctkm_filepath, pog_filepath, target_month, output_path,
     else:
         actions_in_scope = df_fefo_actions
     location_issue_mask = ~actions_in_scope.get(
-        "location_status", pd.Series("Đủ vị trí", index=actions_in_scope.index)
+        "location_completeness",
+        actions_in_scope.get("location_status", pd.Series("Đủ vị trí", index=actions_in_scope.index)),
     ).eq("Đủ vị trí")
     location_issues = actions_in_scope[location_issue_mask]
+    location_review_mask = actions_in_scope.get(
+        "location_needs_review", location_issue_mask,
+    ).fillna(False).astype(bool)
+    location_reviews = actions_in_scope[location_review_mask]
+    effective_business_date = (
+        df_fefo_actions["business_date"].dropna().iloc[0]
+        if "business_date" in df_fefo_actions.columns and not df_fefo_actions["business_date"].dropna().empty
+        else pd.to_datetime(business_date).normalize()
+        if business_date is not None
+        else pd.Timestamp.now(tz="Asia/Ho_Chi_Minh").tz_localize(None).normalize()
+    )
+    unique_location_key = "item_key" if "item_key" in location_issues.columns else "item_id"
 
     summary = {
         "Thang bao cao":                    target_month,
+        "Ngay nghiep vu":                   effective_business_date,
         "Thang snapshot POG":               pog_snapshot_month or "(khong xac dinh duoc)",
         "So dong khop (Matched)":           report.matched_count,
         "So item duy nhat khop":            report.matched_unique_items,
         "So dong CTKM thieu vi tri ke":     len(location_issues),
-        "So item CTKM thieu vi tri ke":     location_issues["item_id"].nunique() if "item_id" in location_issues else 0,
+        "So item CTKM thieu vi tri ke":     location_issues[unique_location_key].nunique() if unique_location_key in location_issues else 0,
         "  Trong do CTKM theo hoa don":     report.non_sku_ctkm_count,
         "So dong POG khong co CTKM phu hop": report.pog_only_count,
         "So item POG khong co CTKM phu hop": report.pog_only_unique_items,
         "So canh bao trung thoi gian":      len({warning.item_id for warning in overlap_warns}),
         "So dong Clearance":                0 if df_clearance_strict is None else len(df_clearance_strict),
         "So item trung CTKM va Clearance":  0 if df_clearance_strict is None else len(
-            set(df_ctkm_strict["item_id"].dropna().astype(str).str.strip())
-            & set(df_clearance_strict["item_id"].dropna().astype(str).str.strip())
+            set(df_ctkm_strict["item_key"].dropna())
+            & set(df_clearance_strict["item_key"].dropna())
         ),
         "So dong tem tu Clearance":         int(
             (actions_in_scope.get("program_source", pd.Series(dtype=str)) == "CLEARANCE").sum()
         ),
         "So dong cho gan":                  int((actions_in_scope.get("scheduled_action", pd.Series(dtype=str)) == "chờ gắn tem").sum()),
         "So dong can review":               int((actions_in_scope.get("scheduled_action", pd.Series(dtype=str)) == "review").sum()),
-        "So dong can kiem tra vi tri":       len(location_issues),
+        "So dong can kiem tra vi tri":       len(location_reviews),
     }
 
     # --- Buoc 9: Export ---
@@ -511,6 +536,7 @@ def run_pipeline(ctkm_filepath, pog_filepath, target_month, output_path,
         selected_output_columns=selected_output_columns,
         df_fefo_actions=df_fefo_actions,
         df_ctkm_clearance_confirmation=df_confirmation,
+        df_pog_review=join_result.df_pog_review,
     )
     return PipelineResult(final, warnings, summary)
 

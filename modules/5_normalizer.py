@@ -28,6 +28,26 @@ def _parse_identifier(v):
     return text
 
 
+def _preserve_item_id(v):
+    """Preserve source spelling/spacing while still handling Excel numeric IDs."""
+    if v is None or pd.isna(v):
+        return None
+    if isinstance(v, str):
+        return None if v.strip().upper() in EXCEL_ERROR_VALUES or not v.strip() else v
+    text = str(v)
+    if re.fullmatch(r"[+-]?\d+\.0+", text):
+        return text.split(".", 1)[0]
+    return text
+
+
+def make_item_key(v):
+    """Technical SKU key; empty values never become matchable keys."""
+    if v is None or pd.isna(v):
+        return None
+    key = str(v).strip().upper()
+    return key or None
+
+
 def _preserve_channel(v):
     """Keep the source channel verbatim; users decide channel scope in Excel."""
     if v is None or pd.isna(v):
@@ -78,13 +98,26 @@ def clean_values(df: pd.DataFrame) -> pd.DataFrame:
             df[col] = df[col].apply(_parse_date)
         elif col in NUMBER_FIELDS:
             df[col] = df[col].apply(_parse_number)
+        elif col == "item_id":
+            df[col] = df[col].apply(_preserve_item_id)
         elif col == "channel":
             df[col] = df[col].apply(_preserve_channel)
         elif col in STRING_FIELDS:
             df[col] = df[col].apply(_parse_identifier)
     if "item_id" in df.columns:
-        df = df[df["item_id"].notna()].reset_index(drop=True)
+        df["item_key"] = df["item_id"].apply(make_item_key)
+    df = df.reset_index(drop=True)
     return df
+
+
+def _attach_default_logical_ids(df: pd.DataFrame) -> pd.DataFrame:
+    result = df.copy()
+    if "source_row_id" in result.columns:
+        if "promo_slot_id" not in result.columns:
+            result["promo_slot_id"] = 1
+        if "logical_row_id" not in result.columns:
+            result["logical_row_id"] = result["source_row_id"]
+    return result
 
 def attach_source_sheet(df: pd.DataFrame, sheet_name: str) -> pd.DataFrame:
     df = df.copy(); df["source_sheet"] = sheet_name; return df
@@ -108,11 +141,11 @@ def unpivot_multi_promo(df: pd.DataFrame, max_slots: int = 5):
             slot_groups.setdefault(fn, {})[idx] = col
 
     if not slot_groups:
-        return df, []
+        return _attach_default_logical_ids(df), []
 
     multi = {f: s for f, s in slot_groups.items() if len(s) > 1}
     if not multi:
-        return df, []
+        return _attach_default_logical_ids(df), []
 
     allowed   = {f: s for f, s in multi.items() if f in UNPIVOTABLE_FIELDS}
     forbidden = {f: s for f, s in multi.items() if f not in UNPIVOTABLE_FIELDS}
@@ -131,7 +164,7 @@ def unpivot_multi_promo(df: pd.DataFrame, max_slots: int = 5):
         )
 
     if not allowed:
-        return df, warnings
+        return _attach_default_logical_ids(df), warnings
 
     used = {col for s in allowed.values() for col in s.values()}
     shared = [c for c in df.columns if c not in used]
@@ -149,9 +182,19 @@ def unpivot_multi_promo(df: pd.DataFrame, max_slots: int = 5):
                     slot[fn] = v
                     if pd.notna(v) and str(v).strip(): has_val = True
             if has_val:
-                rows_out.append({**{c: row[c] for c in shared}, **slot})
+                output_row = {**{c: row[c] for c in shared}, **slot}
+                base_row_id = output_row.get("source_row_id")
+                if pd.notna(base_row_id) and str(base_row_id).strip():
+                    logical_id = f"{base_row_id}:slot-{slot_idx}"
+                    output_row["source_row_id"] = logical_id
+                    output_row["logical_row_id"] = logical_id
+                output_row["promo_slot_id"] = slot_idx
+                rows_out.append(output_row)
                 added = True
         if not added:
-            rows_out.append({**{c: row[c] for c in shared}, **{fn: None for fn in allowed}})
+            output_row = {**{c: row[c] for c in shared}, **{fn: None for fn in allowed}}
+            output_row["promo_slot_id"] = 1
+            output_row["logical_row_id"] = output_row.get("source_row_id")
+            rows_out.append(output_row)
 
     return pd.DataFrame(rows_out).reset_index(drop=True), warnings
