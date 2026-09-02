@@ -150,7 +150,7 @@ def _stock_skip_details(value: Any) -> tuple[str, str]:
         return marker, f"Bỏ qua - tồn kho lỗi {text}"
     if not text or text in {"NA", "N/A", "NULL", "NONE", "<NA>", "NAN"}:
         return STOCK_SKIP_NO_DATA, "Bỏ qua - không có dữ liệu tồn kho"
-    return STOCK_SKIP_INVALID, "Bỏ QUA - tồn kho không hợp lệ"
+    return STOCK_SKIP_INVALID, "Bỏ qua - tồn kho không hợp lệ"
 
 
 def _as_location(value: Any) -> float | None:
