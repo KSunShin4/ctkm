@@ -44,7 +44,12 @@ def _open_workbook_safely(filepath: str):
     _validate_xlsx_container(filepath)
     try:
         safe = _strip_broken_defined_names(filepath)
-        workbook = openpyxl.load_workbook(io.BytesIO(safe), data_only=True, read_only=True)
+        # CTKM/POG processing never needs external workbook links. Some vendor
+        # exports contain malformed externalLink XML even though worksheet data
+        # itself is valid, so skip parsing those links just like the Tem R path.
+        workbook = openpyxl.load_workbook(
+            io.BytesIO(safe), data_only=True, read_only=True, keep_links=False
+        )
     except (zipfile.BadZipFile, InvalidFileException, KeyError, OSError, ValueError) as exc:
         message = str(exc).lower()
         if "encrypt" in message or "password" in message or "agile" in message:
