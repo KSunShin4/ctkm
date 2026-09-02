@@ -1,8 +1,10 @@
 # -*- coding: utf-8 -*-
 """Module 1: Loader — doc tho moi sheet, trich pog_snapshot_month tu file POG."""
 from __future__ import annotations
+import importlib
 import io, re, zipfile
 import itertools
+import sys
 import threading
 import time
 import xml.etree.ElementTree as ET
@@ -31,15 +33,27 @@ MAX_DATA_ROWS_PER_SHEET = 250_000
 MAX_DATA_COLUMNS = 2_048
 MAX_DATA_CELLS_PER_SHEET = 5_000_000
 
-# The API first loads CTKM/POG to resolve mapping presets, then immediately calls
-# run_pipeline() with the same temporary files. Keep only a tiny, short-lived,
-# one-shot cache so the second call reuses the parsed DataFrames instead of
-# streaming the same XLSX again. Entries are popped on hit and expire quickly,
-# preventing this from becoming a long-lived workbook/data cache.
 _WORKBOOK_CACHE_TTL_SECONDS = 45.0
 _WORKBOOK_CACHE_MAX_ENTRIES = 4
 _workbook_cache: OrderedDict[tuple, tuple[float, LoadedWorkbook]] = OrderedDict()
 _workbook_cache_lock = threading.Lock()
+
+
+def _install_ctkm_performance_patches() -> None:
+    """Install hot-path replacements once the CTKM orchestrator is fully loaded."""
+    for module_name in ("ctkm_main", "__main__"):
+        main_mod = sys.modules.get(module_name)
+        if main_mod is None:
+            continue
+        if not all(hasattr(main_mod, name) for name in ("RC", "NM", "_build_ctkm_clearance_confirmation")):
+            continue
+        try:
+            performance = importlib.import_module("modules.ctkm_performance")
+            performance.install_performance_patches(main_mod)
+        except Exception:
+            # Optimization must never make workbook loading fail. The original
+            # implementation remains available if the optional patch cannot load.
+            pass
 
 
 def _validate_xlsx_container(filepath: str) -> None:
@@ -85,9 +99,6 @@ def _open_workbook_safely(filepath: str):
     _validate_xlsx_container(filepath)
     try:
         safe = _strip_broken_defined_names(filepath)
-        # CTKM/POG/Clearance processing never needs external workbook links.
-        # Some vendor exports contain malformed externalLink XML even though
-        # worksheet data itself is valid, so explicitly skip those links.
         workbook = openpyxl.load_workbook(
             io.BytesIO(safe), data_only=True, read_only=True, keep_links=False
         )
@@ -197,8 +208,6 @@ def _extract_pog_snapshot_month_from_values(row_values) -> Optional[str]:
 
 
 def _extract_pog_snapshot_month(ws) -> Optional[str]:
-    # Backward-compatible helper used by older callers/tests. The main loader
-    # now detects the snapshot while it is already streaming rows.
     for row in ws.iter_rows(values_only=True):
         month = _extract_pog_snapshot_month_from_values(row)
         if month:
@@ -207,14 +216,6 @@ def _extract_pog_snapshot_month(ws) -> Optional[str]:
 
 
 def _repair_read_only_dimensions(ws) -> None:
-    """Ignore missing or obviously inflated worksheet dimensions.
-
-    Some exports omit ``<dimension>`` entirely, while some Excel templates mark
-    every column through XFD as used. In read-only mode openpyxl trusts that
-    metadata, which either leaves ``max_row`` as ``None`` or creates 16,384-cell
-    tuples for every row. Resetting dimensions makes the streaming reader use
-    the actual cell records instead.
-    """
     if ws.max_row is None or ws.max_column is None:
         ws.calculate_dimension(force=True)
     elif ws.max_column > 2048:
@@ -222,7 +223,6 @@ def _repair_read_only_dimensions(ws) -> None:
 
 
 def inspect_workbook_sheets(filepath: str) -> list[str]:
-    """List workbook sheets without materializing their tables."""
     _validate_xlsx_container(filepath)
     try:
         with zipfile.ZipFile(filepath, "r") as archive:
@@ -243,6 +243,7 @@ def inspect_workbook_sheets(filepath: str) -> list[str]:
 
 def load_workbook_raw(filepath: str, is_pog_file: bool = False,
                       selected_sheet_names: Optional[list[str]] = None) -> LoadedWorkbook:
+    _install_ctkm_performance_patches()
     _validate_xlsx_container(filepath)
     cache_key = _workbook_cache_key(filepath, is_pog_file, selected_sheet_names)
     cached = _take_cached_workbook(cache_key)
