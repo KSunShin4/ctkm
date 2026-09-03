@@ -23,6 +23,7 @@ from backend.input_contract import install_input_contract
 from backend.mapping_validation import validate_manual_mapping
 from backend.mapping_result_contract import install_mapping_result_contract
 from backend.gemini_availability_contract import install_gemini_availability_contract
+from backend.auxiliary_workflows_contract import install_auxiliary_workflows_contract
 from backend.final_output_contract import install_final_output_contract
 from backend.preview_contract import install_preview_contract
 
@@ -181,14 +182,15 @@ for _name, _value in {
 # the same validator that preserves intentional campaign_detail/promo_price slots.
 _input_contract.validate_manual_mapping = validate_manual_mapping
 
-# Runtime reservation must be installed first. Input preflight then reuses that
-# lifecycle. Mapping validation hardens cache/Gemini results. Availability wraps
-# only the point where Gemini is genuinely required. Final output validation then
-# verifies the produced workbook before preview/download can expose it.
+# Runtime reservation must be installed first. Input validation wraps shared
+# upload reading, then mapping/Gemini contracts are installed. Auxiliary workflows
+# reuse the same queue/upload lifecycle. Final CTKM output validation and preview
+# are installed last so only validated artifacts can be exposed.
 install_runtime_contract(_core)
 install_input_contract(_core)
 install_mapping_result_contract(_core, validate_manual_mapping)
 install_gemini_availability_contract(_core)
+install_auxiliary_workflows_contract(_core)
 install_final_output_contract(_core)
 install_preview_contract(_core)
 
