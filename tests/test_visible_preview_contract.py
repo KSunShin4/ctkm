@@ -1,6 +1,8 @@
 from openpyxl import Workbook
+from openpyxl.utils import get_column_letter
 
 from backend.preview_contract import build_visible_preview, sheet_kind
+from modules.ctkm_performance import hide_technical_columns
 
 
 def test_preview_matches_final_workbook_visibility(tmp_path):
@@ -62,6 +64,37 @@ def test_preview_matches_final_workbook_visibility(tmp_path):
     assert preview["Tom tat"]["sheet_kind"] == "summary"
     assert preview["Tom tat"]["total_rows"] == 1
     assert preview["Tom tat"]["rows"] == [["Metric visible", "2"]]
+
+
+def test_technical_keys_are_hidden_but_business_scope_stays_visible():
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Xác nhận CTKM Clearance"
+    headers = [
+        "item_id", "scope_identity_key", "operational_promotion_key",
+        "operational_task_key", "transition_match_key", "task_ids",
+        "key_channel", "channel",
+    ]
+    ws.append(headers)
+    ws.append([
+        "P1001", "offline|offline", "OPROM-1", "OTASK-1", "P1001",
+        "TASK-1|TASK-2", "Offline", "OFFLINE",
+    ])
+
+    hide_technical_columns(ws, get_column_letter=get_column_letter)
+
+    hidden = {
+        header: bool(ws.column_dimensions[get_column_letter(index)].hidden)
+        for index, header in enumerate(headers, start=1)
+    }
+    assert hidden["item_id"] is False
+    assert hidden["key_channel"] is False
+    assert hidden["channel"] is False
+    assert hidden["scope_identity_key"] is True
+    assert hidden["operational_promotion_key"] is True
+    assert hidden["operational_task_key"] is True
+    assert hidden["transition_match_key"] is True
+    assert hidden["task_ids"] is True
 
 
 def test_sheet_kind_contract_is_explicit_for_user_facing_groups():
