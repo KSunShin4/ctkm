@@ -3,6 +3,12 @@ import pandas as pd
 import main
 
 
+def _frame(columns, values):
+    row = {column: None for column in columns}
+    row.update(values)
+    return pd.DataFrame([row], columns=columns)
+
+
 def test_real_clearance_campaign_detail_maps_without_ai():
     frame = pd.DataFrame(columns=[
         "Kênh áp dụng", "Item code", "Product Name", "Promo UoM", "Normal",
@@ -33,14 +39,26 @@ def test_monthly_campaign_wins_when_both_campaign_columns_exist():
 
 
 def test_real_monthly_headers_map_deterministically_without_gemini(monkeypatch):
-    frame = pd.DataFrame(columns=[
+    columns = [
         "KEY Channel", "Channel", "NOTE - Cần lưu ý", "Item code 1 (NEW)",
         "Item code 2", "Product Name", "Promo UoM", "Unit 2", "RSP (+VAT)",
         "Normal", "Promo", "Saving per unit", "Out", "Support type for customer",
         "Scheme detail for customer", "From", "To", "Campaign", "Campaign Detail",
         "ƯU ĐÃI THÀNH VIÊN PMC", "Product type", "Big cat", "Cat 2", "CODE LINE",
         "LOOKUP NOTE 1", "LOOKUP DATE", "LOOKUP\nSTATUS",
-    ])
+    ]
+    frame = _frame(columns, {
+        "KEY Channel": "Offline",
+        "Channel": "OFFLINE",
+        "Item code 1 (NEW)": "P9001",
+        "Item code 2": "P1001",
+        "Product Name": "Sản phẩm A",
+        "Promo UoM": "Hộp",
+        "Scheme detail for customer": "Giảm 10%",
+        "From": "2026-09-01",
+        "To": "2026-09-30",
+        "Campaign": "Monthly",
+    })
 
     def gemini_must_not_run(*_args, **_kwargs):
         raise AssertionError("Standard Pharmacity Monthly must not call Gemini")
@@ -65,13 +83,24 @@ def test_real_monthly_headers_map_deterministically_without_gemini(monkeypatch):
 
 
 def test_real_clearance_headers_use_standard_fact_path_without_gemini(monkeypatch):
-    frame = pd.DataFrame(columns=[
+    columns = [
         "Kênh áp dụng", "NOTE - Cần lưu ý", "New P code", "Item code",
         "Product Name", "Promo UoM", "Unit 2", "RSP (+VAT)", "Normal", "Promo",
         "Saving per unit", "Out", "Support type for customer",
         "Scheme detail for customer", "From", "To", "Campaign Detail",
         "Product type", "Big cat", "Cat 2", "CODE LINE", "LOOKUP",
-    ])
+    ]
+    frame = _frame(columns, {
+        "Kênh áp dụng": "All channel",
+        "New P code": "P9002",
+        "Item code": "P1002",
+        "Product Name": "Sản phẩm B",
+        "Promo UoM": "Hộp",
+        "Scheme detail for customer": "Clearance",
+        "From": "2026-09-01",
+        "To": "2026-09-30",
+        "Campaign Detail": "Clearance Isstop 1-3-4",
+    })
 
     def gemini_must_not_run(*_args, **_kwargs):
         raise AssertionError("Standard Pharmacity Clearance must not call Gemini")
@@ -90,11 +119,19 @@ def test_real_clearance_headers_use_standard_fact_path_without_gemini(monkeypatc
 
 
 def test_real_pharmacity_pog_headers_map_deterministically_without_gemini(monkeypatch):
-    frame = pd.DataFrame(columns=[
+    columns = [
         "STOREID", "POGTYPE", "POGCODE", "ITEMID", "ITEMNAME", "FIXELNAME",
         "FIXELID", "LOCATIONID", "TOTALFACING", "TOTALUNIT", "PURCHUNIT",
         "INVENTUNIT", "PROMOTIONTYPE", "ISCHANGED", "ton",
-    ])
+    ]
+    frame = _frame(columns, {
+        "STOREID": "SGPMC0001",
+        "POGCODE": "BABY.0001",
+        "ITEMID": "P1001",
+        "ITEMNAME": "Sản phẩm A",
+        "LOCATIONID": 1,
+        "TOTALFACING": 2,
+    })
 
     def gemini_must_not_run(*_args, **_kwargs):
         raise AssertionError("Standard Pharmacity POG must not call Gemini")
