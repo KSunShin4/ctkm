@@ -8,6 +8,18 @@ services:
     environment:
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://localhost:3000}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set ADMIN_PASSWORD in .env before starting docker compose}
+      ADMIN_SESSION_SECRET: ${ADMIN_SESSION_SECRET:?Set ADMIN_SESSION_SECRET in .env before starting docker compose}
+      ADMIN_TOKEN_TTL_SECONDS: ${ADMIN_TOKEN_TTL_SECONDS:-43200}
+      HEAVY_JOB_QUEUE_SIZE: ${HEAVY_JOB_QUEUE_SIZE:-5}
+      EXPIRATION_CONCURRENCY: ${EXPIRATION_CONCURRENCY:-5}
+      EXPIRATION_CACHE_SIZE: ${EXPIRATION_CACHE_SIZE:-1}
+      MAX_EXPIRATION_FILE_MB: ${MAX_EXPIRATION_FILE_MB:-20}
+      MAX_TEM_R_FILE_MB: ${MAX_TEM_R_FILE_MB:-25}
+      MAX_PIPELINE_FILE_MB: ${MAX_PIPELINE_FILE_MB:-50}
+      JOB_TTL_SECONDS: ${JOB_TTL_SECONDS:-21600}
     volumes:
       - ./:/app
+    # Keep one Uvicorn worker. Queue/job state is intentionally process-local.
     command: python -m uvicorn backend.main_api:app --host 0.0.0.0 --port 8000
