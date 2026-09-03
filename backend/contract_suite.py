@@ -2,6 +2,7 @@
 """Install and verify the FastAPI compatibility contracts as one ordered suite."""
 from __future__ import annotations
 
+from modules.facade_contracts import registered_post_facade_hooks
 from modules.mapping_validation import validate_manual_mapping
 
 from backend import input_contract
@@ -75,6 +76,9 @@ def verify_contract_suite(core_module) -> None:
             "Backend contract suite chưa cài đủ: " + ", ".join(missing_flags)
         )
 
+    if input_contract.validate_manual_mapping is not validate_manual_mapping:
+        raise RuntimeError("Input contract không dùng shared mapping validator")
+
     for method, path, attribute in _ROUTE_BINDINGS:
         expected = getattr(core_module, attribute, None)
         if not callable(expected):
@@ -96,11 +100,22 @@ def verify_contract_suite(core_module) -> None:
     baseline = getattr(main_core, "_ctkm_main_facade_baseline", None)
     if not isinstance(baseline, dict):
         raise RuntimeError("Public main facade chưa có immutable baseline")
+    baseline_mapper = baseline.get("get_or_map")
+    if not callable(baseline_mapper):
+        raise RuntimeError("Immutable main baseline thiếu get_or_map")
+    if getattr(baseline_mapper, "_ctkm_mapping_result_contract_v1", False):
+        raise RuntimeError("Immutable main baseline đã bị runtime hardening sửa đổi")
+
+    hooks = registered_post_facade_hooks(main_core)
+    if "mapping-result-contract-v1" not in hooks:
+        raise RuntimeError("Main facade chưa đăng ký mapping-result post-facade hook")
+
     mapper = getattr(main_core, "_get_or_map", None)
     if not getattr(mapper, "_ctkm_mapping_result_contract_v1", False):
         raise RuntimeError("Mapping-result hardening không còn bọc _ctkm_main_core._get_or_map")
 
     core_module.app.state.contract_installation_order = CONTRACT_ORDER
+    core_module.app.state.registered_main_facade_hooks = hooks
 
 
 def install_contract_suite(core_module) -> None:
