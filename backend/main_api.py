@@ -18,7 +18,9 @@ import tempfile
 import threading
 
 from backend.runtime_contract import install_runtime_contract
-from backend.input_contract import install_input_contract, validate_manual_mapping
+from backend import input_contract as _input_contract
+from backend.input_contract import install_input_contract
+from backend.mapping_validation import validate_manual_mapping
 from backend.mapping_result_contract import install_mapping_result_contract
 from backend.gemini_availability_contract import install_gemini_availability_contract
 from backend.preview_contract import install_preview_contract
@@ -173,6 +175,10 @@ for _name, _value in {
     "_delete_preset": _delete_preset,
 }.items():
     setattr(_core, _name, _value)
+
+# Rebind input-contract globals before installation so preset/preview/run all use
+# the same validator that preserves intentional campaign_detail/promo_price slots.
+_input_contract.validate_manual_mapping = validate_manual_mapping
 
 # Runtime reservation must be installed first. Input preflight then reuses that
 # lifecycle. Mapping validation hardens cache/Gemini results. Availability wraps
