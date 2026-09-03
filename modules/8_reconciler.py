@@ -102,10 +102,6 @@ def detect_campaign_time_overlaps(df_ctkm):
                 source_a != source_b and {source_a, source_b} == {"ctkm", "clearance"}
             )
 
-            # Compare derived scope keys, not raw source bytes. Pharmacity files
-            # contain variants such as OFFLINE/Offline and ALL CHANNEL/All Channel.
-            # KEY Channel is included when present because it represents the
-            # application scope independently of the raw Channel label.
             channel_a_key = _scope_key(a.get("channel"))
             channel_b_key = _scope_key(b.get("channel"))
             key_channel_a_key = _scope_key(a.get("key_channel"))
@@ -140,8 +136,14 @@ def _replacement_key_map(frame: pd.DataFrame) -> tuple[dict[str, str], set[str],
     if frame is None or frame.empty or "new_item_id" not in frame.columns:
         return {}, set(), set()
 
-    source_values = frame.get("item_key", frame.get("item_id", pd.Series(index=frame.index, dtype=object)))
+    source_values = frame.get(
+        "item_key", frame.get("item_id", pd.Series(index=frame.index, dtype=object))
+    )
     new_values = frame.get("new_item_key", frame["new_item_id"].map(_core._item_key))
+    direct_source_keys = {
+        key for key in source_values.map(_core._item_key).dropna()
+        if _core.is_sku(key)
+    }
     new_to_source: dict[str, set[str]] = {}
     source_to_new: dict[str, set[str]] = {}
 
@@ -157,6 +159,11 @@ def _replacement_key_map(frame: pd.DataFrame) -> tuple[dict[str, str], set[str],
 
     ambiguous_new = {key for key, values in new_to_source.items() if len(values) != 1}
     ambiguous_source = {key for key, values in source_to_new.items() if len(values) != 1}
+    # If the replacement code is also a direct item_id in another promotion row,
+    # a POG row with that code may belong to the direct promotion rather than the
+    # legacy-code row. Never steal it through an alias.
+    ambiguous_new |= set(new_to_source) & direct_source_keys
+
     mapping = {}
     for new, source_values_for_new in new_to_source.items():
         if new in ambiguous_new:
@@ -339,10 +346,6 @@ def build_fefo_action_frame(df_ctkm, target_month, df_pog=None, *, business_date
     bill_mask = item_keys.apply(_core.is_bill_program)
     result["pog_applicable"] = ~bill_mask
     if bill_mask.any():
-        # ``location_completeness`` remains the compatibility filter used by the
-        # existing exporter to decide whether a row belongs to the missing-POG
-        # sheet. For invoice-level CTKM the location requirement is satisfied by
-        # non-applicability, while the explicit status fields carry the meaning.
         result.loc[bill_mask, "location_completeness"] = "Đủ vị trí"
         result.loc[bill_mask, "pog_month_status"] = "Không áp dụng POG"
         result.loc[bill_mask, "location_needs_review"] = False
