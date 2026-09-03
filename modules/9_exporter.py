@@ -27,6 +27,12 @@ _original_hide = _core._hide_technical_columns
 _original_shelf_colors = _core._apply_alternating_shelf_colors
 _original_export_final_report = _core.export_final_report
 
+# Comparison-only keys remain available for audit/code but should not clutter
+# operational/confirmation sheets. Raw source/new codes stay visible instead.
+for _field in ("new_item_key", "transition_match_key"):
+    if _field not in _performance.TECHNICAL_ACTION_COLUMNS:
+        _performance.TECHNICAL_ACTION_COLUMNS.append(_field)
+
 # Replacement-code context, snapshot quality, POG applicability and same-position
 # diagnostics are operational fields rather than technical audit tail.
 for _field in ("item_code_transition_status", "new_item_id"):
@@ -94,9 +100,6 @@ def _apply_alternating_shelf_colors(ws, df):
 
     headers = [ws.cell(row=1, column=i).value for i in range(1, ws.max_column + 1)]
 
-    # Several valid promotions may deliberately share one physical shelf spot.
-    # Highlight only the diagnostic cells; do not repaint the action row or turn
-    # the condition into an error/review state.
     collision_fields = [
         field for field in (
             "promotion_count_at_position", "has_multiple_promotions_at_position",
@@ -203,7 +206,6 @@ for _name in dir(_core):
     if not _name.startswith("__"):
         globals()[_name] = getattr(_core, _name)
 
-# Keep facade wrappers after the core symbol export above.
 export_final_report = _export_final_report_with_pog_metadata
 _prepare_action_sheet = _core._prepare_action_sheet
 _filter_selected_columns = _core._filter_selected_columns
