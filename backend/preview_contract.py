@@ -2,8 +2,8 @@
 """Preview the final workbook exactly as users can see it in Excel.
 
 The exporter deliberately hides technical columns, metadata sheets and a few
-legacy summary rows.  The historical API preview ignored those visibility flags
-and also counted placeholder ``Ghi chu`` rows as real work.  This module keeps
+legacy summary rows. The historical API preview ignored those visibility flags
+and also counted placeholder ``Ghi chu`` rows as real work. This module keeps
 preview semantics aligned with the final workbook without changing workbook data.
 """
 from __future__ import annotations
@@ -72,11 +72,14 @@ def _is_empty_placeholder(headers: list[str], rows: list[list[object]]) -> bool:
 def build_visible_preview(path: str | Path, rows: int = 50) -> dict:
     """Return only visible, tabular workbook content.
 
-    ``total_rows`` counts visible non-empty data rows.  Empty-sheet placeholders
-    created by exporter ``_safe`` are reported as zero rows.  Hidden technical
+    ``total_rows`` counts visible non-empty data rows. Empty-sheet placeholders
+    created by exporter ``_safe`` are reported as zero rows. Hidden technical
     columns/rows and hidden metadata sheets are intentionally excluded.
     """
-    limit = max(0, int(rows))
+    limit = int(rows)
+    if limit < 1 or limit > 500:
+        raise ValueError("rows phải nằm trong khoảng 1..500")
+
     workbook = openpyxl.load_workbook(path, data_only=True, read_only=False)
     try:
         sheets = {}
@@ -114,47 +117,54 @@ def build_visible_preview(path: str | Path, rows: int = 50) -> dict:
 
 
 def install_preview_contract(core_module) -> None:
-    """Intercept only GET /api/preview/* and preserve the existing auth contract."""
+    """Replace only the preview endpoint call while retaining FastAPI dependencies.
+
+    Mutating the existing APIRoute dependant keeps the original Bearer admin
+    dependency, CORS middleware and response handling intact. No extra HTTP
+    middleware is introduced.
+    """
     if getattr(core_module.app.state, "visible_preview_contract", False):
         return
 
-    @core_module.app.middleware("http")
-    async def visible_preview_middleware(request, call_next):
-        prefix = "/api/preview/"
-        if request.method != "GET" or not request.url.path.startswith(prefix):
-            return await call_next(request)
-
-        job_id = request.url.path[len(prefix):].strip("/")
-        if not job_id or "/" in job_id:
-            return await call_next(request)
-
-        try:
-            core_module.require_admin(request.headers.get("authorization"))
-        except core_module.HTTPException as exc:
-            return core_module.JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
-
+    def visible_preview_result(job_id: str, rows: int = 50, _admin: str | None = None):
         job = core_module._jobs.get(job_id)
         if not job:
-            return core_module.JSONResponse(
-                status_code=404, content={"detail": f"Khong tim thay job '{job_id}'"}
+            raise core_module.HTTPException(
+                status_code=404, detail=f"Khong tim thay job '{job_id}'"
             )
-        path = Path(job.get("output_path", ""))
-        if not path.is_file():
-            return core_module.JSONResponse(
-                status_code=404, content={"detail": "File ket qua chua san sang"}
+        path = Path(job["output_path"])
+        if not path.exists():
+            raise core_module.HTTPException(
+                status_code=404, detail="File ket qua khong ton tai."
+            )
+        if rows < 1 or rows > 500:
+            raise core_module.HTTPException(
+                status_code=422, detail="rows phải nằm trong khoảng 1..500"
             )
         try:
-            rows = int(request.query_params.get("rows", "50"))
-        except (TypeError, ValueError):
-            return core_module.JSONResponse(
-                status_code=422, content={"detail": "rows phai la so nguyen"}
-            )
-
-        try:
-            return core_module.JSONResponse(content=build_visible_preview(path, rows))
+            return build_visible_preview(path, rows)
+        except core_module.HTTPException:
+            raise
         except Exception as exc:
-            return core_module.JSONResponse(
-                status_code=500, content={"detail": f"Loi doc file ket qua: {exc}"}
-            )
+            raise core_module.HTTPException(
+                status_code=500, detail=f"Loi doc file ket qua: {exc}"
+            ) from exc
 
+    replaced = False
+    for route in core_module.app.routes:
+        if getattr(route, "path", None) != "/api/preview/{job_id}":
+            continue
+        if "GET" not in (getattr(route, "methods", None) or set()):
+            continue
+        route.endpoint = visible_preview_result
+        dependant = getattr(route, "dependant", None)
+        if dependant is not None:
+            dependant.call = visible_preview_result
+        replaced = True
+        break
+
+    if not replaced:
+        raise RuntimeError("Không tìm thấy route GET /api/preview/{job_id} để cài preview contract")
+
+    core_module.preview_result = visible_preview_result
     core_module.app.state.visible_preview_contract = True
