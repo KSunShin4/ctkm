@@ -5,6 +5,8 @@ from dataclasses import dataclass
 import re
 import pandas as pd
 
+from modules.item_code_identity import build_transition_identity
+
 _SKU_KEY_PAT = re.compile(r"^P\d+$")
 
 @dataclass
@@ -37,49 +39,13 @@ def _with_item_key(frame: pd.DataFrame) -> pd.DataFrame:
 
 
 def _replacement_key_map(frame: pd.DataFrame) -> tuple[dict[str, str], set[str], set[str]]:
-    """Return only safe one-to-one new-code -> source-code aliases.
-
-    Source ``item_id``/``item_key`` stays canonical for reconciliation identity.
-    A replacement code is an alias only when both values are real P-code SKUs,
-    both directions are one-to-one, and the new code is not itself a direct
-    source ``item_key`` elsewhere in the CTKM frame. That last guard prevents a
-    migration alias from stealing POG rows that belong to a real promotion already
-    authored under the new code.
-    """
-    if frame is None or frame.empty or "new_item_key" not in frame.columns:
-        return {}, set(), set()
-
-    source_series = frame.get("item_key", pd.Series(index=frame.index, dtype=object))
-    direct_source_keys = {
-        key for key in source_series.map(_item_key).dropna() if _is_sku_key(key)
-    }
-    new_to_source: dict[str, set[str]] = {}
-    source_to_new: dict[str, set[str]] = {}
-    for source_key, new_key in zip(source_series, frame["new_item_key"]):
-        source = _item_key(source_key)
-        new = _item_key(new_key)
-        if not source or not new or source == new:
-            continue
-        if not _is_sku_key(source) or not _is_sku_key(new):
-            continue
-        new_to_source.setdefault(new, set()).add(source)
-        source_to_new.setdefault(source, set()).add(new)
-
-    ambiguous_new = {key for key, values in new_to_source.items() if len(values) != 1}
-    ambiguous_source = {key for key, values in source_to_new.items() if len(values) != 1}
-    # A replacement code that is also directly authored as an item_id has two
-    # possible meanings in POG. Never guess which promotion owns that POG row.
-    ambiguous_new |= set(new_to_source) & direct_source_keys
-
-    mapping = {}
-    for new, source_values in new_to_source.items():
-        if new in ambiguous_new:
-            continue
-        source = next(iter(source_values))
-        if source in ambiguous_source:
-            continue
-        mapping[new] = source
-    return mapping, ambiguous_new, ambiguous_source
+    """Return the shared fail-safe POG alias contract for replacement codes."""
+    identity = build_transition_identity(
+        frame, key_func=_item_key, is_sku=_is_sku_key,
+    )
+    ambiguous_new = set(identity.ambiguous_keys) | set(identity.shadowed_new_keys)
+    ambiguous_source = set(identity.ambiguous_keys)
+    return dict(identity.pog_alias_map), ambiguous_new, ambiguous_source
 
 
 def _remap_pog_replacement_keys(source_ctkm: pd.DataFrame, source_pog: pd.DataFrame) -> pd.DataFrame:
@@ -105,14 +71,7 @@ def _add_display_item_id(frame: pd.DataFrame, *, prefer_ctkm: bool) -> pd.DataFr
 
 
 def _pog_control_row_kind(row: pd.Series) -> str | None:
-    """Recognize export control rows without touching ordinary bad POG rows.
-
-    Pharmacity POG exports contain populated footer/control rows such as the
-    ``Applied filters ... DATEID`` metadata line and a ``Total`` line. Loader
-    deliberately preserves every populated source row, so reconciliation must
-    classify these known controls instead of treating them as missing/real SKUs.
-    Source values and lineage remain untouched for audit.
-    """
+    """Recognize export control rows without touching ordinary bad POG rows."""
     texts = []
     for value in row.tolist():
         if value is None or pd.isna(value):
@@ -143,9 +102,6 @@ def join_ctkm_pog(df_ctkm, df_pog) -> JoinResult:
     source_pog = _with_item_key(df_pog)
     source_pog = _remap_pog_replacement_keys(source_ctkm, source_pog)
 
-    # Control rows are not business POG positions and must not distort POG-only
-    # counts or appear as false missing-item review errors. Keep them attached to
-    # the review frame as audit metadata so exporter can preserve them separately.
     control_kind = source_pog.apply(_pog_control_row_kind, axis=1)
     control_mask = control_kind.notna()
     pog_metadata = source_pog[control_mask].copy()
@@ -185,18 +141,20 @@ def join_ctkm_pog(df_ctkm, df_pog) -> JoinResult:
     ).reset_index(drop=True)
     return JoinResult(matched, ctkm_only, pog_only, pog_review)
 
+
 def apply_dimension_conditions(join_result: JoinResult, dimension_frames: dict) -> JoinResult:
-    """
-    Hien chi gan co 'dimension_check_flag' cho item KHONG xuat hien trong bat ky
-    dimension sheet nao (neu co). KHONG tu dong loc bo - tranh mat du lieu do ap
-    sai dieu kien (chua co co che biet dimension nao rang buoc cho campaign nao).
-    """
-    if not dimension_frames: return join_result
+    """Flag unmatched dimension items without silently filtering rows."""
+    if not dimension_frames:
+        return join_result
     df = join_result.df_matched.copy()
-    if df.empty: return join_result
-    item_dims = {n: _with_item_key(d) for n, d in dimension_frames.items()
-                 if "item_id" in d.columns and d["item_id"].notna().any()}
-    if not item_dims: return join_result
+    if df.empty:
+        return join_result
+    item_dims = {
+        n: _with_item_key(d) for n, d in dimension_frames.items()
+        if "item_id" in d.columns and d["item_id"].notna().any()
+    }
+    if not item_dims:
+        return join_result
     all_dim_items = set()
     for d in item_dims.values():
         all_dim_items |= set(d["item_key"].dropna())
