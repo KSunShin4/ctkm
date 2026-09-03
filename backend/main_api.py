@@ -23,6 +23,7 @@ from backend.input_contract import install_input_contract
 from backend.mapping_validation import validate_manual_mapping
 from backend.mapping_result_contract import install_mapping_result_contract
 from backend.gemini_availability_contract import install_gemini_availability_contract
+from backend.tem_r_resource_contract import install_tem_r_resource_contract
 from backend.auxiliary_workflows_contract import install_auxiliary_workflows_contract
 from backend.expiration_api_contract import install_expiration_api_contract
 from backend.final_output_contract import install_final_output_contract
@@ -184,14 +185,15 @@ for _name, _value in {
 _input_contract.validate_manual_mapping = validate_manual_mapping
 
 # Runtime reservation must be installed first. Input validation wraps shared
-# upload reading, then mapping/Gemini contracts are installed. Auxiliary workflows
-# reuse the same queue/upload lifecycle, while expiration keeps its current public
-# access model but shares the stricter upload/input contract. Final CTKM output
-# validation and preview are installed last so only validated artifacts are exposed.
+# upload reading, then mapping/Gemini contracts are installed. Tem R gets its
+# archive-expansion guard before the auxiliary routes capture inspect/create.
+# Expiration keeps its current public access model but shares the stricter
+# upload/resource contract. Final CTKM validation and preview are installed last.
 install_runtime_contract(_core)
 install_input_contract(_core)
 install_mapping_result_contract(_core, validate_manual_mapping)
 install_gemini_availability_contract(_core)
+install_tem_r_resource_contract(_core)
 install_auxiliary_workflows_contract(_core)
 install_expiration_api_contract(_core)
 install_final_output_contract(_core)
