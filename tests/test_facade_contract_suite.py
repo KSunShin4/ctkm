@@ -38,6 +38,7 @@ def test_backend_suite_has_one_verified_installation_order_and_is_idempotent():
 
     assert main_api._heavy_queue is queue_before
     assert main_api._main_mod._core._get_or_map is mapper_before
+    assert main_api._main_mod._get_or_map is mapper_before
     routes_after = {
         (method, route.path): route.endpoint
         for route in main_api.app.routes
@@ -100,6 +101,7 @@ def test_main_reload_reapplies_mapping_hardening_without_mutating_baseline():
     assert repeated._original_get_or_map is baseline_mapper
     assert getattr(core._get_or_map, "_ctkm_mapping_result_contract_v1", False)
     assert repeated._get_or_map is core._get_or_map
+    assert main_api._main_mod._get_or_map is core._get_or_map
     assert core._ctkm_main_last_post_facade_hooks == hooks
     assert main_api.app.state.registered_main_facade_hooks == hooks
 
@@ -129,6 +131,7 @@ def test_third_main_reload_replaces_not_stacks_mapping_contract():
     second_hardened = core._get_or_map
 
     assert second_hardened is repeated._get_or_map
+    assert second_hardened is main_api._main_mod._get_or_map
     assert second_hardened is not first_hardened
     assert getattr(second_hardened, "_ctkm_mapping_result_contract_v1", False)
     # A facade rebuild starts from its immutable raw baseline-derived wrapper;
