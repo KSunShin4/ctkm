@@ -62,25 +62,30 @@ window.fetch = async (...args) => {
   }
 }
 
-// Keep legacy App.jsx summary cards aligned with the backend contract without a
-// risky full-file rewrite. The historical API aliases still carry correct values,
-// but these three labels predate the all-KM/POG semantics now used by the backend.
+// Keep legacy App.jsx text aligned with current backend contracts without a risky
+// full-file rewrite. Values already come from the correct API keys; only labels
+// and the historical 50-row preview caption are stale.
 const SUMMARY_LABEL_REWRITES = new Map([
   ['Dòng khớp (CTKM + kệ)', 'Dòng khớp (CTKM + POG)'],
   ['POG không có CTKM phù hợp', 'POG không có KM phù hợp'],
   ['Cảnh báo trùng thời gian', 'Sản phẩm có cảnh báo trùng thời gian'],
 ])
 
-const rewriteLegacySummaryLabels = root => {
+const rewriteLegacyUiText = root => {
   root?.querySelectorAll?.('.stat-label').forEach(node => {
     const replacement = SUMMARY_LABEL_REWRITES.get(node.textContent?.trim())
     if (replacement && node.textContent !== replacement) node.textContent = replacement
   })
+  root?.querySelectorAll?.('.section-title > span').forEach(node => {
+    if (node.textContent?.trim() === '50 dòng đầu mỗi sheet') {
+      node.textContent = 'Tối đa 100 dòng visible mỗi sheet'
+    }
+  })
 }
 
 const rootElement = document.getElementById('root')
-const labelObserver = new MutationObserver(() => rewriteLegacySummaryLabels(rootElement))
+const labelObserver = new MutationObserver(() => rewriteLegacyUiText(rootElement))
 labelObserver.observe(rootElement, { childList: true, subtree: true, characterData: true })
 
 ReactDOM.createRoot(rootElement).render(<App />)
-queueMicrotask(() => rewriteLegacySummaryLabels(rootElement))
+queueMicrotask(() => rewriteLegacyUiText(rootElement))
