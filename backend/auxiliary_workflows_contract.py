@@ -10,11 +10,9 @@ without changing its allocation algorithm.
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
 import json
 from pathlib import Path
 import shutil
-import time
 import uuid
 
 import openpyxl
@@ -372,6 +370,7 @@ def install_auxiliary_workflows_contract(core_module) -> None:
         _admin: str = Depends(core_module.require_admin),
     ):
         """Legacy synchronous endpoint with the same preflight/output contract."""
+        core_module._cleanup_old_jobs()
         if not tem_r_file.filename or not tem_r_file.filename.lower().endswith(".xlsx"):
             raise HTTPException(status_code=422, detail="tem_r_file phải là file .xlsx")
         if max_location_distance <= 0:
@@ -390,6 +389,7 @@ def install_auxiliary_workflows_contract(core_module) -> None:
         source_path = job_dir / "tem_r.xlsx"
         source_path.write_bytes(content)
         output_path = core_module._OUT_DIR / f"tem_r_{job_id}.xlsx"
+        job = None
         acquired = False
         try:
             resolved_sheet, resolved_header, resolved_mapping, _inspection = await asyncio.to_thread(
@@ -401,9 +401,20 @@ def install_auxiliary_workflows_contract(core_module) -> None:
                 sheet_name=sheet_name,
                 header_row=header_row,
             )
-            core_module._heavy_queue.reserve(job_id, "tem_r")
+            job = core_module._new_job(job_id, "tem_r", output_path, output_path.name)
+            job["sheet_name"] = resolved_sheet
+            job["header_row"] = resolved_header
+
+            try:
+                core_module._heavy_queue.reserve(job_id, "tem_r")
+            except RuntimeError as exc:
+                core_module._jobs.pop(job_id, None)
+                job = None
+                raise HTTPException(status_code=503, detail=str(exc)) from exc
+
             await asyncio.to_thread(core_module._heavy_queue.acquire, job_id, "tem_r")
             acquired = True
+            job.update(status="running", progress=30, message="Đang phân bổ Tem R")
             plan = await asyncio.to_thread(
                 tem_r_mod.create_tem_r_workbook,
                 source_path,
@@ -418,29 +429,29 @@ def install_auxiliary_workflows_contract(core_module) -> None:
                 output_path, plan, sheet_name=resolved_sheet, header_row=resolved_header
             )
             summary = _tem_r_summary(plan)
-            job = core_module._new_job(job_id, "tem_r", output_path, output_path.name)
+            warnings = plan.exceptions["reason"].tolist()
             job.update(
                 status="completed", progress=100, message="Hoàn tất",
-                summary=summary, warnings=plan.exceptions["reason"].tolist(), error=None,
-                created_timestamp=time.time(),
+                summary=summary, warnings=warnings, error=None,
             )
-            return {
-                "job_id": job_id,
-                "summary": summary,
-                "warnings": job["warnings"],
-            }
+            return {"job_id": job_id, "summary": summary, "warnings": warnings}
         except HTTPException:
             Path(output_path).unlink(missing_ok=True)
             raise
-        except RuntimeError as exc:
-            Path(output_path).unlink(missing_ok=True)
-            status = 503 if "Hàng đợi" in str(exc) else 500
-            raise HTTPException(status_code=status, detail=str(exc)) from exc
         except ValueError as exc:
             Path(output_path).unlink(missing_ok=True)
+            if job is not None:
+                job.update(status="failed", progress=100, message="Xử lý thất bại", error=str(exc))
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            Path(output_path).unlink(missing_ok=True)
+            if job is not None:
+                job.update(status="failed", progress=100, message="Xử lý thất bại", error=str(exc))
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
         except Exception as exc:
             Path(output_path).unlink(missing_ok=True)
+            if job is not None:
+                job.update(status="failed", progress=100, message="Xử lý thất bại", error=str(exc))
             raise HTTPException(status_code=500, detail=f"Lỗi xử lý Tem R: {exc}") from exc
         finally:
             if acquired:
