@@ -130,7 +130,8 @@ def verify_contract_suite(core_module) -> None:
                 f"Dependency call của {method} {path} không trỏ tới core.{attribute}"
             )
 
-    main_core = getattr(core_module._main_mod, "_core", None)
+    retained_main = core_module._main_mod
+    main_core = getattr(retained_main, "_core", None)
     if main_core is None:
         raise RuntimeError("Backend contract suite không tìm thấy _ctkm_main_core")
     baseline = getattr(main_core, "_ctkm_main_facade_baseline", None)
@@ -149,6 +150,8 @@ def verify_contract_suite(core_module) -> None:
     mapper = getattr(main_core, "_get_or_map", None)
     if not getattr(mapper, "_ctkm_mapping_result_contract_v1", False):
         raise RuntimeError("Mapping-result hardening không còn bọc _ctkm_main_core._get_or_map")
+    if getattr(retained_main, "_get_or_map", None) is not mapper:
+        raise RuntimeError("Facade ctkm_main giữ reference _get_or_map cũ sau facade rebuild")
 
     core_module.app.state.contract_installation_order = CONTRACT_ORDER
     core_module.app.state.registered_main_facade_hooks = hooks
