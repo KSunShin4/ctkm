@@ -76,7 +76,11 @@ def test_main_reload_reapplies_mapping_hardening_without_mutating_baseline():
 
     assert not getattr(baseline_mapper, "_ctkm_mapping_result_contract_v1", False)
     assert getattr(core._get_or_map, "_ctkm_mapping_result_contract_v1", False)
-    assert "mapping-result-contract-v1" in registered_post_facade_hooks(core)
+    hooks = registered_post_facade_hooks(core)
+    assert hooks == (
+        "mapping-result-contract-v1",
+        "backend-contract-suite-verify-v1",
+    )
 
     repeated = _load_main_again("_ctkm_main_facade_suite_repeat")
 
@@ -84,7 +88,8 @@ def test_main_reload_reapplies_mapping_hardening_without_mutating_baseline():
     assert repeated._original_get_or_map is baseline_mapper
     assert getattr(core._get_or_map, "_ctkm_mapping_result_contract_v1", False)
     assert repeated._get_or_map is core._get_or_map
-    assert core._ctkm_main_last_post_facade_hooks == ("mapping-result-contract-v1",)
+    assert core._ctkm_main_last_post_facade_hooks == hooks
+    assert main_api.app.state.registered_main_facade_hooks == hooks
 
     control_only = pd.DataFrame([
         {
