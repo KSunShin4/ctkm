@@ -28,6 +28,7 @@ _performance.install_performance_patches(_core)
 # Standard company-file inference must obey the same two-channel contract even
 # when this helper is used directly, before _process/_ensure_channel_mapping.
 _original_infer_standard_fact_mapping = _core._infer_standard_fact_mapping
+_original_get_or_map = _core._get_or_map
 
 
 def _infer_standard_fact_mapping(df):
@@ -56,7 +57,64 @@ def _infer_standard_fact_mapping(df):
     )
 
 
+def _infer_standard_pog_mapping(df):
+    """Map the stable Pharmacity POG export headers without Gemini.
+
+    The uploaded store export uses exact business headers such as STOREID,
+    POGCODE, ITEMID, LOCATIONID and TOTALFACING. These names are unambiguous, so
+    routing them through Gemini adds failure/quota risk without adding meaning.
+    Unrecognized source columns are deliberately left unmapped; normalizer will
+    preserve them as ``extra__...`` columns for audit/source fidelity.
+    """
+    normalized_columns = {}
+    for column in df.columns:
+        normalized_columns.setdefault(_core._normalized_header(column), column)
+
+    aliases = {
+        "item_id": ("itemid", "item id", "item code"),
+        "item_name": ("itemname", "item name", "product name"),
+        "store_id": ("storeid", "store id"),
+        "pog_code": ("pogcode", "pog code"),
+        "location_id": ("locationid", "location id"),
+        "facing": ("totalfacing", "total facing", "facing"),
+    }
+    mapping = {}
+    for target, target_aliases in aliases.items():
+        for alias in target_aliases:
+            source = normalized_columns.get(alias)
+            if source is not None:
+                mapping[source] = target
+                break
+
+    # Do not bypass Gemini/cache for a vaguely similar workbook. ITEMID+STOREID
+    # together identify the standard POG shape used by the real Pharmacity file.
+    if not {"item_id", "store_id"}.issubset(set(mapping.values())):
+        return {}
+    return mapping
+
+
+def _get_or_map(sheet_name, df, schema_section, mapping_logs):
+    is_pog_schema = (
+        "store_id" in schema_section
+        and "pog_code" in schema_section
+        and "campaign_name" not in schema_section
+    )
+    if is_pog_schema:
+        mapping = _infer_standard_pog_mapping(df)
+        if mapping:
+            result = _core._build_manual_mapping_result(
+                sheet_name, mapping, df, schema_section
+            )
+            entry = _core.MC.mapping_result_to_dict_safe(result)
+            entry["source"] = "standard-pog"
+            mapping_logs.append({**entry, "sheet_name": sheet_name})
+            return result.mapping
+    return _original_get_or_map(sheet_name, df, schema_section, mapping_logs)
+
+
 _core._infer_standard_fact_mapping = _infer_standard_fact_mapping
+_core._infer_standard_pog_mapping = _infer_standard_pog_mapping
+_core._get_or_map = _get_or_map
 
 for _name in dir(_core):
     if not _name.startswith("__"):
