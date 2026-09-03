@@ -104,8 +104,9 @@ def test_export_keeps_monthly_pog_audit_rows_but_summary_exposes_all_km_coverage
     # Clearance-only P2001 must still be visible there rather than silently lost.
     monthly_sheet = workbook["POG không có CTKM"]
     monthly_values = [cell.value for row in monthly_sheet.iter_rows() for cell in row]
+    assert monthly_sheet.max_row == 4  # header + 3 physical POG rows
     assert "P2001" in monthly_values
-    assert monthly_values.count("P3001") == 2
+    assert "P3001" in monthly_values
 
     # Summary/API semantics separately expose the real operational all-KM gap.
     assert summary["So dong POG khong co KM phu hop"] == 2
