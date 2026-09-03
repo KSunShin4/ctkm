@@ -124,8 +124,39 @@ def detect_campaign_time_overlaps(df_ctkm):
     return warnings
 
 
+_original_build_fefo_action_frame = _core.build_fefo_action_frame
+
+
+def build_fefo_action_frame(*args, **kwargs):
+    """Keep calendar action and POG review as independent operational axes.
+
+    POG quality never changes ``scheduled_action``. This wrapper only prevents
+    the legacy one-field ``location_status`` from saying "Đủ vị trí" when the
+    coordinates are complete but the POG snapshot month is unknown and therefore
+    ``location_needs_review`` is already true. Source values are untouched.
+    """
+    result = _original_build_fefo_action_frame(*args, **kwargs)
+    if result is None or result.empty:
+        return result
+    required = {
+        "location_completeness", "pog_month_status",
+        "location_needs_review", "location_status",
+    }
+    if not required.issubset(result.columns):
+        return result
+
+    unknown_month = (
+        result["location_completeness"].eq("Đủ vị trí")
+        & result["pog_month_status"].eq("Không rõ tháng POG")
+        & result["location_needs_review"].fillna(False).astype(bool)
+    )
+    result.loc[unknown_month, "location_status"] = "Không rõ tháng POG"
+    return result
+
+
 _core._same_campaign_row = _same_promotion_identity
 _core.detect_campaign_time_overlaps = detect_campaign_time_overlaps
+_core.build_fefo_action_frame = build_fefo_action_frame
 
 for _name in dir(_core):
     if not _name.startswith("__"):
@@ -133,3 +164,4 @@ for _name in dir(_core):
 
 _same_campaign_row = _core._same_campaign_row
 detect_campaign_time_overlaps = _core.detect_campaign_time_overlaps
+build_fefo_action_frame = _core.build_fefo_action_frame
