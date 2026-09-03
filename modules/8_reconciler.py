@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Reconciler entrypoint with source-safe business identity and overlap scope keys."""
+"""Reconciler facade with source-safe product, scope and task semantics."""
 from __future__ import annotations
 
 import importlib.util
@@ -8,6 +8,12 @@ import sys
 
 import pandas as pd
 
+from modules.channel_scope import (
+    operational_promotion_key,
+    operational_task_key,
+    scope_identity_key,
+    scope_overlap_relation,
+)
 from modules.item_code_identity import build_transition_identity
 
 _CORE_NAME = "_ctkm_reconciler_core"
@@ -38,31 +44,35 @@ if isinstance(_business_columns, list):
 
 
 def _same_promotion_identity(a: dict, b: dict) -> bool:
-    columns = [
-        column for column in _core._PROMOTION_ID_COLUMNS
-        if column in a or column in b
-    ]
+    columns = [column for column in _core._PROMOTION_ID_COLUMNS if column in a or column in b]
     return all(
-        _core._fingerprint_value(a.get(column))
-        == _core._fingerprint_value(b.get(column))
+        _core._fingerprint_value(a.get(column)) == _core._fingerprint_value(b.get(column))
         for column in columns
     )
 
 
-def _scope_key(value):
-    return _core._normalize_text(value)
+def _scope_display(row) -> str:
+    return (
+        f"KEY={_core._display_value(row.get('key_channel'))} | "
+        f"Channel={_core._display_value(row.get('channel'))}"
+    )
 
 
 def detect_campaign_time_overlaps(df_ctkm):
-    """Detect conflicts by product identity, including safe old/new-code pairs."""
+    """Detect product overlaps with explicit channel-scope relation semantics.
+
+    Source promotion identity stays byte-faithful. Formatting-only channel
+    variants share an operational promotion key and are not reported as two
+    campaigns. Same application scope blocks; intersecting/disjoint/unknown
+    scopes remain visible as non-blocking warnings. CTKM-vs-Clearance overlap
+    retains the existing blocking contract regardless of channel.
+    """
     warnings = []
     if not {"item_id", "promo_from", "promo_to"}.issubset(df_ctkm.columns):
         return warnings
 
     df = _core._ensure_item_key(df_ctkm)
-    transition = build_transition_identity(
-        df, key_func=_core._item_key, is_sku=_core.is_sku,
-    )
+    transition = build_transition_identity(df, key_func=_core._item_key, is_sku=_core.is_sku)
     df["_comparison_item_key"] = df["item_key"].map(
         lambda value: transition.canonical(value, key_func=_core._item_key)
     )
@@ -88,49 +98,47 @@ def detect_campaign_time_overlaps(df_ctkm):
             if _same_promotion_identity(a, b):
                 continue
 
-            ca = _core._display_value(a.get("campaign_name"), "(không rõ)")
-            cb = _core._display_value(b.get("campaign_name"), "(không rõ)")
+            op_a = operational_promotion_key(a, _core._PROMOTION_ID_COLUMNS)
+            op_b = operational_promotion_key(b, _core._PROMOTION_ID_COLUMNS)
+            if op_a == op_b:
+                # Only channel formatting differs; this is one operational offer.
+                continue
+
+            relation = scope_overlap_relation(
+                a.get("key_channel"), a.get("channel"),
+                b.get("key_channel"), b.get("channel"),
+            )
             source_a = _core._normalize_text(a.get("program_source"))
             source_b = _core._normalize_text(b.get("program_source"))
             cross_source_clearance = (
                 source_a != source_b and {source_a, source_b} == {"ctkm", "clearance"}
             )
+            is_blocking = cross_source_clearance or relation == "same"
+            conflict_type = "blocking_conflict" if is_blocking else "potential_cross_channel_overlap"
 
-            channel_a_key = _scope_key(a.get("channel"))
-            channel_b_key = _scope_key(b.get("channel"))
-            key_channel_a_key = _scope_key(a.get("key_channel"))
-            key_channel_b_key = _scope_key(b.get("key_channel"))
-
-            same_channel_scope = channel_a_key == channel_b_key
-            if key_channel_a_key or key_channel_b_key:
-                same_channel_scope = (
-                    same_channel_scope and key_channel_a_key == key_channel_b_key
-                )
-
-            is_blocking = cross_source_clearance or same_channel_scope
-            conflict_type = (
-                "blocking_conflict" if is_blocking
-                else "potential_cross_channel_overlap"
-            )
-            warnings.append(_core.OverlapWarning(
-                str(comparison_item_key), ca, cb,
+            warning = _core.OverlapWarning(
+                str(comparison_item_key),
+                _core._display_value(a.get("campaign_name"), "(không rõ)"),
+                _core._display_value(b.get("campaign_name"), "(không rõ)"),
                 f"{af.date()} -> {at.date()}",
                 f"{bf.date()} -> {bt.date()}",
-                _core._display_value(a.get("channel")),
-                _core._display_value(b.get("channel")),
+                _scope_display(a), _scope_display(b),
                 _core._display_value(a.get("source_row_id"), ""),
                 _core._display_value(b.get("source_row_id"), ""),
-                conflict_type,
-                is_blocking,
-            ))
+                conflict_type, is_blocking,
+            )
+            # Dataclass is not slotted; retain richer diagnostics for API/tests.
+            warning.scope_relation = relation
+            warning.key_channel_a = a.get("key_channel")
+            warning.key_channel_b = b.get("key_channel")
+            warning.scope_identity_a = scope_identity_key(a.get("key_channel"), a.get("channel"))
+            warning.scope_identity_b = scope_identity_key(b.get("key_channel"), b.get("channel"))
+            warnings.append(warning)
     return warnings
 
 
 def _replacement_key_map(frame: pd.DataFrame) -> tuple[dict[str, str], set[str], set[str]]:
-    """Use the same fail-safe alias boundary as joiner/comparison logic."""
-    identity = build_transition_identity(
-        frame, key_func=_core._item_key, is_sku=_core.is_sku,
-    )
+    identity = build_transition_identity(frame, key_func=_core._item_key, is_sku=_core.is_sku)
     ambiguous_new = set(identity.ambiguous_keys) | set(identity.shadowed_new_keys)
     ambiguous_source = set(identity.ambiguous_keys)
     return dict(identity.pog_alias_map), ambiguous_new, ambiguous_source
@@ -142,7 +150,9 @@ def _prepare_fact_transition_status(frame: pd.DataFrame):
     if "new_item_id" not in result.columns:
         return result, mapping
 
-    source_values = result.get("item_key", result.get("item_id", pd.Series(index=result.index, dtype=object)))
+    source_values = result.get(
+        "item_key", result.get("item_id", pd.Series(index=result.index, dtype=object))
+    )
     new_values = result.get("new_item_key", result["new_item_id"].map(_core._item_key))
     statuses = []
     for source_value, new_value in zip(source_values, new_values):
@@ -226,14 +236,34 @@ def _attach_pog_match_code_diagnostics(result: pd.DataFrame, df_pog: pd.DataFram
     return result
 
 
-_original_build_fefo_action_frame = _core.build_fefo_action_frame
+def _attach_operational_scope_identity(result: pd.DataFrame) -> pd.DataFrame:
+    result = result.copy()
+    result["scope_identity_key"] = result.apply(
+        lambda row: scope_identity_key(row.get("key_channel"), row.get("channel")), axis=1
+    )
+    result["operational_promotion_key"] = result.apply(
+        lambda row: operational_promotion_key(row, _core._PROMOTION_ID_COLUMNS), axis=1
+    )
+    result["operational_task_key"] = result.apply(
+        lambda row: operational_task_key(
+            row.get("operational_promotion_key"),
+            row.get("scheduled_action"),
+            row.get("pog_position_id"),
+        ),
+        axis=1,
+    )
+    return result
 
 
 def _attach_position_promotion_diagnostics(result):
     result["promotion_count_at_position"] = 0
     result["has_multiple_promotions_at_position"] = False
+    promotion_key = (
+        "operational_promotion_key"
+        if "operational_promotion_key" in result.columns else "promotion_id"
+    )
     required = {
-        "pog_position_id", "promotion_id", "scheduled_action",
+        "pog_position_id", promotion_key, "scheduled_action",
         "location_completeness", "pog_applicable",
     }
     if not required.issubset(result.columns):
@@ -248,20 +278,21 @@ def _attach_position_promotion_diagnostics(result):
     if not eligible.any():
         return result
 
-    working = result.loc[
-        eligible, ["pog_position_id", "scheduled_action", "promotion_id"]
-    ].copy()
+    working = result.loc[eligible, ["pog_position_id", "scheduled_action", promotion_key]].copy()
     counts = working.groupby(
         ["pog_position_id", "scheduled_action"], dropna=False
-    )["promotion_id"].transform("nunique")
+    )[promotion_key].transform("nunique")
     result.loc[eligible, "promotion_count_at_position"] = counts.astype(int).to_numpy()
     result.loc[eligible, "has_multiple_promotions_at_position"] = counts.gt(1).to_numpy()
     return result
 
 
+_original_build_fefo_action_frame = _core.build_fefo_action_frame
+
+
 def build_fefo_action_frame(df_ctkm, target_month, df_pog=None, *, business_date=None,
                             overlap_warnings=None):
-    """Keep source promotion identity while matching POG through safe aliases."""
+    """Keep source IDs stable while deriving safe product/scope work identity."""
     fact_frame, replacement_map = _prepare_fact_transition_status(df_ctkm)
     remapped_pog = _remap_pog_replacement_keys(df_pog, replacement_map)
     result = _original_build_fefo_action_frame(
@@ -284,31 +315,28 @@ def build_fefo_action_frame(df_ctkm, target_month, df_pog=None, *, business_date
     )
     result.loc[unknown_month, "location_status"] = "Không rõ tháng POG"
 
-    item_keys = result.get("item_key")
-    if item_keys is None:
-        item_keys = result.get("item_id")
+    item_keys = result.get("item_key", result.get("item_id"))
     if item_keys is None:
         result["pog_applicable"] = True
-        result = _attach_pog_match_code_diagnostics(result, df_pog)
-        return _attach_position_promotion_diagnostics(result)
-
-    bill_mask = item_keys.apply(_core.is_bill_program)
-    result["pog_applicable"] = ~bill_mask
-    if bill_mask.any():
-        result.loc[bill_mask, "location_completeness"] = "Đủ vị trí"
-        result.loc[bill_mask, "pog_month_status"] = "Không áp dụng POG"
-        result.loc[bill_mask, "location_needs_review"] = False
-        result.loc[bill_mask, "location_status"] = "Không áp dụng POG"
-        if "has_multiple_pog_positions" in result.columns:
-            result.loc[bill_mask, "has_multiple_pog_positions"] = False
-        if "pog_position_count" in result.columns:
-            result.loc[bill_mask, "pog_position_count"] = 0
-        if "pog_source_row_count" in result.columns:
-            result.loc[bill_mask, "pog_source_row_count"] = 0
-        if "pog_duplicate_status" in result.columns:
-            result.loc[bill_mask, "pog_duplicate_status"] = "Không áp dụng POG"
+    else:
+        bill_mask = item_keys.apply(_core.is_bill_program)
+        result["pog_applicable"] = ~bill_mask
+        if bill_mask.any():
+            result.loc[bill_mask, "location_completeness"] = "Đủ vị trí"
+            result.loc[bill_mask, "pog_month_status"] = "Không áp dụng POG"
+            result.loc[bill_mask, "location_needs_review"] = False
+            result.loc[bill_mask, "location_status"] = "Không áp dụng POG"
+            if "has_multiple_pog_positions" in result.columns:
+                result.loc[bill_mask, "has_multiple_pog_positions"] = False
+            if "pog_position_count" in result.columns:
+                result.loc[bill_mask, "pog_position_count"] = 0
+            if "pog_source_row_count" in result.columns:
+                result.loc[bill_mask, "pog_source_row_count"] = 0
+            if "pog_duplicate_status" in result.columns:
+                result.loc[bill_mask, "pog_duplicate_status"] = "Không áp dụng POG"
 
     result = _attach_pog_match_code_diagnostics(result, df_pog)
+    result = _attach_operational_scope_identity(result)
     return _attach_position_promotion_diagnostics(result)
 
 
