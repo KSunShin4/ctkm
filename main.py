@@ -7,6 +7,9 @@ import importlib.util
 from pathlib import Path
 import sys
 
+import pandas as pd
+from openpyxl import load_workbook
+
 _CORE_NAME = "_ctkm_main_core"
 _CORE_PATH = Path(__file__).with_name("main_core.py")
 
@@ -135,9 +138,114 @@ def _get_or_map(sheet_name, df, schema_section, mapping_logs):
     return _original_get_or_map(sheet_name, df, schema_section, mapping_logs)
 
 
+def _location_issue_rows(df_fefo_actions):
+    if df_fefo_actions is None:
+        return pd.DataFrame()
+    actions = df_fefo_actions.copy()
+    if "in_report_scope" in actions.columns:
+        actions = actions[actions["in_report_scope"].fillna(False).astype(bool)].copy()
+    if actions.empty:
+        return actions
+    completeness = actions.get(
+        "location_completeness",
+        actions.get("location_status", pd.Series("Đủ vị trí", index=actions.index)),
+    )
+    return actions[~completeness.eq("Đủ vị trí")].copy()
+
+
+def _align_location_summary_with_program_sources(summary, df_fefo_actions):
+    """Clarify that location issues cover both Monthly CTKM and Clearance.
+
+    The historical ``So dong CTKM thieu vi tri ke`` key is retained as a legacy
+    alias for API/frontend compatibility. New metrics use the accurate KM wording
+    and provide source-specific CTKM/Clearance breakdowns. Location metrics keep
+    row semantics because their workbook audit sheet also keeps those rows.
+    """
+    if not isinstance(summary, dict) or df_fefo_actions is None:
+        return summary
+
+    issues = _location_issue_rows(df_fefo_actions)
+    item_key = "item_key" if "item_key" in issues.columns else "item_id"
+    sources = issues.get("program_source", pd.Series(index=issues.index, dtype=object))
+    ctkm = issues[sources.eq("CTKM")]
+    clearance = issues[sources.eq("CLEARANCE")]
+
+    total_rows = len(issues)
+    total_items = issues[item_key].nunique() if item_key in issues.columns else 0
+    ctkm_items = ctkm[item_key].nunique() if item_key in ctkm.columns else 0
+    clearance_items = clearance[item_key].nunique() if item_key in clearance.columns else 0
+
+    summary["So dong KM thieu vi tri POG"] = total_rows
+    summary["So item KM thieu vi tri POG"] = total_items
+    summary["So dong CTKM Monthly thieu vi tri POG"] = len(ctkm)
+    summary["So item CTKM Monthly thieu vi tri POG"] = ctkm_items
+    summary["So dong Clearance thieu vi tri POG"] = len(clearance)
+    summary["So item Clearance thieu vi tri POG"] = clearance_items
+
+    # Keep old public keys as total-KM aliases so existing clients remain correct
+    # until they migrate to the explicit generic keys above.
+    if "So dong CTKM thieu vi tri ke" in summary:
+        summary["So dong CTKM thieu vi tri ke"] = total_rows
+    if "So item CTKM thieu vi tri ke" in summary:
+        summary["So item CTKM thieu vi tri ke"] = total_items
+    return summary
+
+
+def _clarify_location_workbook(output_path):
+    """Hide misleading legacy summary aliases while preserving workbook schema."""
+    path = Path(output_path)
+    if not path.is_file():
+        return
+    workbook = load_workbook(path)
+    changed = False
+
+    if "Tom tat" in workbook.sheetnames:
+        ws = workbook["Tom tat"]
+        legacy = {
+            "So dong CTKM thieu vi tri ke",
+            "So item CTKM thieu vi tri ke",
+        }
+        for row in range(2, ws.max_row + 1):
+            if ws.cell(row=row, column=1).value in legacy:
+                ws.row_dimensions[row].hidden = True
+                changed = True
+
+    if "HƯỚNG DẪN" in workbook.sheetnames:
+        ws = workbook["HƯỚNG DẪN"]
+        for row in ws.iter_rows():
+            for cell in row:
+                if cell.value == "Thiếu vị trí":
+                    cell.value = "Thiếu vị trí KM"
+                    changed = True
+
+    if changed:
+        workbook.save(path)
+
+
 _core._infer_standard_fact_mapping = _infer_standard_fact_mapping
 _core._infer_standard_pog_mapping = _infer_standard_pog_mapping
 _core._get_or_map = _get_or_map
+
+# The performance layer already wraps exporter summary counts by unique task_id.
+# Layer the location-source clarification on top without changing the established
+# workbook sheet name, which remains a compatibility surface for existing users.
+_task_aligned_export = _core.EX.export_final_report
+
+
+def _export_with_location_summary(*args, **kwargs):
+    summary = kwargs.get("reconciliation_summary")
+    if summary is None and len(args) > 6:
+        summary = args[6]
+    actions = kwargs.get("df_fefo_actions")
+    if actions is None and len(args) > 9:
+        actions = args[9]
+    _align_location_summary_with_program_sources(summary, actions)
+    output_path = _task_aligned_export(*args, **kwargs)
+    _clarify_location_workbook(output_path)
+    return output_path
+
+
+_core.EX.export_final_report = _export_with_location_summary
 
 for _name in dir(_core):
     if not _name.startswith("__"):
