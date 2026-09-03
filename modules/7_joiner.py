@@ -2,7 +2,10 @@
 """Module 7: Joiner — outer join CTKM x POG theo item_id, ap dieu kien DIMENSION."""
 from __future__ import annotations
 from dataclasses import dataclass
+import re
 import pandas as pd
+
+_SKU_KEY_PAT = re.compile(r"^P\d+$")
 
 @dataclass
 class JoinResult:
@@ -19,6 +22,11 @@ def _item_key(value):
     return key or None
 
 
+def _is_sku_key(value) -> bool:
+    key = _item_key(value)
+    return bool(key and _SKU_KEY_PAT.fullmatch(key))
+
+
 def _with_item_key(frame: pd.DataFrame) -> pd.DataFrame:
     result = frame.copy()
     if "item_key" not in result.columns:
@@ -33,8 +41,9 @@ def _replacement_key_map(frame: pd.DataFrame) -> tuple[dict[str, str], set[str],
 
     Source ``item_id``/``item_key`` stays canonical for reconciliation identity.
     A Pharmacity replacement code is only used as an additional lookup path when
-    both directions are unambiguous. Ambiguous mappings are deliberately ignored
-    rather than silently connecting unrelated SKUs.
+    both directions are unambiguous and both values are real P-code SKUs.
+    Ambiguous/non-SKU mappings are deliberately ignored rather than silently
+    connecting unrelated rows.
     """
     if frame is None or frame.empty or "new_item_key" not in frame.columns:
         return {}, set(), set()
@@ -45,6 +54,8 @@ def _replacement_key_map(frame: pd.DataFrame) -> tuple[dict[str, str], set[str],
         source = _item_key(source_key)
         new = _item_key(new_key)
         if not source or not new or source == new:
+            continue
+        if not _is_sku_key(source) or not _is_sku_key(new):
             continue
         new_to_source.setdefault(new, set()).add(source)
         source_to_new.setdefault(source, set()).add(new)
