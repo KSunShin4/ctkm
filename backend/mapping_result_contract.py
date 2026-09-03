@@ -12,6 +12,24 @@ def install_mapping_result_contract(core_module, validate_mapping) -> None:
     if main_core is None:
         raise RuntimeError("Không tìm thấy _ctkm_main_core để cài mapping result contract")
 
+    def evict_cache(df, schema_section) -> None:
+        prompt_version = main_mod.cfg.GEMINI_CONFIG.get(
+            "prompt_version", "column-mapping-v2"
+        )
+        signature = main_mod.MC.compute_signature(
+            list(df.columns), schema_section, prompt_version
+        )
+        lock = getattr(main_mod.MC, "_CACHE_LOCK", None)
+        load_unlocked = getattr(main_mod.MC, "_load_unlocked", None)
+        save_unlocked = getattr(main_mod.MC, "_save_unlocked", None)
+        if lock is None or not callable(load_unlocked) or not callable(save_unlocked):
+            return
+        with lock:
+            cache = load_unlocked()
+            if signature in cache:
+                del cache[signature]
+                save_unlocked(cache)
+
     def recover_or_validate(original, sheet_name, df, schema_section, mapping_logs):
         before = len(mapping_logs)
         mapping = original(sheet_name, df, schema_section, mapping_logs)
@@ -20,6 +38,9 @@ def install_mapping_result_contract(core_module, validate_mapping) -> None:
         except ValueError as exc:
             entry = mapping_logs[-1] if len(mapping_logs) > before else {}
             source = str(entry.get("source") or "") if isinstance(entry, dict) else ""
+            # The historical mapper writes Gemini output to cache before this new
+            # validator runs. Never retain a mapping that failed the contract.
+            evict_cache(df, schema_section)
             if source != "cache":
                 raise ValueError(
                     f"Mapping cho sheet '{sheet_name}' không đủ an toàn: {exc}"
