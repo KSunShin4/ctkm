@@ -25,6 +25,22 @@ else:
 _performance = importlib.import_module("modules.ctkm_performance")
 _performance.install_performance_patches(_core)
 
+# Standard company-file inference must obey the same two-channel contract even
+# when this helper is used directly, before _process/_ensure_channel_mapping.
+_original_infer_standard_fact_mapping = _core._infer_standard_fact_mapping
+
+
+def _infer_standard_fact_mapping(df):
+    mapping = _original_infer_standard_fact_mapping(df)
+    if not mapping:
+        return mapping
+    return _performance.preserve_both_channel_mappings(
+        mapping, df, normalize_header=_core._normalized_header,
+    )
+
+
+_core._infer_standard_fact_mapping = _infer_standard_fact_mapping
+
 for _name in dir(_core):
     if not _name.startswith("__"):
         globals()[_name] = getattr(_core, _name)
