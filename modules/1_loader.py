@@ -1,341 +1,71 @@
 # -*- coding: utf-8 -*-
-"""Module 1: Loader — doc tho moi sheet, trich pog_snapshot_month tu file POG."""
+"""Loader entrypoint with conservative workbook recovery.
+
+The existing loader logic is preserved in ``loader_core.py``. Normal XLSX files
+are opened byte-for-byte first; defined-name stripping is only a fallback when
+openpyxl cannot parse the original workbook.
+"""
 from __future__ import annotations
-import importlib
-import io, re, zipfile
-import itertools
-import sys
-import threading
-import time
-import xml.etree.ElementTree as ET
-from collections import OrderedDict
-from dataclasses import dataclass, field
+
+import importlib.util
+import io
 from pathlib import Path
-from typing import Optional
-import openpyxl, pandas as pd
-from openpyxl.utils.exceptions import InvalidFileException
-from .config_loader import GARBAGE_CONFIG
+import sys
 
-@dataclass
-class LoadedSheet:
-    sheet_name: str
-    header_row_index: int
-    df: pd.DataFrame
-    source_excel_rows: list[int] = field(default_factory=list)
-    source_file: str = ""
+import openpyxl
 
-@dataclass
-class LoadedWorkbook:
-    sheets: dict = field(default_factory=dict)
-    pog_snapshot_month: Optional[str] = None
+_CORE_NAME = "modules.loader_core"
+_CORE_PATH = Path(__file__).with_name("loader_core.py")
 
-MAX_DATA_ROWS_PER_SHEET = 250_000
-MAX_DATA_COLUMNS = 2_048
-MAX_DATA_CELLS_PER_SHEET = 5_000_000
+if _CORE_NAME in sys.modules:
+    _core = sys.modules[_CORE_NAME]
+else:
+    _spec = importlib.util.spec_from_file_location(_CORE_NAME, _CORE_PATH)
+    if _spec is None or _spec.loader is None:
+        raise ImportError(f"Không nạp được loader core: {_CORE_PATH}")
+    _core = importlib.util.module_from_spec(_spec)
+    sys.modules[_CORE_NAME] = _core
+    _spec.loader.exec_module(_core)
 
-_WORKBOOK_CACHE_TTL_SECONDS = 45.0
-_WORKBOOK_CACHE_MAX_ENTRIES = 4
-_workbook_cache: OrderedDict[tuple, tuple[float, LoadedWorkbook]] = OrderedDict()
-_workbook_cache_lock = threading.Lock()
-
-
-def _install_ctkm_performance_patches() -> None:
-    """Install hot-path replacements once the CTKM orchestrator is fully loaded."""
-    for module_name in ("ctkm_main", "__main__"):
-        main_mod = sys.modules.get(module_name)
-        if main_mod is None:
-            continue
-        if not all(hasattr(main_mod, name) for name in ("RC", "NM", "_build_ctkm_clearance_confirmation")):
-            continue
-        try:
-            performance = importlib.import_module("modules.ctkm_performance")
-            performance.install_performance_patches(main_mod)
-        except Exception:
-            pass
-
-
-def _validate_xlsx_container(filepath: str) -> None:
-    path = Path(filepath)
-    if not path.exists() or not path.is_file():
-        raise ValueError(f"Không tìm thấy file Excel: {path.name}")
-    if path.stat().st_size == 0:
-        raise ValueError(f"File Excel '{path.name}' đang rỗng.")
-    if not zipfile.is_zipfile(path):
-        raise ValueError(
-            f"File '{path.name}' không phải XLSX hợp lệ. File có thể bị hỏng, "
-            "đặt sai đuôi hoặc đang dùng định dạng XLS/XLSB."
-        )
-
-
-def _workbook_cache_key(filepath: str, is_pog_file: bool,
-                        selected_sheet_names: Optional[list[str]]) -> tuple:
-    path = Path(filepath).resolve()
-    stat = path.stat()
-    selected = tuple(selected_sheet_names) if selected_sheet_names else None
-    return (str(path), stat.st_mtime_ns, stat.st_size, bool(is_pog_file), selected)
-
-
-def _take_cached_workbook(key: tuple) -> LoadedWorkbook | None:
-    now = time.monotonic()
-    with _workbook_cache_lock:
-        for stale_key, (stored_at, _value) in list(_workbook_cache.items()):
-            if now - stored_at > _WORKBOOK_CACHE_TTL_SECONDS:
-                _workbook_cache.pop(stale_key, None)
-        cached = _workbook_cache.pop(key, None)
-    return None if cached is None else cached[1]
-
-
-def _store_cached_workbook(key: tuple, workbook: LoadedWorkbook) -> None:
-    with _workbook_cache_lock:
-        _workbook_cache[key] = (time.monotonic(), workbook)
-        _workbook_cache.move_to_end(key)
-        while len(_workbook_cache) > _WORKBOOK_CACHE_MAX_ENTRIES:
-            _workbook_cache.popitem(last=False)
+for _name in dir(_core):
+    if not _name.startswith("__"):
+        globals()[_name] = getattr(_core, _name)
 
 
 def _open_workbook_safely(filepath: str):
-    _validate_xlsx_container(filepath)
+    """Open the original workbook first and repair only after a parser failure."""
+    _core._validate_xlsx_container(filepath)
+    original_error = None
     try:
-        safe = _strip_broken_defined_names(filepath)
         workbook = openpyxl.load_workbook(
-            io.BytesIO(safe), data_only=True, read_only=True, keep_links=False
+            filepath, data_only=True, read_only=True, keep_links=False
         )
-    except (zipfile.BadZipFile, InvalidFileException, KeyError, OSError, ValueError) as exc:
-        message = str(exc).lower()
-        if "encrypt" in message or "password" in message or "agile" in message:
+    except Exception as exc:  # openpyxl/lxml expose several parser exception types
+        original_error = exc
+        try:
+            safe = _core._strip_broken_defined_names(filepath)
+            workbook = openpyxl.load_workbook(
+                io.BytesIO(safe), data_only=True, read_only=True, keep_links=False
+            )
+        except Exception as repaired_exc:
+            message = f"{original_error} {repaired_exc}".lower()
+            if "encrypt" in message or "password" in message or "agile" in message:
+                raise ValueError(
+                    f"File Excel '{Path(filepath).name}' đang được mã hóa/đặt mật khẩu. "
+                    "Hãy bỏ mật khẩu rồi tải lại."
+                ) from repaired_exc
             raise ValueError(
-                f"File Excel '{Path(filepath).name}' đang được mã hóa/đặt mật khẩu. "
-                "Hãy bỏ mật khẩu rồi tải lại."
-            ) from exc
-        raise ValueError(
-            f"Không thể mở file Excel '{Path(filepath).name}'. File có thể bị hỏng "
-            f"hoặc không đúng chuẩn XLSX: {exc}"
-        ) from exc
+                f"Không thể mở file Excel '{Path(filepath).name}'. File có thể bị hỏng "
+                f"hoặc không đúng chuẩn XLSX: {repaired_exc}"
+            ) from repaired_exc
+
     if not workbook.sheetnames:
         workbook.close()
         raise ValueError(f"File Excel '{Path(filepath).name}' không có sheet nào.")
     return workbook
 
 
-def _strip_broken_defined_names(filepath: str) -> bytes:
-    with open(filepath, "rb") as f:
-        raw = f.read()
-    buf = io.BytesIO(raw)
-    try:
-        zin = zipfile.ZipFile(buf, "r")
-        data = {n: zin.read(n) for n in zin.namelist()}
-        zin.close()
-    except zipfile.BadZipFile:
-        return raw
-    if "xl/workbook.xml" not in data:
-        return raw
-    wb_xml = data["xl/workbook.xml"].decode("utf-8", errors="ignore")
-    if "<definedNames>" not in wb_xml:
-        return raw
-    data["xl/workbook.xml"] = re.sub(
-        r"<definedNames>.*?</definedNames>", "", wb_xml, flags=re.DOTALL
-    ).encode("utf-8")
-    out = io.BytesIO()
-    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zout:
-        for n, c in data.items():
-            zout.writestr(n, c)
-    return out.getvalue()
-
-
-def _detect_header_row(ws, scan_n, min_ratio) -> int:
-    max_row = ws.max_row or scan_n
-    rows = list(ws.iter_rows(min_row=1, max_row=min(scan_n, max_row), values_only=True))
-    return _detect_header_from_rows(rows, min_ratio)
-
-
-def _detect_header_from_rows(rows, min_ratio) -> int:
-    best, best_ratio = 0, -1.0
-    for r_idx, row in enumerate(rows, start=1):
-        values = list(row)
-        nn = sum(1 for v in values if v not in (None, ""))
-        width = max(len(values), 1)
-        ratio = nn / width
-        if ratio > best_ratio:
-            best_ratio, best = ratio, r_idx - 1
-    return best if best_ratio >= min_ratio else 0
-
-
-def _is_garbage(row_values) -> bool:
-    """Legacy helper for metadata/header inspection only.
-
-    Post-header rows are never removed based on guessed text such as TOTAL or
-    Applied filter; user source rows must not disappear silently.
-    """
-    cells = [str(v).strip().lower() for v in row_values if v is not None and str(v).strip()]
-    if not cells:
-        return GARBAGE_CONFIG.get("garbage_row_if_first_cell_empty_and_rest_empty", True)
-    eq_set  = set(GARBAGE_CONFIG.get("garbage_row_if_any_cell_equals", []))
-    contains = GARBAGE_CONFIG.get("garbage_row_if_any_cell_contains", [])
-    for c in cells:
-        if c in eq_set or any(p in c for p in contains):
-            return True
-    return False
-
-
-def _make_unique_headers(headers):
-    counts = {}
-    unique = []
-    for header in headers:
-        base = header or "__unnamed_col"
-        counts[base] = counts.get(base, 0) + 1
-        if counts[base] == 1:
-            unique.append(base)
-        else:
-            unique.append(f"{base}__{counts[base]}")
-    return unique
-
-
-def _extract_pog_snapshot_month_from_values(row_values) -> Optional[str]:
-    pat = re.compile(r"(\d{1,2})/(\d{1,2})/(\d{4})")
-    for value in row_values:
-        if value is None:
-            continue
-        text = str(value)
-        lower = text.lower()
-        if "applied filter" not in lower and "dateid" not in lower:
-            continue
-        match = pat.search(text)
-        if not match:
-            continue
-        month, _day, year = match.group(1), match.group(2), match.group(3)
-        try:
-            return f"{int(year):04d}-{int(month):02d}"
-        except ValueError:
-            continue
-    return None
-
-
-def _extract_pog_snapshot_month(ws) -> Optional[str]:
-    for row in ws.iter_rows(values_only=True):
-        month = _extract_pog_snapshot_month_from_values(row)
-        if month:
-            return month
-    return None
-
-
-def _repair_read_only_dimensions(ws) -> None:
-    if ws.max_row is None or ws.max_column is None:
-        ws.calculate_dimension(force=True)
-    elif ws.max_column > 2048:
-        ws.reset_dimensions()
-
-
-def inspect_workbook_sheets(filepath: str) -> list[str]:
-    _validate_xlsx_container(filepath)
-    try:
-        with zipfile.ZipFile(filepath, "r") as archive:
-            root = ET.fromstring(archive.read("xl/workbook.xml"))
-        names = [
-            node.attrib.get("name", "").strip()
-            for node in root.findall(".//{http://schemas.openxmlformats.org/spreadsheetml/2006/main}sheet")
-            if node.attrib.get("name", "").strip()
-        ]
-    except (zipfile.BadZipFile, KeyError, ET.ParseError) as exc:
-        raise ValueError(
-            f"Không đọc được danh sách sheet của file '{Path(filepath).name}': {exc}"
-        ) from exc
-    if not names:
-        raise ValueError(f"File Excel '{Path(filepath).name}' không có sheet nào.")
-    return names
-
-
-def load_workbook_raw(filepath: str, is_pog_file: bool = False,
-                      selected_sheet_names: Optional[list[str]] = None) -> LoadedWorkbook:
-    _install_ctkm_performance_patches()
-    _validate_xlsx_container(filepath)
-    cache_key = _workbook_cache_key(filepath, is_pog_file, selected_sheet_names)
-    cached = _take_cached_workbook(cache_key)
-    if cached is not None:
-        return cached
-
-    wb = _open_workbook_safely(filepath)
-    result = LoadedWorkbook()
-    cfg = GARBAGE_CONFIG["header_row_detection"]
-    scan_n, min_ratio = cfg["scan_first_n_rows"], cfg["min_non_null_ratio"]
-    selected = list(dict.fromkeys(selected_sheet_names or wb.sheetnames))
-    missing = [name for name in selected if name not in wb.sheetnames]
-    if missing:
-        wb.close()
-        raise ValueError(
-            f"Không tìm thấy sheet đã chọn: {', '.join(missing)}. "
-            f"Sheet có sẵn: {', '.join(wb.sheetnames)}"
-        )
-    for sn in selected:
-        _repair_read_only_dimensions(wb[sn])
-
-    try:
-        for sn in selected:
-            ws = wb[sn]
-            row_iterator = ws.iter_rows(values_only=True)
-            scanned_rows = list(itertools.islice(row_iterator, scan_n))
-
-            if is_pog_file and result.pog_snapshot_month is None:
-                for scanned_row in scanned_rows:
-                    snapshot = _extract_pog_snapshot_month_from_values(scanned_row)
-                    if snapshot:
-                        result.pog_snapshot_month = snapshot
-                        break
-
-            hi = _detect_header_from_rows(scanned_rows, min_ratio)
-            header_row = list(scanned_rows[hi]) if hi < len(scanned_rows) else []
-            last_used = -1
-            for idx, value in enumerate(header_row):
-                if value not in (None, ""):
-                    last_used = idx
-            headers = []
-            for c in range(0, last_used + 1):
-                h = header_row[c] if c < len(header_row) else None
-                headers.append(str(h).strip() if h and str(h).strip() else f"__unnamed_col_{c}")
-            headers = _make_unique_headers(headers)
-            if len(headers) > MAX_DATA_COLUMNS:
-                raise ValueError(
-                    f"Sheet '{sn}' có {len(headers):,} cột dữ liệu, vượt giới hạn "
-                    f"{MAX_DATA_COLUMNS:,}. Hãy xóa các cột định dạng dư trong Excel."
-                )
-            rows = []
-            source_excel_rows = []
-            scanned_data = enumerate(scanned_rows[hi + 1:], start=hi + 2)
-            remaining_data = enumerate(row_iterator, start=len(scanned_rows) + 1)
-            data_iterator = itertools.chain(scanned_data, remaining_data)
-            for excel_row, row in data_iterator:
-                if is_pog_file and result.pog_snapshot_month is None:
-                    snapshot = _extract_pog_snapshot_month_from_values(row)
-                    if snapshot:
-                        result.pog_snapshot_month = snapshot
-                vals = list(row[:len(headers)]) if len(headers) else []
-                # Only completely blank rows are structural emptiness. Do not
-                # infer that a populated business row is garbage from its text.
-                if all(v is None or str(v).strip() == '' for v in vals):
-                    continue
-                rows.append(vals)
-                source_excel_rows.append(excel_row)
-                if (
-                    len(rows) > MAX_DATA_ROWS_PER_SHEET
-                    or len(rows) * max(len(headers), 1) > MAX_DATA_CELLS_PER_SHEET
-                ):
-                    raise ValueError(
-                        f"Sheet '{sn}' quá lớn để xử lý an toàn "
-                        f"(giới hạn {MAX_DATA_ROWS_PER_SHEET:,} dòng hoặc "
-                        f"{MAX_DATA_CELLS_PER_SHEET:,} ô dữ liệu)."
-                    )
-            df = pd.DataFrame(rows, columns=headers) if rows else pd.DataFrame(columns=headers)
-            result.sheets[sn] = LoadedSheet(
-                sn, hi, df, source_excel_rows=source_excel_rows,
-                source_file=Path(filepath).name,
-            )
-    finally:
-        wb.close()
-
-    if not any(not sheet.df.empty for sheet in result.sheets.values()):
-        raise ValueError(
-            f"File Excel '{Path(filepath).name}' không có sheet dữ liệu đọc được. "
-            "Hãy kiểm tra dòng tiêu đề và dữ liệu trong file."
-        )
-
-    _store_cached_workbook(cache_key, result)
-    return result
+# load_workbook_raw resolves this helper in loader_core globals.
+_core._open_workbook_safely = _open_workbook_safely
+load_workbook_raw = _core.load_workbook_raw
+inspect_workbook_sheets = _core.inspect_workbook_sheets
