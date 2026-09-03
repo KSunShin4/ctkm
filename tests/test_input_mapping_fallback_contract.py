@@ -1,4 +1,6 @@
 from io import BytesIO
+import importlib.util
+from pathlib import Path
 from types import SimpleNamespace
 
 import pandas as pd
@@ -7,10 +9,10 @@ from fastapi import HTTPException
 from openpyxl import Workbook
 
 from backend import input_contract
-from backend.input_contract import (
-    _validate_xlsx_container,
+from backend.input_contract import _validate_xlsx_container, validate_output_columns
+from backend.mapping_validation import (
+    MULTI_SOURCE_CANONICAL_FIELDS,
     validate_manual_mapping,
-    validate_output_columns,
 )
 from backend.mapping_result_contract import install_mapping_result_contract
 
@@ -18,8 +20,10 @@ from backend.mapping_result_contract import install_mapping_result_contract
 FACT_SCHEMA = {
     "item_id": {"required": True},
     "campaign_name": {"required": True},
+    "campaign_detail": {"required": False},
     "promo_from": {"required": True},
     "promo_to": {"required": True},
+    "promo_price": {"required": False},
     "channel": {"required": False},
     "source_sheet": {"required": False, "auto_filled": True},
 }
@@ -41,6 +45,15 @@ def _xlsx_bytes():
     return buffer.getvalue()
 
 
+def _load_normalizer_module():
+    path = Path("modules/5_normalizer.py")
+    spec = importlib.util.spec_from_file_location("_test_ctkm_normalizer", path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec is not None and spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
 def test_xlsx_container_is_validated_before_workbook_processing():
     content = _xlsx_bytes()
     assert _validate_xlsx_container(content, "File CTKM") == content
@@ -51,7 +64,7 @@ def test_xlsx_container_is_validated_before_workbook_processing():
     assert "không phải workbook .xlsx hợp lệ" in str(exc.value.detail)
 
 
-def test_manual_mapping_requires_all_required_fields_and_one_to_one_targets():
+def test_manual_mapping_requires_all_required_fields_and_one_to_one_identity_targets():
     df = pd.DataFrame(columns=["Item", "Campaign", "From", "To", "Other"])
     valid = {
         "Item": "item_id",
@@ -75,6 +88,48 @@ def test_manual_mapping_requires_all_required_fields_and_one_to_one_targets():
 
     with pytest.raises(ValueError, match="cột nguồn không tồn tại"):
         validate_manual_mapping({**valid, "Missing": "channel"}, df, FACT_SCHEMA)
+
+
+def test_intentional_multi_promo_targets_remain_compatible_with_normalizer_unpivot():
+    normalizer = _load_normalizer_module()
+    assert MULTI_SOURCE_CANONICAL_FIELDS == normalizer.UNPIVOTABLE_FIELDS
+
+    frame = pd.DataFrame([{
+        "Item": "P1001",
+        "Campaign": "Promo",
+        "From": "2026-09-01",
+        "To": "2026-09-30",
+        "Detail 1": "Buy 1",
+        "Detail 2": "Buy 2",
+        "Price 1": 100,
+        "Price 2": 80,
+    }])
+    mapping = {
+        "Item": "item_id",
+        "Campaign": "campaign_name",
+        "From": "promo_from",
+        "To": "promo_to",
+        "Detail 1": "campaign_detail",
+        "Detail 2": "campaign_detail",
+        "Price 1": "promo_price",
+        "Price 2": "promo_price",
+    }
+
+    assert validate_manual_mapping(mapping, frame, FACT_SCHEMA) == mapping
+    mapped = normalizer.apply_mapping(frame, mapping)
+    mapped["source_row_id"] = "CTKM:Sheet1:2"
+    assert {"campaign_detail__1", "campaign_detail__2"}.issubset(mapped.columns)
+    assert {"promo_price__1", "promo_price__2"}.issubset(mapped.columns)
+
+    unpivoted, warnings = normalizer.unpivot_multi_promo(mapped)
+    assert warnings == []
+    assert len(unpivoted) == 2
+    assert unpivoted["campaign_detail"].tolist() == ["Buy 1", "Buy 2"]
+    assert unpivoted["promo_price"].tolist() == [100, 80]
+    assert unpivoted["promo_slot_id"].tolist() == [1, 2]
+    assert unpivoted["source_row_id"].tolist() == [
+        "CTKM:Sheet1:2:slot-1", "CTKM:Sheet1:2:slot-2"
+    ]
 
 
 def test_selected_output_columns_are_canonical_unique_strings():
@@ -108,7 +163,9 @@ def test_stale_preset_falls_back_to_deterministic_mapping_without_gemini():
         _core=fake_main_core,
         _infer_standard_fact_mapping=lambda frame: valid,
         _infer_standard_pog_mapping=lambda frame: {},
-        CM=SimpleNamespace(), cfg=SimpleNamespace(), MC=SimpleNamespace(),
+        CM=SimpleNamespace(),
+        cfg=SimpleNamespace(GEMINI_CONFIG={"prompt_version": "v-test"}),
+        MC=SimpleNamespace(get_cached_mapping=lambda *_args, **_kwargs: None),
     )
     core = SimpleNamespace(
         app=SimpleNamespace(state=SimpleNamespace()),
@@ -121,6 +178,38 @@ def test_stale_preset_falls_back_to_deterministic_mapping_without_gemini():
     )
     assert mapping == valid
     assert source == "standard-fact-after-stale-preset"
+
+
+def test_validated_cache_is_a_zero_gemini_preflight_source():
+    df = pd.DataFrame(columns=["Item", "Campaign", "From", "To"])
+    valid = {
+        "Item": "item_id",
+        "Campaign": "campaign_name",
+        "From": "promo_from",
+        "To": "promo_to",
+    }
+    fake_main_core = SimpleNamespace(
+        _get_or_map=lambda *args, **kwargs: valid,
+        _ctkm_main_facade_baseline={"get_or_map": lambda *args, **kwargs: valid},
+    )
+    fake_main = SimpleNamespace(
+        _core=fake_main_core,
+        _infer_standard_fact_mapping=lambda frame: {},
+        _infer_standard_pog_mapping=lambda frame: {},
+        CM=SimpleNamespace(),
+        cfg=SimpleNamespace(GEMINI_CONFIG={"prompt_version": "v-test"}),
+        MC=SimpleNamespace(
+            get_cached_mapping=lambda *_args, **_kwargs: {"mapping": valid},
+        ),
+    )
+    core = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace()), _main_mod=fake_main)
+
+    install_mapping_result_contract(core, validate_manual_mapping)
+    mapping, source = input_contract._mapping_or_none(
+        fake_main, df, FACT_SCHEMA, None, None, kind="fact"
+    )
+    assert mapping == valid
+    assert source == "cache"
 
 
 def test_invalid_cache_is_recovered_once_then_validated_before_use():
