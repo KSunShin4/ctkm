@@ -10,6 +10,7 @@ import sys
 import pandas as pd
 from openpyxl import load_workbook
 
+from modules.facade_contracts import run_post_facade_hooks
 from modules.item_code_identity import build_transition_identity, canonical_series
 
 _CORE_NAME = "_ctkm_main_core"
@@ -499,6 +500,11 @@ def _export_with_location_summary(*args, **kwargs):
 
 
 _core.EX.export_final_report = _export_with_location_summary
+
+# Backend/runtime contracts can register hooks that must survive a second facade
+# execution under another module name. Reapply them only after this facade has
+# rebuilt its raw wrappers, then export the hardened core surface below.
+_post_facade_hooks = run_post_facade_hooks(_core, sys.modules.get(__name__))
 
 for _name in dir(_core):
     if not _name.startswith("__"):
