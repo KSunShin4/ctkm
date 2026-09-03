@@ -48,6 +48,20 @@ _SUMMARY_KEYS_TO_VERIFY = (
     "So item POG khong co KM phu hop",
 )
 
+_LEGACY_CANONICAL_PAIRS = (
+    ("So dong CTKM thieu vi tri ke", "So dong KM thieu vi tri POG"),
+    ("So item CTKM thieu vi tri ke", "So item KM thieu vi tri POG"),
+    ("So dong POG khong co CTKM phu hop", "So dong POG khong co KM phu hop"),
+    ("So item POG khong co CTKM phu hop", "So item POG khong co KM phu hop"),
+)
+
+_SUMMARY_SHEET_COUNT_PAIRS = (
+    ("So dong KM thieu vi tri POG", "CTKM thieu vi tri ke"),
+    ("So dong can kiem tra vi tri", "POG cần kiểm tra"),
+    ("So dong cho gan", "Chờ gắn"),
+    ("So dong can review", "Cần review"),
+)
+
 _GUIDE_TARGETS = {
     "Gắn tem": "Gắn tem",
     "Tháo tem": "Tháo tem",
@@ -60,6 +74,13 @@ _GUIDE_TARGETS = {
     "Xác nhận CTKM / Clearance": "Xác nhận CTKM Clearance",
 }
 
+_LEGACY_HIDDEN_SUMMARY_KEYS = {
+    "So dong CTKM thieu vi tri ke",
+    "So item CTKM thieu vi tri ke",
+    "So dong POG khong co CTKM phu hop",
+    "So item POG khong co CTKM phu hop",
+}
+
 
 def _summary_from_sheet(ws) -> dict:
     result = {}
@@ -68,6 +89,15 @@ def _summary_from_sheet(ws) -> dict:
         if key is None or not str(key).strip():
             continue
         result[str(key)] = ws.cell(row=row, column=2).value
+    return result
+
+
+def _summary_row_indexes(ws) -> dict[str, int]:
+    result = {}
+    for row in range(2, (ws.max_row or 0) + 1):
+        key = ws.cell(row=row, column=1).value
+        if key is not None and str(key).strip():
+            result[str(key)] = row
     return result
 
 
@@ -104,7 +134,8 @@ def validate_ctkm_workbook(path: str | Path, summary: dict | None) -> None:
                 raise RuntimeError(f"{metadata_name} phải được ẩn trong workbook kết quả.")
 
         summary_dict = summary if isinstance(summary, dict) else {}
-        workbook_summary = _summary_from_sheet(workbook["Tom tat"])
+        summary_ws = workbook["Tom tat"]
+        workbook_summary = _summary_from_sheet(summary_ws)
         for key in _SUMMARY_KEYS_TO_VERIFY:
             if key not in summary_dict:
                 continue
@@ -114,6 +145,31 @@ def validate_ctkm_workbook(path: str | Path, summary: dict | None) -> None:
                 raise RuntimeError(
                     f"Tom tat không khớp summary cho '{key}': "
                     f"API={summary_dict[key]!r}, Excel={workbook_summary[key]!r}"
+                )
+
+        for legacy_key, canonical_key in _LEGACY_CANONICAL_PAIRS:
+            if legacy_key in summary_dict and canonical_key in summary_dict:
+                if not _same_value(summary_dict[legacy_key], summary_dict[canonical_key]):
+                    raise RuntimeError(
+                        f"Summary legacy '{legacy_key}' lệch canonical '{canonical_key}'."
+                    )
+
+        summary_rows = _summary_row_indexes(summary_ws)
+        for legacy_key in _LEGACY_HIDDEN_SUMMARY_KEYS:
+            row = summary_rows.get(legacy_key)
+            if row is not None and not bool(summary_ws.row_dimensions[row].hidden):
+                raise RuntimeError(
+                    f"Tom tat phải ẩn legacy metric '{legacy_key}' để tránh nhãn sai nghĩa."
+                )
+
+        for summary_key, sheet_name in _SUMMARY_SHEET_COUNT_PAIRS:
+            if summary_key not in summary_dict:
+                continue
+            sheet_count = visible_data_row_count(workbook[sheet_name])
+            if not _same_value(summary_dict[summary_key], sheet_count):
+                raise RuntimeError(
+                    f"Summary '{summary_key}' không khớp sheet '{sheet_name}': "
+                    f"API={summary_dict[summary_key]!r}, rows={sheet_count}"
                 )
 
         guide = workbook["HƯỚNG DẪN"]
