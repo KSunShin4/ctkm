@@ -17,9 +17,34 @@ if (fileNameDescriptor?.get && fileNameDescriptor.configurable) {
 }
 
 const nativeFetch = window.fetch.bind(window)
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
+
 window.fetch = async (...args) => {
-  const response = await nativeFetch(...args)
   const requestUrl = String(args[0] instanceof Request ? args[0].url : args[0] || '')
+  const requestMethod = String(
+    args[1]?.method || (args[0] instanceof Request ? args[0].method : 'GET') || 'GET'
+  ).toUpperCase()
+  const retryableRead = requestMethod === 'GET' && (
+    requestUrl.includes('/api/job/') ||
+    requestUrl.includes('/api/queue/status') ||
+    requestUrl.includes('/api/preview/')
+  )
+
+  let response
+  for (let attempt = 0; attempt < (retryableRead ? 3 : 1); attempt += 1) {
+    try {
+      response = await nativeFetch(...args)
+    } catch (error) {
+      if (!retryableRead || attempt >= 2) throw error
+      await sleep(350 * (attempt + 1))
+      continue
+    }
+    if (retryableRead && response.status >= 500 && attempt < 2) {
+      await sleep(350 * (attempt + 1))
+      continue
+    }
+    break
+  }
 
   // App.jsx expects API error responses to be JSON. Render/proxies may return a
   // plain-text or HTML 5xx body instead (for example "Internal Server Error").
@@ -70,6 +95,25 @@ const SUMMARY_LABEL_REWRITES = new Map([
   ['POG không có CTKM phù hợp', 'POG không có KM phù hợp'],
   ['Cảnh báo trùng thời gian', 'Sản phẩm có cảnh báo trùng thời gian'],
 ])
+const TEXT_REWRITES = new Map([
+  ['Chỉ dùng mapping đã lưu (không gọi Gemini)', 'Không gọi Gemini (mapping chuẩn/đã lưu)'],
+  ['Gemini nhận diện cột…', 'Nhận diện và kiểm tra mapping cột…'],
+])
+
+const rewriteTextNodes = root => {
+  if (!root || typeof document.createTreeWalker !== 'function') return
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+  let node = walker.nextNode()
+  while (node) {
+    const raw = node.nodeValue || ''
+    const trimmed = raw.trim()
+    const replacement = TEXT_REWRITES.get(trimmed)
+    if (replacement && trimmed !== replacement) {
+      node.nodeValue = raw.replace(trimmed, replacement)
+    }
+    node = walker.nextNode()
+  }
+}
 
 const rewriteLegacyUiText = root => {
   root?.querySelectorAll?.('.stat-label').forEach(node => {
@@ -91,6 +135,7 @@ const rewriteLegacyUiText = root => {
     const replacement = `${match[1]} CTKM theo hóa đơn · không tính thiếu POG`
     if (text !== replacement) sub.textContent = replacement
   })
+  rewriteTextNodes(root)
 }
 
 const rootElement = document.getElementById('root')
