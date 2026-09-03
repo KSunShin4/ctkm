@@ -65,7 +65,7 @@ def test_action_sheet_places_both_channels_before_technical_ids():
     ]
 
 
-def test_selected_output_columns_always_keep_both_channels():
+def test_selected_output_is_a_filter_and_keeps_identifier_first_with_both_channels():
     perf = _performance_module()
     frame = pd.DataFrame({
         "item_id": ["P1"],
@@ -77,4 +77,23 @@ def test_selected_output_columns_always_keep_both_channels():
 
     result = perf.filter_selected_columns_keep_channels(frame, ["item_name"])
 
-    assert list(result.columns) == ["item_name", "item_id", "key_channel", "channel"]
+    assert list(result.columns) == ["item_id", "item_name", "key_channel", "channel"]
+
+
+def test_selected_output_does_not_reorder_columns_by_checkbox_click_sequence():
+    perf = _performance_module()
+    frame = pd.DataFrame({
+        "item_id": ["P1"],
+        "item_name": ["Thuốc A"],
+        "campaign_name": ["CTKM A"],
+        "key_channel": ["Offline"],
+        "channel": ["OFFLINE"],
+    })
+
+    result = perf.filter_selected_columns_keep_channels(
+        frame, ["campaign_name", "item_name"]
+    )
+
+    assert list(result.columns) == [
+        "item_id", "item_name", "campaign_name", "key_channel", "channel"
+    ]
