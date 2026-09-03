@@ -2,10 +2,19 @@ import React from 'react'
 import ReactDOM from 'react-dom/client'
 import App from './App.jsx'
 
+// Compatibility patches must stay flat across Vite HMR/module re-execution.
+// Keep only native browser primitives and the React root globally; recreate the
+// current wrapper from those primitives instead of wrapping a previous wrapper.
+const COMPAT_KEY = '__ctkmCompatibilityV1'
+const compat = globalThis[COMPAT_KEY] || (globalThis[COMPAT_KEY] = {})
+
 // App.jsx historically checks drag-dropped filenames with a lowercase `.xlsx`
 // suffix. Normalize only that suffix at the File API boundary so `.XLSX` works
 // without changing the large UI component or any non-Excel filename.
-const fileNameDescriptor = Object.getOwnPropertyDescriptor(File.prototype, 'name')
+if (!compat.nativeFileNameDescriptor) {
+  compat.nativeFileNameDescriptor = Object.getOwnPropertyDescriptor(File.prototype, 'name')
+}
+const fileNameDescriptor = compat.nativeFileNameDescriptor
 if (fileNameDescriptor?.get && fileNameDescriptor.configurable) {
   Object.defineProperty(File.prototype, 'name', {
     ...fileNameDescriptor,
@@ -16,10 +25,11 @@ if (fileNameDescriptor?.get && fileNameDescriptor.configurable) {
   })
 }
 
-const nativeFetch = window.fetch.bind(window)
+if (!compat.nativeFetch) compat.nativeFetch = window.fetch.bind(window)
+const nativeFetch = compat.nativeFetch
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 
-window.fetch = async (...args) => {
+const compatibilityFetch = async (...args) => {
   const requestUrl = String(args[0] instanceof Request ? args[0].url : args[0] || '')
   const requestMethod = String(
     args[1]?.method || (args[0] instanceof Request ? args[0].method : 'GET') || 'GET'
@@ -86,6 +96,9 @@ window.fetch = async (...args) => {
     return response
   }
 }
+compatibilityFetch.__ctkmCompatibilityFetchV1 = true
+compat.fetchWrapper = compatibilityFetch
+window.fetch = compatibilityFetch
 
 // Keep legacy App.jsx text aligned with current backend contracts without a risky
 // full-file rewrite. Values already come from the correct API keys; only labels
@@ -160,8 +173,11 @@ const rewriteLegacyUiText = root => {
 }
 
 const rootElement = document.getElementById('root')
+compat.labelObserver?.disconnect?.()
 const labelObserver = new MutationObserver(() => rewriteLegacyUiText(rootElement))
 labelObserver.observe(rootElement, { childList: true, subtree: true, characterData: true })
+compat.labelObserver = labelObserver
 
-ReactDOM.createRoot(rootElement).render(<App />)
+if (!compat.reactRoot) compat.reactRoot = ReactDOM.createRoot(rootElement)
+compat.reactRoot.render(<App />)
 queueMicrotask(() => rewriteLegacyUiText(rootElement))
