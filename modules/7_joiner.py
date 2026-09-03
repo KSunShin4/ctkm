@@ -28,6 +28,51 @@ def _with_item_key(frame: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
+def _replacement_key_map(frame: pd.DataFrame) -> tuple[dict[str, str], set[str], set[str]]:
+    """Return only one-to-one new-code -> source-code aliases.
+
+    Source ``item_id``/``item_key`` stays canonical for reconciliation identity.
+    A Pharmacity replacement code is only used as an additional lookup path when
+    both directions are unambiguous. Ambiguous mappings are deliberately ignored
+    rather than silently connecting unrelated SKUs.
+    """
+    if frame is None or frame.empty or "new_item_key" not in frame.columns:
+        return {}, set(), set()
+
+    new_to_source: dict[str, set[str]] = {}
+    source_to_new: dict[str, set[str]] = {}
+    for source_key, new_key in zip(frame.get("item_key", []), frame["new_item_key"]):
+        source = _item_key(source_key)
+        new = _item_key(new_key)
+        if not source or not new or source == new:
+            continue
+        new_to_source.setdefault(new, set()).add(source)
+        source_to_new.setdefault(source, set()).add(new)
+
+    ambiguous_new = {key for key, values in new_to_source.items() if len(values) != 1}
+    ambiguous_source = {key for key, values in source_to_new.items() if len(values) != 1}
+    mapping = {}
+    for new, source_values in new_to_source.items():
+        if new in ambiguous_new:
+            continue
+        source = next(iter(source_values))
+        if source in ambiguous_source:
+            continue
+        mapping[new] = source
+    return mapping, ambiguous_new, ambiguous_source
+
+
+def _remap_pog_replacement_keys(source_ctkm: pd.DataFrame, source_pog: pd.DataFrame) -> pd.DataFrame:
+    result = source_pog.copy()
+    mapping, _ambiguous_new, _ambiguous_source = _replacement_key_map(source_ctkm)
+    if not mapping or "item_key" not in result.columns:
+        return result
+    result["item_key"] = result["item_key"].map(
+        lambda value: mapping.get(_item_key(value), _item_key(value))
+    )
+    return result
+
+
 def _add_display_item_id(frame: pd.DataFrame, *, prefer_ctkm: bool) -> pd.DataFrame:
     result = frame.copy()
     primary = "item_id__ctkm" if prefer_ctkm else "item_id__pog"
@@ -76,6 +121,7 @@ def join_ctkm_pog(df_ctkm, df_pog) -> JoinResult:
         raise ValueError("df_pog thieu cot 'item_id'.")
     source_ctkm = _with_item_key(df_ctkm)
     source_pog = _with_item_key(df_pog)
+    source_pog = _remap_pog_replacement_keys(source_ctkm, source_pog)
 
     # Control rows are not business POG positions and must not distort POG-only
     # counts or appear as false missing-item review errors. Keep them attached to
