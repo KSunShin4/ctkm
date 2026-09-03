@@ -2,6 +2,12 @@
 """Validate mapping results and reject sheets with no business rows."""
 from __future__ import annotations
 
+from modules.facade_contracts import register_post_facade_hook
+
+
+_HOOK_NAME = "mapping-result-contract-v1"
+_WRAPPER_MARKER = "_ctkm_mapping_result_contract_v1"
+
 
 def install_mapping_result_contract(core_module, validate_mapping) -> None:
     if getattr(core_module.app.state, "mapping_result_contract_v1", False):
@@ -122,32 +128,30 @@ def install_mapping_result_contract(core_module, validate_mapping) -> None:
         validate_business_presence(sheet_name, df, checked, schema_section)
         return checked
 
-    # Current facade wrapper includes deterministic Pharmacity mapping before the
-    # historical cache/Gemini fallback. Validate its final result today.
-    current_get_or_map = main_core._get_or_map
+    def apply_get_or_map_contract(core, facade_module=None) -> None:
+        """Wrap the current facade mapper, never the immutable facade baseline."""
+        current = core._get_or_map
+        if getattr(current, _WRAPPER_MARKER, False):
+            if facade_module is not None:
+                facade_module._get_or_map = current
+            return
 
-    def validated_current(sheet_name, df, schema_section, mapping_logs):
-        return recover_or_validate(
-            current_get_or_map, sheet_name, df, schema_section, mapping_logs
-        )
-
-    main_core._get_or_map = validated_current
-    main_mod._get_or_map = validated_current
-
-    # main.py can be executed later under another module name. Its import-order
-    # baseline is what a future facade wrapper will call after deterministic
-    # inference, so harden that baseline as well instead of allowing reload to
-    # bypass this contract.
-    baseline = getattr(main_core, "_ctkm_main_facade_baseline", None)
-    if isinstance(baseline, dict) and callable(baseline.get("get_or_map")):
-        old_baseline = baseline["get_or_map"]
-
-        def validated_baseline(sheet_name, df, schema_section, mapping_logs):
+        def validated_current(sheet_name, df, schema_section, mapping_logs):
             return recover_or_validate(
-                old_baseline, sheet_name, df, schema_section, mapping_logs
+                current, sheet_name, df, schema_section, mapping_logs
             )
 
-        baseline["get_or_map"] = validated_baseline
+        setattr(validated_current, _WRAPPER_MARKER, True)
+        validated_current.__wrapped__ = current
+        core._get_or_map = validated_current
+        if facade_module is not None:
+            facade_module._get_or_map = validated_current
+
+    # Register once on the shared core. The initial API import has already built
+    # main.py, so apply immediately; future facade executions invoke the same hook
+    # after rebuilding their raw wrappers.
+    register_post_facade_hook(main_core, _HOOK_NAME, apply_get_or_map_contract)
+    apply_get_or_map_contract(main_core, main_mod)
 
     # Preflight should not let a stale saved preset poison a standard workbook.
     # Resolve without AI in this order: manual -> saved preset -> deterministic
