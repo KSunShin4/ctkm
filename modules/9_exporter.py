@@ -22,6 +22,17 @@ else:
 
 _performance = importlib.import_module("modules.ctkm_performance")
 _original_hide = _core._hide_technical_columns
+_original_shelf_colors = _core._apply_alternating_shelf_colors
+
+# Snapshot quality is an operational field, not a technical audit tail. Keep it
+# adjacent to the other location fields in the user-first action layout.
+if "pog_month_status" not in _performance.USER_ACTION_COLUMNS:
+    _before = (
+        _performance.USER_ACTION_COLUMNS.index("location_status")
+        if "location_status" in _performance.USER_ACTION_COLUMNS
+        else len(_performance.USER_ACTION_COLUMNS)
+    )
+    _performance.USER_ACTION_COLUMNS.insert(_before, "pog_month_status")
 
 _core._prepare_action_sheet = _performance.prepare_action_sheet_user_first
 _core._filter_selected_columns = _performance.filter_selected_columns_keep_channels
@@ -37,7 +48,43 @@ def _hide_technical_columns(ws, *, action_sheet=False):
     )
 
 
+def _apply_alternating_shelf_colors(ws, df):
+    """Keep shelf grouping, then visibly flag rows whose POG needs verification."""
+    _original_shelf_colors(ws, df)
+    if ws is None or df is None or df.empty or "location_needs_review" not in df.columns:
+        return
+
+    headers = [ws.cell(row=1, column=i).value for i in range(1, ws.max_column + 1)]
+    review_fields = [
+        field for field in (
+            "location_completeness", "pog_month_status",
+            "location_status", "location_needs_review",
+        )
+        if field in headers
+    ]
+    if not review_fields:
+        return
+
+    review_fill = _core.PatternFill(fill_type="solid", fgColor="FFC7CE")
+    review_font = _core.Font(bold=True, color="9C0006")
+    column_indexes = [headers.index(field) + 1 for field in review_fields]
+
+    for excel_row, (_, row) in enumerate(df.iterrows(), start=2):
+        value = row.get("location_needs_review")
+        needs_review = (
+            value is True
+            or str(value).strip().lower() in {"true", "1", "yes"}
+        )
+        if not needs_review:
+            continue
+        for column in column_indexes:
+            cell = ws.cell(row=excel_row, column=column)
+            cell.fill = review_fill
+            cell.font = review_font
+
+
 _core._hide_technical_columns = _hide_technical_columns
+_core._apply_alternating_shelf_colors = _apply_alternating_shelf_colors
 _core._BILINGUAL_HEADERS["key_channel"] = "Phạm vi áp dụng (KEY Channel)"
 _core._BILINGUAL_HEADERS["channel"] = "Kênh chương trình (Channel)"
 
@@ -49,4 +96,5 @@ _prepare_action_sheet = _core._prepare_action_sheet
 _filter_selected_columns = _core._filter_selected_columns
 _add_work_tracking_columns = _core._add_work_tracking_columns
 _hide_technical_columns = _core._hide_technical_columns
+_apply_alternating_shelf_colors = _core._apply_alternating_shelf_colors
 _BILINGUAL_HEADERS = _core._BILINGUAL_HEADERS
