@@ -93,7 +93,30 @@ def _infer_standard_pog_mapping(df):
     return mapping
 
 
+def _mapping_result(sheet_name, mapping, df, schema_section, source):
+    result = _core._build_manual_mapping_result(
+        sheet_name, mapping, df, schema_section
+    )
+    entry = _core.MC.mapping_result_to_dict_safe(result)
+    entry["source"] = source
+    return result, {**entry, "sheet_name": sheet_name}
+
+
 def _get_or_map(sheet_name, df, schema_section, mapping_logs):
+    is_fact_schema = (
+        "campaign_name" in schema_section
+        and "promo_from" in schema_section
+        and "promo_to" in schema_section
+    )
+    if is_fact_schema:
+        mapping = _infer_standard_fact_mapping(df)
+        if mapping:
+            result, log_entry = _mapping_result(
+                sheet_name, mapping, df, schema_section, "standard-fact"
+            )
+            mapping_logs.append(log_entry)
+            return result.mapping
+
     is_pog_schema = (
         "store_id" in schema_section
         and "pog_code" in schema_section
@@ -102,13 +125,13 @@ def _get_or_map(sheet_name, df, schema_section, mapping_logs):
     if is_pog_schema:
         mapping = _infer_standard_pog_mapping(df)
         if mapping:
-            result = _core._build_manual_mapping_result(
-                sheet_name, mapping, df, schema_section
+            result, log_entry = _mapping_result(
+                sheet_name, mapping, df, schema_section, "standard-pog"
             )
-            entry = _core.MC.mapping_result_to_dict_safe(result)
-            entry["source"] = "standard-pog"
-            mapping_logs.append({**entry, "sheet_name": sheet_name})
+            mapping_logs.append(log_entry)
             return result.mapping
+
+    # Unknown/non-standard files keep the existing cache -> Gemini behavior.
     return _original_get_or_map(sheet_name, df, schema_section, mapping_logs)
 
 
