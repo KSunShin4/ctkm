@@ -108,7 +108,9 @@ def test_pog_snapshot_is_detected_during_single_data_stream(tmp_path):
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "Export"
-    sheet.append(["Applied Filter DateId 9/1/2026"])
+    # A single 9/1/2026 value is intentionally ambiguous (MM/DD vs DD/MM).
+    # Use the real export-style range so the whole range disambiguates September.
+    sheet.append(["Applied filters: DATEID 9/1/2026 - 9/30/2026"])
     sheet.append(["STOREID", "POGCODE", "ITEMID", "LOCATIONID"])
     sheet.append(["S1", "POG1", "P1", 1])
     workbook.save(source)
