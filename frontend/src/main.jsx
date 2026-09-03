@@ -64,7 +64,7 @@ window.fetch = async (...args) => {
 
 // Keep legacy App.jsx text aligned with current backend contracts without a risky
 // full-file rewrite. Values already come from the correct API keys; only labels
-// and the historical 50-row preview caption are stale.
+// and a few historical explanatory strings are stale.
 const SUMMARY_LABEL_REWRITES = new Map([
   ['Dòng khớp (CTKM + kệ)', 'Dòng khớp (CTKM + POG)'],
   ['POG không có CTKM phù hợp', 'POG không có KM phù hợp'],
@@ -80,6 +80,14 @@ const rewriteLegacyUiText = root => {
     if (node.textContent?.trim() === '50 dòng đầu mỗi sheet') {
       node.textContent = 'Tối đa 100 dòng visible mỗi sheet'
     }
+  })
+  root?.querySelectorAll?.('.stat-box').forEach(box => {
+    const label = box.querySelector('.stat-label')?.textContent?.trim()
+    const sub = box.querySelector('.stat-sub')
+    if (label !== 'Thiếu vị trí POG' || !sub) return
+    const text = sub.textContent?.trim() || ''
+    const match = text.match(/^(\d+)\s+CTKM theo hóa đơn(?:\s+·\s+không tính thiếu POG)?$/)
+    if (match) sub.textContent = `${match[1]} CTKM theo hóa đơn · không tính thiếu POG`
   })
 }
 
