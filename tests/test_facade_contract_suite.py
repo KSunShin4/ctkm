@@ -46,6 +46,18 @@ def test_backend_suite_has_one_verified_installation_order_and_is_idempotent():
     assert routes_after == routes_before
 
 
+def test_health_reports_verified_hardened_facade_state():
+    payload = main_api.health()
+    assert payload["status"] == "ok"
+    assert payload["contract_suite"] == "v1"
+    assert payload["contracts_ok"] is True
+    assert payload["contract_order"] == list(CONTRACT_ORDER)
+    assert payload["main_facade_hooks"] == [
+        "mapping-result-contract-v1",
+        "backend-contract-suite-verify-v1",
+    ]
+
+
 def test_suite_verifier_detects_route_clobbering():
     target = next(
         route for route in main_api.app.routes
