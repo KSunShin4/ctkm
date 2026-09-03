@@ -78,7 +78,8 @@ python -m uvicorn backend.main_api:app --host 0.0.0.0 --port $PORT
 
 Queue/job state hiện là process-local, vì vậy không tăng `--workers` nếu chưa
 chuyển queue/job store sang shared storage. Render Blueprint dùng `render.yaml` và
-Dockerfile hiện tại.
+Dockerfile hiện tại. Blueprint đặt `autoDeployTrigger: checksPass`, vì vậy deploy
+tự động chỉ bắt đầu sau khi CI của commit trên branch liên kết đã pass.
 
 Admin workflows cần `ADMIN_PASSWORD` và `ADMIN_SESSION_SECRET`. `GEMINI_API_KEY`
 chỉ cần nếu muốn hỗ trợ mapping AI fallback. `/api/health` trả thêm:
@@ -94,6 +95,16 @@ chỉ cần nếu muốn hỗ trợ mapping AI fallback. `/api/health` trả th�
 
 Nếu contract bắt buộc bị route khác ghi đè, backend fail ở startup/reload thay vì
 âm thầm chạy implementation legacy.
+
+### Lưu ý persistence trên Render Free
+
+`render.yaml` hiện dùng plan `free`. Workflow preset và mapping cache đang lưu file
+local lần lượt tại `logs/workflow_presets.json` và `logs/mapping_cache.json`.
+Filesystem của Render Free là ephemeral, nên các file này có thể mất khi service
+spin-down, restart hoặc redeploy. Mapping deterministic cho file Pharmacity chuẩn
+không phụ thuộc hai file này; nhưng nếu cần giữ custom preset/cache lâu dài thì phải
+chuyển chúng sang shared durable storage trước khi coi “mapping đã lưu” là dữ liệu
+bền vững qua vòng đời instance.
 
 ## CTKM / POG semantics
 
