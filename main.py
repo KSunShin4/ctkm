@@ -10,6 +10,8 @@ import sys
 import pandas as pd
 from openpyxl import load_workbook
 
+from modules.item_code_identity import build_transition_identity, canonical_series
+
 _CORE_NAME = "_ctkm_main_core"
 _CORE_PATH = Path(__file__).with_name("main_core.py")
 
@@ -23,13 +25,9 @@ else:
     sys.modules[_CORE_NAME] = _core
     _spec.loader.exec_module(_core)
 
-# Install fidelity/correctness before exposing run_pipeline or helper functions.
-# This makes `from main import run_pipeline` behave the same as backend/CLI.
 _performance = importlib.import_module("modules.ctkm_performance")
 _performance.install_performance_patches(_core)
 
-# Standard company-file inference must obey the same two-channel contract even
-# when this helper is used directly, before _process/_ensure_channel_mapping.
 _original_infer_standard_fact_mapping = _core._infer_standard_fact_mapping
 _original_get_or_map = _core._get_or_map
 _original_process = _core._process
@@ -39,10 +37,6 @@ _original_build_confirmation = _core._build_ctkm_clearance_confirmation
 def _infer_standard_fact_mapping(df):
     mapping = _original_infer_standard_fact_mapping(df)
 
-    # Real Clearance exports use "Campaign Detail" as the campaign label while
-    # "Scheme detail for customer" remains the promotion/detail text. Only use
-    # this fallback when a plain Campaign column is absent, so Monthly workbooks
-    # that contain both columns keep their existing semantics unchanged.
     if not mapping:
         normalized_columns = {
             _core._normalized_header(column): column for column in df.columns
@@ -63,14 +57,7 @@ def _infer_standard_fact_mapping(df):
 
 
 def _infer_standard_pog_mapping(df):
-    """Map the stable Pharmacity POG export headers without Gemini.
-
-    The uploaded store export uses exact business headers such as STOREID,
-    POGCODE, ITEMID, LOCATIONID and TOTALFACING. These names are unambiguous, so
-    routing them through Gemini adds failure/quota risk without adding meaning.
-    Unrecognized source columns are deliberately left unmapped; normalizer will
-    preserve them as ``extra__...`` columns for audit/source fidelity.
-    """
+    """Map the stable Pharmacity POG export headers without Gemini."""
     normalized_columns = {}
     for column in df.columns:
         normalized_columns.setdefault(_core._normalized_header(column), column)
@@ -91,8 +78,6 @@ def _infer_standard_pog_mapping(df):
                 mapping[source] = target
                 break
 
-    # Do not bypass Gemini/cache for a vaguely similar workbook. ITEMID+STOREID
-    # together identify the standard POG shape used by the real Pharmacity file.
     if not {"item_id", "store_id"}.issubset(set(mapping.values())):
         return {}
     return mapping
@@ -136,7 +121,6 @@ def _get_or_map(sheet_name, df, schema_section, mapping_logs):
             mapping_logs.append(log_entry)
             return result.mapping
 
-    # Unknown/non-standard files keep the existing cache -> Gemini behavior.
     return _original_get_or_map(sheet_name, df, schema_section, mapping_logs)
 
 
@@ -152,14 +136,7 @@ def _blank_fact_value(value):
 
 
 def _fact_control_kind(row) -> str | None:
-    """Recognize only unmistakable subtotal/footer rows from optional fact tabs.
-
-    The main Pharmacity summary sheet contains business rows only, but several
-    optional combo/detail tabs contain rows such as ``Combo ... Total`` and
-    ``Grand Total``. Loader must preserve those populated source rows. They are
-    excluded from operational promotion logic only when business anchors are all
-    absent, preventing a real malformed promotion from being hidden as metadata.
-    """
+    """Recognize only unmistakable subtotal/footer rows from optional fact tabs."""
     if not _blank_fact_value(row.get("item_key")) or not _blank_fact_value(row.get("item_id")):
         return None
 
@@ -245,6 +222,29 @@ def _build_ctkm_clearance_confirmation(df_ctkm, df_clearance):
     return result
 
 
+def _comparison_identity(frame):
+    return build_transition_identity(
+        frame,
+        key_func=_core.NM.make_item_key,
+        is_sku=_core.RC.is_sku,
+    )
+
+
+def _comparison_item_series(frame, identity):
+    return canonical_series(
+        frame, identity, key_func=_core.NM.make_item_key,
+    )
+
+
+def _frame_item_keys(frame, identity=None):
+    """Return comparison product keys without changing source item values."""
+    if frame is None or frame.empty:
+        return set()
+    identity = identity or _comparison_identity(frame)
+    series = _comparison_item_series(frame, identity)
+    return {value for value in series.dropna() if str(value).strip()}
+
+
 def _location_issue_rows(df_fefo_actions):
     if df_fefo_actions is None:
         return pd.DataFrame()
@@ -261,36 +261,29 @@ def _location_issue_rows(df_fefo_actions):
 
 
 def _align_location_summary_with_program_sources(summary, df_fefo_actions):
-    """Clarify that location issues cover both Monthly CTKM and Clearance.
-
-    The historical ``So dong CTKM thieu vi tri ke`` key is retained as a legacy
-    alias for API/frontend compatibility. New metrics use the accurate KM wording
-    and provide source-specific CTKM/Clearance breakdowns. Location metrics keep
-    row semantics because their workbook audit sheet also keeps those rows.
-    """
+    """Align location issue counts with product-transition comparison identity."""
     if not isinstance(summary, dict) or df_fefo_actions is None:
         return summary
 
+    identity = _comparison_identity(df_fefo_actions)
     issues = _location_issue_rows(df_fefo_actions)
-    item_key = "item_key" if "item_key" in issues.columns else "item_id"
+    issue_keys = _comparison_item_series(issues, identity)
     sources = issues.get("program_source", pd.Series(index=issues.index, dtype=object))
-    ctkm = issues[sources.eq("CTKM")]
-    clearance = issues[sources.eq("CLEARANCE")]
+    ctkm_mask = sources.eq("CTKM")
+    clearance_mask = sources.eq("CLEARANCE")
 
     total_rows = len(issues)
-    total_items = issues[item_key].nunique() if item_key in issues.columns else 0
-    ctkm_items = ctkm[item_key].nunique() if item_key in ctkm.columns else 0
-    clearance_items = clearance[item_key].nunique() if item_key in clearance.columns else 0
+    total_items = issue_keys.nunique(dropna=True)
+    ctkm_items = issue_keys[ctkm_mask].nunique(dropna=True)
+    clearance_items = issue_keys[clearance_mask].nunique(dropna=True)
 
     summary["So dong KM thieu vi tri POG"] = total_rows
     summary["So item KM thieu vi tri POG"] = total_items
-    summary["So dong CTKM Monthly thieu vi tri POG"] = len(ctkm)
+    summary["So dong CTKM Monthly thieu vi tri POG"] = int(ctkm_mask.sum())
     summary["So item CTKM Monthly thieu vi tri POG"] = ctkm_items
-    summary["So dong Clearance thieu vi tri POG"] = len(clearance)
+    summary["So dong Clearance thieu vi tri POG"] = int(clearance_mask.sum())
     summary["So item Clearance thieu vi tri POG"] = clearance_items
 
-    # Keep old public keys as total-KM aliases so existing clients remain correct
-    # until they migrate to the explicit generic keys above.
     if "So dong CTKM thieu vi tri ke" in summary:
         summary["So dong CTKM thieu vi tri ke"] = total_rows
     if "So item CTKM thieu vi tri ke" in summary:
@@ -298,59 +291,66 @@ def _align_location_summary_with_program_sources(summary, df_fefo_actions):
     return summary
 
 
-def _frame_item_keys(frame):
-    """Return technical comparison keys without changing source item values."""
-    if frame is None or frame.empty:
-        return set()
-    if "item_key" in frame.columns:
-        return {value for value in frame["item_key"].dropna() if str(value).strip()}
-    if "item_id" not in frame.columns:
-        return set()
-    return {
-        key for key in frame["item_id"].map(_core.NM.make_item_key).dropna()
-        if str(key).strip()
-    }
+def _align_cross_source_summary(summary, df_fefo_actions):
+    """Count CTKM/Clearance shared products across safe source/new-code pairs."""
+    if not isinstance(summary, dict) or df_fefo_actions is None:
+        return summary
+    actions = df_fefo_actions.copy()
+    if "in_report_scope" in actions.columns:
+        actions = actions[actions["in_report_scope"].fillna(False).astype(bool)].copy()
+    if actions.empty:
+        if "So item trung CTKM va Clearance" in summary:
+            summary["So item trung CTKM va Clearance"] = 0
+        return summary
+
+    identity = _comparison_identity(actions)
+    keys = _comparison_item_series(actions, identity)
+    sources = actions.get("program_source", pd.Series(index=actions.index, dtype=object))
+    ctkm_keys = set(keys[sources.eq("CTKM")].dropna())
+    clearance_keys = set(keys[sources.eq("CLEARANCE")].dropna())
+    if "So item trung CTKM va Clearance" in summary:
+        summary["So item trung CTKM va Clearance"] = len(ctkm_keys & clearance_keys)
+    return summary
+
+
+def _align_matched_unique_summary(summary, df_matched, df_fefo_actions):
+    if not isinstance(summary, dict) or "So item duy nhat khop" not in summary:
+        return summary
+    identity = _comparison_identity(df_fefo_actions)
+    summary["So item duy nhat khop"] = len(_frame_item_keys(df_matched, identity))
+    return summary
 
 
 def _align_pog_promotion_coverage_summary(
     summary, df_matched, df_pog_only, df_fefo_actions
 ):
-    """Separate Monthly reconciliation from coverage by all promotion sources.
+    """Separate Monthly reconciliation from all-promotion POG coverage.
 
-    ``df_matched``/``df_pog_only`` intentionally come from the Monthly CTKM join.
-    They remain untouched. Operationally, however, a POG SKU covered only by
-    Clearance must not be described as having no promotion at all. The all-KM
-    coverage metrics below use in-scope CTKM + Clearance action identities and
-    expose a neutral dashboard count without changing Monthly reconciliation.
+    Product sets are compared through safe source/new-code identity so a POG row
+    already migrated to New P code is not reported as promotion-less merely
+    because the operational action intentionally retains the source item_id.
     """
     if not isinstance(summary, dict):
         return summary
 
-    matched_keys = _frame_item_keys(df_matched)
-    monthly_pog_only_keys = _frame_item_keys(df_pog_only)
+    identity = _comparison_identity(df_fefo_actions)
+    matched_keys = _frame_item_keys(df_matched, identity)
+    monthly_pog_only_keys = _frame_item_keys(df_pog_only, identity)
     all_pog_keys = matched_keys | monthly_pog_only_keys
 
     actions = df_fefo_actions.copy() if df_fefo_actions is not None else pd.DataFrame()
     if not actions.empty and "in_report_scope" in actions.columns:
         actions = actions[actions["in_report_scope"].fillna(False).astype(bool)].copy()
-    km_keys = _frame_item_keys(actions)
+    km_keys = _frame_item_keys(actions, identity)
 
     missing_km_keys = all_pog_keys - km_keys
     covered_km_keys = all_pog_keys & km_keys
 
     missing_rows = 0
     if df_pog_only is not None and not df_pog_only.empty:
-        if "item_key" in df_pog_only.columns:
-            row_keys = df_pog_only["item_key"]
-        elif "item_id" in df_pog_only.columns:
-            row_keys = df_pog_only["item_id"].map(_core.NM.make_item_key)
-        else:
-            row_keys = pd.Series(index=df_pog_only.index, dtype=object)
+        row_keys = _comparison_item_series(df_pog_only, identity)
         missing_rows = int(row_keys.isin(missing_km_keys).sum())
 
-    # Preserve the original Monthly reconciliation counts explicitly before the
-    # legacy public keys are repurposed as operational all-KM aliases. Prefer
-    # already-explicit Monthly values so repeated alignment is idempotent.
     monthly_row_fallback = len(df_pog_only) if df_pog_only is not None else 0
     monthly_rows = int(summary.get(
         "So dong POG khong co CTKM Monthly phu hop",
@@ -358,7 +358,7 @@ def _align_pog_promotion_coverage_summary(
     ))
     monthly_items = int(summary.get(
         "So item POG khong co CTKM Monthly phu hop",
-        summary.get("So item POG khong co CTKM phu hop", len(monthly_pog_only_keys)),
+        len(monthly_pog_only_keys),
     ))
     summary["So dong POG khong co CTKM Monthly phu hop"] = monthly_rows
     summary["So item POG khong co CTKM Monthly phu hop"] = monthly_items
@@ -368,9 +368,6 @@ def _align_pog_promotion_coverage_summary(
     summary["So item POG co KM phu hop"] = len(covered_km_keys)
     summary["So item POG tong hop de doi chieu KM"] = len(all_pog_keys)
 
-    # Existing frontend releases read the historical key. Point it at the
-    # operationally correct all-KM value while keeping Monthly under explicit
-    # keys above. Workbook summary hides this legacy label to avoid ambiguity.
     if "So dong POG khong co CTKM phu hop" in summary:
         summary["So dong POG khong co CTKM phu hop"] = missing_rows
     if "So item POG khong co CTKM phu hop" in summary:
@@ -452,8 +449,6 @@ _core._get_or_map = _get_or_map
 _core._process = _process
 _core._build_ctkm_clearance_confirmation = _build_ctkm_clearance_confirmation
 
-# The performance layer already wraps exporter summary counts by unique task_id.
-# Layer source/coverage clarification on top without changing Monthly join output.
 _task_aligned_export = _core.EX.export_final_report
 
 
@@ -475,6 +470,8 @@ def _export_with_location_summary(*args, **kwargs):
         df_pog_only = args[3]
 
     _align_location_summary_with_program_sources(summary, actions)
+    _align_cross_source_summary(summary, actions)
+    _align_matched_unique_summary(summary, df_matched, actions)
     _align_pog_promotion_coverage_summary(summary, df_matched, df_pog_only, actions)
     output_path = _task_aligned_export(*args, **kwargs)
     _clarify_location_workbook(output_path)
