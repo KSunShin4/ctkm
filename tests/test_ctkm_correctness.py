@@ -81,9 +81,17 @@ def test_partial_pog_location_is_not_reported_as_complete():
 
 
 def test_multiple_pog_positions_are_all_preserved():
+    # Keep snapshot aligned so this test isolates position multiplicity rather than
+    # the independent unknown-POG-month review axis.
     pog = pd.DataFrame([
-        {"item_id": "P1001", "store_id": "S1", "pog_code": "A", "location_id": "1", "facing": 2},
-        {"item_id": "P1001", "store_id": "S1", "pog_code": "B", "location_id": "4", "facing": 1},
+        {
+            "item_id": "P1001", "store_id": "S1", "pog_code": "A",
+            "location_id": "1", "facing": 2, "pog_snapshot_month": "2026-08",
+        },
+        {
+            "item_id": "P1001", "store_id": "S1", "pog_code": "B",
+            "location_id": "4", "facing": 1, "pog_snapshot_month": "2026-08",
+        },
     ])
 
     result = main.RC.build_fefo_action_frame(
@@ -127,8 +135,10 @@ def test_unknown_channel_is_byte_for_byte_preserved_and_does_not_hide_overlap():
     )
 
     assert len(warnings) == 1
-    assert warnings[0].channel_a == channel_a
-    assert warnings[0].channel_b == channel_b
+    # Warning display now carries both KEY Channel and Channel so scope is explicit;
+    # the raw source channel remains byte-for-byte preserved in the DataFrame.
+    assert warnings[0].channel_a == f"KEY=(không rõ) | Channel={channel_a}"
+    assert warnings[0].channel_b == f"KEY=(không rõ) | Channel={channel_b}"
     assert warnings[0].conflict_type == "potential_cross_channel_overlap"
     assert warnings[0].is_blocking is False
     assert result["channel"].tolist() == [channel_a, channel_b]
