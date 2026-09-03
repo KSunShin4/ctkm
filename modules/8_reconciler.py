@@ -128,12 +128,13 @@ _original_build_fefo_action_frame = _core.build_fefo_action_frame
 
 
 def build_fefo_action_frame(*args, **kwargs):
-    """Keep calendar action and POG review as independent operational axes.
+    """Keep calendar action and POG applicability/review as independent axes.
 
-    POG quality never changes ``scheduled_action``. This wrapper only prevents
-    the legacy one-field ``location_status`` from saying "Đủ vị trí" when the
-    coordinates are complete but the POG snapshot month is unknown and therefore
-    ``location_needs_review`` is already true. Source values are untouched.
+    POG quality never changes ``scheduled_action``. Explicit invoice-level rows
+    (``item_key == BILL``) remain valid CTKM calendar records, but POG does not
+    apply to them. They therefore must not be reported as missing shelf locations.
+    Source values and P-code promotions whose scheme text mentions a bill remain
+    untouched and continue through normal POG matching.
     """
     result = _original_build_fefo_action_frame(*args, **kwargs)
     if result is None or result.empty:
@@ -151,6 +152,33 @@ def build_fefo_action_frame(*args, **kwargs):
         & result["location_needs_review"].fillna(False).astype(bool)
     )
     result.loc[unknown_month, "location_status"] = "Không rõ tháng POG"
+
+    item_keys = result.get("item_key")
+    if item_keys is None:
+        item_keys = result.get("item_id")
+    if item_keys is None:
+        result["pog_applicable"] = True
+        return result
+
+    bill_mask = item_keys.apply(_core.is_bill_program)
+    result["pog_applicable"] = ~bill_mask
+    if bill_mask.any():
+        # ``location_completeness`` remains the compatibility filter used by the
+        # existing exporter to decide whether a row belongs to the missing-POG
+        # sheet. For invoice-level CTKM the location requirement is satisfied by
+        # non-applicability, while the explicit status fields carry the meaning.
+        result.loc[bill_mask, "location_completeness"] = "Đủ vị trí"
+        result.loc[bill_mask, "pog_month_status"] = "Không áp dụng POG"
+        result.loc[bill_mask, "location_needs_review"] = False
+        result.loc[bill_mask, "location_status"] = "Không áp dụng POG"
+        if "has_multiple_pog_positions" in result.columns:
+            result.loc[bill_mask, "has_multiple_pog_positions"] = False
+        if "pog_position_count" in result.columns:
+            result.loc[bill_mask, "pog_position_count"] = 0
+        if "pog_source_row_count" in result.columns:
+            result.loc[bill_mask, "pog_source_row_count"] = 0
+        if "pog_duplicate_status" in result.columns:
+            result.loc[bill_mask, "pog_duplicate_status"] = "Không áp dụng POG"
     return result
 
 
