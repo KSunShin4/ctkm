@@ -5,6 +5,7 @@ from __future__ import annotations
 import pandas as pd
 
 from modules.item_code_identity import build_transition_identity
+from modules.mapping_validation import validate_manual_mapping
 
 
 USER_ACTION_COLUMNS = [
@@ -394,6 +395,7 @@ def install_performance_patches(main_mod) -> None:
             channel_index = columns.index("channel") if "channel" in columns else len(columns)
             columns.insert(channel_index, "key_channel")
 
+    main_mod._validate_manual_mapping = validate_manual_mapping
     main_mod._build_ctkm_clearance_confirmation = confirmation
     main_mod._build_promo_action_source = build_promo_action_source_without_inference
     main_mod._ensure_channel_mapping = channel_mapping
