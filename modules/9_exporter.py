@@ -27,8 +27,8 @@ _original_hide = _core._hide_technical_columns
 _original_shelf_colors = _core._apply_alternating_shelf_colors
 _original_export_final_report = _core.export_final_report
 
-# Snapshot quality is an operational field, not a technical audit tail. Keep it
-# adjacent to the other location fields in the user-first action layout.
+# Snapshot quality and POG applicability are operational fields, not technical
+# audit tail. Keep them adjacent to the other location fields in action sheets.
 if "pog_month_status" not in _performance.USER_ACTION_COLUMNS:
     _before = (
         _performance.USER_ACTION_COLUMNS.index("location_status")
@@ -36,6 +36,13 @@ if "pog_month_status" not in _performance.USER_ACTION_COLUMNS:
         else len(_performance.USER_ACTION_COLUMNS)
     )
     _performance.USER_ACTION_COLUMNS.insert(_before, "pog_month_status")
+if "pog_applicable" not in _performance.USER_ACTION_COLUMNS:
+    _before = (
+        _performance.USER_ACTION_COLUMNS.index("location_completeness")
+        if "location_completeness" in _performance.USER_ACTION_COLUMNS
+        else len(_performance.USER_ACTION_COLUMNS)
+    )
+    _performance.USER_ACTION_COLUMNS.insert(_before, "pog_applicable")
 
 _core._prepare_action_sheet = _performance.prepare_action_sheet_user_first
 _core._filter_selected_columns = _performance.filter_selected_columns_keep_channels
@@ -131,6 +138,7 @@ _core._hide_technical_columns = _hide_technical_columns
 _core._apply_alternating_shelf_colors = _apply_alternating_shelf_colors
 _core._BILINGUAL_HEADERS["key_channel"] = "Phạm vi áp dụng (KEY Channel)"
 _core._BILINGUAL_HEADERS["channel"] = "Kênh chương trình (Channel)"
+_core._BILINGUAL_HEADERS["pog_applicable"] = "Có áp dụng vị trí POG? (pog_applicable)"
 
 for _name in dir(_core):
     if not _name.startswith("__"):
