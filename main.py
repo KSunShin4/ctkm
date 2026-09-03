@@ -32,6 +32,8 @@ _performance.install_performance_patches(_core)
 # when this helper is used directly, before _process/_ensure_channel_mapping.
 _original_infer_standard_fact_mapping = _core._infer_standard_fact_mapping
 _original_get_or_map = _core._get_or_map
+_original_process = _core._process
+_original_build_confirmation = _core._build_ctkm_clearance_confirmation
 
 
 def _infer_standard_fact_mapping(df):
@@ -136,6 +138,111 @@ def _get_or_map(sheet_name, df, schema_section, mapping_logs):
 
     # Unknown/non-standard files keep the existing cache -> Gemini behavior.
     return _original_get_or_map(sheet_name, df, schema_section, mapping_logs)
+
+
+def _blank_fact_value(value):
+    if value is None:
+        return True
+    try:
+        if pd.isna(value):
+            return True
+    except (TypeError, ValueError):
+        pass
+    return isinstance(value, str) and not value.strip()
+
+
+def _fact_control_kind(row) -> str | None:
+    """Recognize only unmistakable subtotal/footer rows from optional fact tabs.
+
+    The main Pharmacity summary sheet contains business rows only, but several
+    optional combo/detail tabs contain rows such as ``Combo ... Total`` and
+    ``Grand Total``. Loader must preserve those populated source rows. They are
+    excluded from operational promotion logic only when business anchors are all
+    absent, preventing a real malformed promotion from being hidden as metadata.
+    """
+    if not _blank_fact_value(row.get("item_key")) or not _blank_fact_value(row.get("item_id")):
+        return None
+
+    business_anchors = (
+        "item_name", "promo_uom", "promo_from", "promo_to",
+        "key_channel", "channel", "campaign_detail", "product_type",
+    )
+    if any(not _blank_fact_value(row.get(column)) for column in business_anchors):
+        return None
+
+    markers = []
+    for value in row.values:
+        if not isinstance(value, str):
+            continue
+        text = " ".join(value.strip().lower().split())
+        if text:
+            markers.append(text)
+    if any(text in {"grand total", "total", "tổng", "tổng cộng"} for text in markers):
+        return "grand_total"
+    if any(text.endswith(" total") for text in markers):
+        return "subtotal"
+    return None
+
+
+def _separate_fact_control_rows(df):
+    if df is None or df.empty:
+        return df, pd.DataFrame(columns=[] if df is None else df.columns)
+    kinds = df.apply(_fact_control_kind, axis=1)
+    control_mask = kinds.notna()
+    business = df.loc[~control_mask].copy().reset_index(drop=True)
+    metadata = df.loc[control_mask].copy().reset_index(drop=True)
+    if not metadata.empty:
+        metadata["fact_control_kind"] = kinds.loc[control_mask].to_list()
+    return business, metadata
+
+
+def _process(*args, **kwargs):
+    """Process mapped facts while keeping subtotal rows outside business logic."""
+    result = _original_process(*args, **kwargs)
+    is_fact = kwargs.get("is_fact")
+    if is_fact is None and len(args) > 4:
+        is_fact = args[4]
+    if not is_fact or result is None or result.empty:
+        return result
+
+    business, metadata = _separate_fact_control_rows(result)
+    if metadata.empty:
+        return business
+
+    source_prefix = kwargs.get("source_prefix")
+    if source_prefix is None and len(args) > 9:
+        source_prefix = args[9]
+    if source_prefix:
+        metadata["program_source"] = str(source_prefix).upper()
+
+    business.attrs["fact_metadata"] = metadata
+    warnings = kwargs.get("all_warnings")
+    if warnings is None and len(args) > 5:
+        warnings = args[5]
+    sheet_name = kwargs.get("sheet_name")
+    if sheet_name is None and args:
+        sheet_name = args[0]
+    if isinstance(warnings, list):
+        warnings.append(
+            f"[Sheet '{sheet_name}'] Tách {len(metadata)} dòng subtotal/control khỏi xử lý nghiệp vụ; "
+            "giữ nguyên trong sheet ẩn 'KM metadata'."
+        )
+    return business
+
+
+def _build_ctkm_clearance_confirmation(df_ctkm, df_clearance):
+    metadata_frames = []
+    for frame in (df_ctkm, df_clearance):
+        if frame is None:
+            continue
+        metadata = getattr(frame, "attrs", {}).get("fact_metadata")
+        if metadata is not None and not metadata.empty:
+            metadata_frames.append(metadata.copy())
+
+    result = _original_build_confirmation(df_ctkm, df_clearance)
+    if metadata_frames:
+        result.attrs["fact_metadata"] = pd.concat(metadata_frames, ignore_index=True, sort=False)
+    return result
 
 
 def _location_issue_rows(df_fefo_actions):
@@ -271,6 +378,41 @@ def _align_pog_promotion_coverage_summary(
     return summary
 
 
+def _append_fact_metadata_audit(output_path, metadata):
+    if metadata is None or metadata.empty:
+        return
+    path = Path(output_path)
+    if not path.is_file():
+        return
+    workbook = load_workbook(path)
+    sheet_name = "KM metadata"
+    if sheet_name in workbook.sheetnames:
+        del workbook[sheet_name]
+    ws = workbook.create_sheet(sheet_name)
+    columns = list(metadata.columns)
+    ws.append(columns)
+    for _, row in metadata.iterrows():
+        values = []
+        for column in columns:
+            value = row[column]
+            try:
+                missing = bool(pd.isna(value))
+            except (TypeError, ValueError):
+                missing = False
+            if missing:
+                values.append(None)
+            elif isinstance(value, pd.Timestamp):
+                values.append(value.to_pydatetime())
+            else:
+                values.append(value)
+        ws.append(values)
+    ws.freeze_panes = "A2"
+    if ws.max_row >= 1 and ws.max_column >= 1:
+        ws.auto_filter.ref = ws.dimensions
+    ws.sheet_state = "hidden"
+    workbook.save(path)
+
+
 def _clarify_location_workbook(output_path):
     """Hide misleading legacy summary aliases while preserving workbook schema."""
     path = Path(output_path)
@@ -307,6 +449,8 @@ def _clarify_location_workbook(output_path):
 _core._infer_standard_fact_mapping = _infer_standard_fact_mapping
 _core._infer_standard_pog_mapping = _infer_standard_pog_mapping
 _core._get_or_map = _get_or_map
+_core._process = _process
+_core._build_ctkm_clearance_confirmation = _build_ctkm_clearance_confirmation
 
 # The performance layer already wraps exporter summary counts by unique task_id.
 # Layer source/coverage clarification on top without changing Monthly join output.
@@ -320,6 +464,9 @@ def _export_with_location_summary(*args, **kwargs):
     actions = kwargs.get("df_fefo_actions")
     if actions is None and len(args) > 9:
         actions = args[9]
+    confirmation = kwargs.get("df_ctkm_clearance_confirmation")
+    if confirmation is None and len(args) > 10:
+        confirmation = args[10]
     df_matched = kwargs.get("df_matched")
     if df_matched is None and len(args) > 1:
         df_matched = args[1]
@@ -331,6 +478,11 @@ def _export_with_location_summary(*args, **kwargs):
     _align_pog_promotion_coverage_summary(summary, df_matched, df_pog_only, actions)
     output_path = _task_aligned_export(*args, **kwargs)
     _clarify_location_workbook(output_path)
+    metadata = (
+        getattr(confirmation, "attrs", {}).get("fact_metadata")
+        if confirmation is not None else None
+    )
+    _append_fact_metadata_audit(output_path, metadata)
     return output_path
 
 
