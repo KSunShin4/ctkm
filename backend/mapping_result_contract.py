@@ -73,4 +73,29 @@ def install_mapping_result_contract(core_module, validate_mapping) -> None:
 
         baseline["get_or_map"] = validated_baseline
 
+    # Preflight should not let a stale saved preset poison a standard workbook.
+    # If the preset fails validation, ignore only that preset and continue with
+    # deterministic inference. In saved_only mode the caller will still reject a
+    # source that remains Gemini-required, so this does not weaken zero-AI mode.
+    from backend import input_contract
+
+    def mapping_or_none(main_module, df, schema_section, explicit, preset, *, kind: str):
+        if explicit is not None:
+            return validate_mapping(explicit, df, schema_section), "manual"
+        if preset:
+            try:
+                return validate_mapping(preset, df, schema_section), "saved-preset"
+            except ValueError:
+                pass
+        infer = (
+            main_module._infer_standard_fact_mapping
+            if kind == "fact" else main_module._infer_standard_pog_mapping
+        )
+        inferred = infer(df)
+        if inferred:
+            suffix = "-after-stale-preset" if preset else ""
+            return validate_mapping(inferred, df, schema_section), f"standard-{kind}{suffix}"
+        return None, "gemini-required-after-stale-preset" if preset else "gemini-required"
+
+    input_contract._mapping_or_none = mapping_or_none
     core_module.app.state.mapping_result_contract_v1 = True
