@@ -28,10 +28,25 @@ else:
 _performance = importlib.import_module("modules.ctkm_performance")
 _performance.install_performance_patches(_core)
 
-_original_infer_standard_fact_mapping = _core._infer_standard_fact_mapping
-_original_get_or_map = _core._get_or_map
-_original_process = _core._process
-_original_build_confirmation = _core._build_ctkm_clearance_confirmation
+# ``main.py`` is loaded as ``ctkm_main`` by the API and may also be imported as
+# ``main`` by tests/CLI tooling in the same process. Keep one immutable baseline
+# after the performance contract so repeated facade execution replaces wrappers
+# instead of wrapping wrappers from a previous module name/import order.
+_baseline = getattr(_core, "_ctkm_main_facade_baseline", None)
+if not isinstance(_baseline, dict):
+    _baseline = {
+        "infer_standard_fact_mapping": _core._infer_standard_fact_mapping,
+        "get_or_map": _core._get_or_map,
+        "process": _core._process,
+        "build_confirmation": _core._build_ctkm_clearance_confirmation,
+        "export_final_report": _core.EX.export_final_report,
+    }
+    _core._ctkm_main_facade_baseline = _baseline
+
+_original_infer_standard_fact_mapping = _baseline["infer_standard_fact_mapping"]
+_original_get_or_map = _baseline["get_or_map"]
+_original_process = _baseline["process"]
+_original_build_confirmation = _baseline["build_confirmation"]
 
 
 def _infer_standard_fact_mapping(df):
@@ -449,7 +464,7 @@ _core._get_or_map = _get_or_map
 _core._process = _process
 _core._build_ctkm_clearance_confirmation = _build_ctkm_clearance_confirmation
 
-_task_aligned_export = _core.EX.export_final_report
+_task_aligned_export = _baseline["export_final_report"]
 
 
 def _export_with_location_summary(*args, **kwargs):
