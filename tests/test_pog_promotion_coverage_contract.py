@@ -81,6 +81,16 @@ def test_clearance_only_pog_item_is_not_missing_from_all_promotion_coverage():
     assert summary["So dong khop (Matched)"] == 1
     assert summary["So item duy nhat khop"] == 1
 
+    # Re-running alignment must not mistake the legacy all-KM alias for the
+    # original Monthly reconciliation values.
+    main._align_pog_promotion_coverage_summary(
+        summary, matched, pog_only_monthly, actions
+    )
+    assert summary["So dong POG khong co CTKM Monthly phu hop"] == 3
+    assert summary["So item POG khong co CTKM Monthly phu hop"] == 2
+    assert summary["So dong POG khong co KM phu hop"] == 2
+    assert summary["So item POG khong co KM phu hop"] == 1
+
 
 def test_export_keeps_monthly_pog_audit_rows_but_summary_exposes_all_km_coverage(tmp_path):
     matched, pog_only_monthly, actions = _frames()
