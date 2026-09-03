@@ -2,7 +2,11 @@ import importlib.util
 from pathlib import Path
 import sys
 
+import pandas as pd
+import pytest
+
 import main
+from modules.mapping_validation import validate_manual_mapping
 
 
 def _load_main_again(alias: str):
@@ -49,3 +53,30 @@ def test_third_facade_load_still_has_one_wrapper_layer():
 
     assert repeated._original_process is baseline["process"]
     assert repeated._task_aligned_export is baseline["export_final_report"]
+
+
+def test_public_main_uses_shared_required_field_mapping_contract():
+    assert main._validate_manual_mapping is validate_manual_mapping
+    frame = pd.DataFrame(columns=[
+        "Item", "Campaign", "From", "To", "Detail 1", "Detail 2",
+    ])
+
+    with pytest.raises(ValueError, match="thiếu trường bắt buộc"):
+        main._validate_manual_mapping(
+            {"Item": "item_id"}, frame, main.SCHEMA["fact_fields"]
+        )
+
+    accepted = main._validate_manual_mapping(
+        {
+            "Item": "item_id",
+            "Campaign": "campaign_name",
+            "From": "promo_from",
+            "To": "promo_to",
+            "Detail 1": "campaign_detail",
+            "Detail 2": "campaign_detail",
+        },
+        frame,
+        main.SCHEMA["fact_fields"],
+    )
+    assert accepted["Detail 1"] == "campaign_detail"
+    assert accepted["Detail 2"] == "campaign_detail"
