@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import pandas as pd
 
+from modules.item_code_identity import build_transition_identity
+
 
 USER_ACTION_COLUMNS = [
     "item_id", "item_name", "promo_uom", "program_source", "key_channel", "channel",
@@ -101,15 +103,11 @@ def filter_selected_columns_keep_channels(df: pd.DataFrame, selected_columns) ->
 
     keep = [column for column in df.columns if matches(column)]
 
-    # The display/source item id is always the first visible identifier. This is
-    # intentionally independent from the user's checkbox click order.
     if "item_id" in df.columns:
         if "item_id" in keep:
             keep.remove("item_id")
         keep.insert(0, "item_id")
 
-    # Both source channel fields are required for store-side filtering. Preserve
-    # their relative business order when they were not explicitly selected.
     for column in ("key_channel", "channel"):
         if column in df.columns and column not in keep:
             keep.append(column)
@@ -135,19 +133,7 @@ def _unique_lineage(group: pd.DataFrame, plural: str, singular: str) -> list[str
 
 
 def unique_work_tracking_rows(df: pd.DataFrame) -> pd.DataFrame:
-    """Return one editable Excel row per physical ``task_id``.
-
-    Reconciler intentionally preserves non-identical source rows for audit. Two
-    such rows can still describe the same promotion/action/POG position and thus
-    share one stable ``task_id``. Showing both as separately editable work rows
-    is ambiguous: staff could mark one Done and leave the other Unprocessed.
-
-    Only the interactive action sheets are consolidated here. ``Audit hành động``
-    receives the original frame before this helper, so every source value remains
-    available there. Source lineage is unioned onto the operational row so the
-    chosen display row can always be traced back to all contributing source rows.
-    Rows without a usable task_id are never consolidated.
-    """
+    """Return one editable Excel row per physical ``task_id``."""
     if df is None:
         return df
     result = df.copy()
@@ -184,8 +170,6 @@ def unique_work_tracking_rows(df: pd.DataFrame) -> pd.DataFrame:
                         "Đã gom cùng task_id từ nhiều dòng nguồn; xem Audit hành động"
                     )
 
-                # The same physical task repeats the same POG lineage across
-                # source rows. Union IDs instead of summing repeated counts.
                 pog_ids = _unique_lineage(group, "pog_source_row_ids", "pog_source_row_id")
                 if pog_ids:
                     if "pog_source_row_id" in result.columns:
@@ -209,14 +193,7 @@ def unique_work_tracking_rows(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def align_task_summary_with_work_rows(summary: dict, df_fefo_actions: pd.DataFrame | None) -> dict:
-    """Make operational summary counts match the interactive action sheets.
-
-    The action audit can contain several source rows for one physical task. The
-    four editable work sheets intentionally show one row per stable ``task_id``;
-    therefore task-oriented summary metrics must use that same consolidated
-    frame. Join/location/source-row metrics are deliberately left untouched
-    because their corresponding audit sheets still represent rows, not tasks.
-    """
+    """Make operational summary counts match the interactive action sheets."""
     if not isinstance(summary, dict) or df_fefo_actions is None:
         return summary
 
@@ -253,11 +230,30 @@ def hide_technical_columns(ws, *, get_column_letter, original_hide=None, action_
 
 
 def build_ctkm_clearance_confirmation_fast(df_ctkm, df_clearance, *, make_item_key):
+    """Compare Monthly and Clearance by safe product-transition identity.
+
+    Raw item_id/new_item_id remain visible. ``transition_match_key`` is derived
+    only for comparison, so old-code Monthly rows and direct new-code Clearance
+    rows for the same one-to-one migration no longer appear as unrelated items.
+    Ambiguous chains/one-to-many transitions remain separate.
+    """
     columns = [
-        "item_id", "item_key", "item_name", "promo_uom", "key_channel", "channel",
+        "item_id", "item_key", "new_item_id", "new_item_key",
+        "item_code_transition_status", "transition_match_key",
+        "item_name", "promo_uom", "key_channel", "channel",
         "campaign_name", "campaign_detail", "promo_from", "promo_to", "normal_price",
         "promo_price", "product_type", "source_sheet",
     ]
+
+    transition_input_frames = [df_ctkm.copy()]
+    if df_clearance is not None and not df_clearance.empty:
+        transition_input_frames.append(df_clearance.copy())
+    transition_input = pd.concat(transition_input_frames, ignore_index=True, sort=False)
+    identity = build_transition_identity(
+        transition_input,
+        key_func=make_item_key,
+        is_sku=lambda value: bool(value and str(value).upper().startswith("P") and str(value)[1:].isdigit()),
+    )
 
     def tagged(frame: pd.DataFrame, source: str) -> pd.DataFrame:
         result = frame.copy()
@@ -270,6 +266,11 @@ def build_ctkm_clearance_confirmation_fast(df_ctkm, df_clearance, *, make_item_k
             if column not in result.columns:
                 result[column] = pd.NA
         result["item_key"] = result["item_id"].map(make_item_key)
+        if "new_item_id" in result.columns:
+            result["new_item_key"] = result["new_item_id"].map(make_item_key)
+        result["transition_match_key"] = result["item_key"].map(
+            lambda value: identity.canonical(value, key_func=make_item_key)
+        )
         result = result.loc[:, columns]
         result.insert(0, "nguon_chuong_trinh", source)
         row_ids = []
@@ -290,21 +291,21 @@ def build_ctkm_clearance_confirmation_fast(df_ctkm, df_clearance, *, make_item_k
         result["quan_he_thoi_gian"] = "Không có nguồn còn lại để đối chiếu"
     else:
         clearance = tagged(df_clearance, "CLEARANCE")
-        ctkm_items = set(ctkm["item_key"].dropna())
-        clearance_items = set(clearance["item_key"].dropna())
+        ctkm_items = set(ctkm["transition_match_key"].dropna())
+        clearance_items = set(clearance["transition_match_key"].dropna())
         both = ctkm_items & clearance_items
         result = pd.concat([ctkm, clearance], ignore_index=True)
         result.insert(1, "trang_thai_doi_chieu", [
             "Có cả CTKM và Clearance" if item in both
             else ("Chỉ CTKM" if source == "CTKM" else "Chỉ Clearance")
-            for item, source in zip(result["item_key"], result["nguon_chuong_trinh"])
+            for item, source in zip(result["transition_match_key"], result["nguon_chuong_trinh"])
         ])
 
         parsed_from = pd.to_datetime(result["promo_from"], errors="coerce")
         parsed_to = pd.to_datetime(result["promo_to"], errors="coerce")
         interval_index: dict[tuple[object, str], list[tuple[pd.Timestamp, pd.Timestamp]]] = {}
         for item, source, start, end in zip(
-            result["item_key"], result["nguon_chuong_trinh"], parsed_from, parsed_to
+            result["transition_match_key"], result["nguon_chuong_trinh"], parsed_from, parsed_to
         ):
             if pd.isna(item) or pd.isna(start) or pd.isna(end):
                 continue
@@ -312,7 +313,7 @@ def build_ctkm_clearance_confirmation_fast(df_ctkm, df_clearance, *, make_item_k
 
         relations = []
         for item, source, row_from, row_to in zip(
-            result["item_key"], result["nguon_chuong_trinh"], parsed_from, parsed_to
+            result["transition_match_key"], result["nguon_chuong_trinh"], parsed_from, parsed_to
         ):
             if pd.isna(item) or item not in both:
                 relations.append("Không có nguồn còn lại để đối chiếu")
@@ -334,7 +335,7 @@ def build_ctkm_clearance_confirmation_fast(df_ctkm, df_clearance, *, make_item_k
     result.insert(2, "xac_nhan_ap_dung", "Chưa xác nhận")
     result.insert(3, "ghi_chu_xac_nhan", "")
     return result.sort_values(
-        ["trang_thai_doi_chieu", "item_id", "nguon_chuong_trinh", "promo_from"],
+        ["trang_thai_doi_chieu", "transition_match_key", "item_id", "nguon_chuong_trinh", "promo_from"],
         kind="stable", na_position="last",
     ).reset_index(drop=True)
 
@@ -357,8 +358,6 @@ def build_promo_action_source_without_inference(df_ctkm: pd.DataFrame,
         clearance["source_row_id"] = clearance["source_row_id"].map(
             lambda value: str(value) if str(value).startswith("CLEARANCE:") else f"CLEARANCE:{value}"
         )
-    # Deliberately do NOT fill blank campaign_name with "CLEARANCE". A blank
-    # source value stays blank and will be classified into review by reconciler.
     return pd.concat([ctkm, clearance], ignore_index=True)
 
 
@@ -401,8 +400,6 @@ def install_performance_patches(main_mod) -> None:
         align_task_summary_with_work_rows(summary, actions)
         return original_export(*args, **kwargs)
 
-    # KEY Channel participates in duplicate identity and stable promotion IDs,
-    # but its source value is never normalized/rewritten.
     for constant_name in ("_BUSINESS_COLUMNS", "_PROMOTION_ID_COLUMNS"):
         columns = getattr(main_mod.RC, constant_name, None)
         if isinstance(columns, list) and "key_channel" not in columns:
