@@ -2,16 +2,20 @@
 """Preview the final workbook exactly as users can see it in Excel.
 
 The exporter deliberately hides technical columns, metadata sheets and a few
-legacy summary rows. The historical API preview ignored those visibility flags
-and also counted placeholder ``Ghi chu`` rows as real work. This module keeps
-preview semantics aligned with the final workbook without changing workbook data.
+legacy summary rows. Preview uses the same shared visible-row semantics as final
+artifact validation so badges and workbook cards cannot disagree.
 """
 from __future__ import annotations
 
 from pathlib import Path
 
 import openpyxl
-from openpyxl.utils import get_column_letter
+
+from backend.workbook_semantics import (
+    is_empty_placeholder as _is_empty_placeholder,
+    visible_column_indexes as _visible_column_indexes,
+    visible_nonempty_rows as _visible_nonempty_rows,
+)
 
 
 _NON_TABULAR_SHEETS = {"HƯỚNG DẪN"}
@@ -39,42 +43,12 @@ def sheet_kind(sheet_name: str) -> str:
     return "data"
 
 
-def _visible_column_indexes(ws) -> list[int]:
-    indexes = []
-    for index in range(1, (ws.max_column or 0) + 1):
-        dimension = ws.column_dimensions.get(get_column_letter(index))
-        if dimension is not None and bool(dimension.hidden):
-            continue
-        indexes.append(index)
-    return indexes
-
-
-def _visible_nonempty_rows(ws, column_indexes: list[int]):
-    for row_index in range(2, (ws.max_row or 0) + 1):
-        dimension = ws.row_dimensions.get(row_index)
-        if dimension is not None and bool(dimension.hidden):
-            continue
-        values = [ws.cell(row=row_index, column=index).value for index in column_indexes]
-        if not any(value is not None and str(value).strip() for value in values):
-            continue
-        yield values
-
-
-def _is_empty_placeholder(headers: list[str], rows: list[list[object]]) -> bool:
-    if len(headers) != 1 or headers[0].strip().lower() not in {"ghi chu", "ghi chú"}:
-        return False
-    if len(rows) != 1:
-        return False
-    value = "" if rows[0][0] is None else str(rows[0][0]).strip().lower()
-    return value.startswith("không có") or value.startswith("khong co")
-
-
 def build_visible_preview(path: str | Path, rows: int = 50) -> dict:
     """Return only visible, tabular workbook content.
 
     ``total_rows`` counts visible non-empty data rows. Empty-sheet placeholders
-    created by exporter ``_safe`` are reported as zero rows. Hidden technical
-    columns/rows and hidden metadata sheets are intentionally excluded.
+    created by exporter are reported as zero rows. Hidden technical columns/rows
+    and hidden metadata sheets are intentionally excluded.
     """
     limit = int(rows)
     if limit < 1 or limit > 500:
@@ -117,12 +91,7 @@ def build_visible_preview(path: str | Path, rows: int = 50) -> dict:
 
 
 def install_preview_contract(core_module) -> None:
-    """Replace only the preview endpoint call while retaining FastAPI dependencies.
-
-    Mutating the existing APIRoute dependant keeps the original Bearer admin
-    dependency, CORS middleware and response handling intact. No extra HTTP
-    middleware is introduced.
-    """
+    """Replace only the preview endpoint call while retaining FastAPI dependencies."""
     if getattr(core_module.app.state, "visible_preview_contract", False):
         return
 
