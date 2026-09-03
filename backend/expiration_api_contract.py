@@ -106,7 +106,15 @@ def install_expiration_api_contract(core_module) -> None:
             frame, sheet_name, cache_hit = await asyncio.to_thread(
                 core_module._load_expiration_cached, content
             )
-            if frame.empty or "ITEMID" not in frame.columns or not frame["ITEMID"].astype(str).str.strip().ne("").any():
+            if frame.empty or "ITEMID" not in frame.columns:
+                raise ValueError(
+                    f"Sheet hạn dùng '{sheet_name}' không có dòng sản phẩm ITEMID để đối chiếu."
+                )
+            item_ids = frame["ITEMID"].fillna("").astype(str).str.strip()
+            usable_item_ids = item_ids.ne("") & ~item_ids.str.upper().isin(
+                {"NAN", "NONE", "NULL", "<NA>", "#N/A", "#REF!", "#VALUE!"}
+            )
+            if not usable_item_ids.any():
                 raise ValueError(
                     f"Sheet hạn dùng '{sheet_name}' không có dòng sản phẩm ITEMID để đối chiếu."
                 )
