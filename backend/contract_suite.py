@@ -16,6 +16,7 @@ from backend.gemini_availability_contract import install_gemini_availability_con
 from backend.tem_r_resource_contract import install_tem_r_resource_contract
 from backend.auxiliary_workflows_contract import install_auxiliary_workflows_contract
 from backend.expiration_api_contract import install_expiration_api_contract
+from backend.export_memory_contract import install_export_memory_contract
 from backend.final_output_contract import install_final_output_contract
 from backend.preview_contract import install_preview_contract
 
@@ -28,6 +29,7 @@ CONTRACT_ORDER = (
     "tem-r-resource",
     "auxiliary-workflows",
     "expiration-api",
+    "export-memory",
     "final-output",
     "preview",
 )
@@ -40,6 +42,7 @@ _STATE_FLAGS = {
     "tem-r-resource": "tem_r_resource_contract_v1",
     "auxiliary-workflows": "auxiliary_workflows_contract_v1",
     "expiration-api": "expiration_api_contract_v1",
+    "export-memory": "export_memory_contract_v1",
     "final-output": "final_output_contract_v1",
     "preview": "visible_preview_contract",
 }
@@ -146,12 +149,19 @@ def verify_contract_suite(core_module) -> None:
     hooks = registered_post_facade_hooks(main_core)
     if "mapping-result-contract-v1" not in hooks:
         raise RuntimeError("Main facade chưa đăng ký mapping-result post-facade hook")
+    if "export-memory-contract-v1" not in hooks:
+        raise RuntimeError("Main facade chưa đăng ký export-memory post-facade hook")
 
     mapper = getattr(main_core, "_get_or_map", None)
     if not getattr(mapper, "_ctkm_mapping_result_contract_v1", False):
         raise RuntimeError("Mapping-result hardening không còn bọc _ctkm_main_core._get_or_map")
     if getattr(retained_main, "_get_or_map", None) is not mapper:
         raise RuntimeError("Facade ctkm_main giữ reference _get_or_map cũ sau facade rebuild")
+
+    exporter = getattr(main_core, "EX", None)
+    export_fn = getattr(exporter, "export_final_report", None) if exporter is not None else None
+    if not getattr(export_fn, "_ctkm_export_memory_contract_v1", False):
+        raise RuntimeError("Export-memory hardening không còn bọc export_final_report")
 
     core_module.app.state.contract_installation_order = CONTRACT_ORDER
     core_module.app.state.registered_main_facade_hooks = hooks
@@ -171,6 +181,7 @@ def install_contract_suite(core_module) -> None:
     install_tem_r_resource_contract(core_module)
     install_auxiliary_workflows_contract(core_module)
     install_expiration_api_contract(core_module)
+    install_export_memory_contract(core_module)
     install_final_output_contract(core_module)
     install_preview_contract(core_module)
     _install_health_contract(core_module)
