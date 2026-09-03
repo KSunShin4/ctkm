@@ -74,14 +74,42 @@ def install_expiration_api_contract(core_module) -> None:
         # that access model.
         if not expiration_file.filename or not expiration_file.filename.lower().endswith(".xlsx"):
             raise HTTPException(status_code=422, detail="expiration_file phải là file .xlsx")
+
+        entry_lines = [line for line in str(entries or "").splitlines() if line.strip()]
+        if not entry_lines:
+            raise HTTPException(
+                status_code=422,
+                detail="Hãy nhập ít nhất một dòng theo mẫu MÃ_P;SỐ_LÔ;DD/MM/YYYY.",
+            )
+        max_entries = int(getattr(expiration_mod, "MAX_EXPIRATION_ROWS", 250_000))
+        if len(entry_lines) > max_entries:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Danh sách kiểm tra vượt quá {max_entries:,} dòng.",
+            )
+
         content = await core_module._read_upload_limited(
             expiration_file, core_module._MAX_EXPIRATION_BYTES, "File hạn dùng"
         )
-        await asyncio.to_thread(core_module._expiration_slots.acquire)
+
+        # Do not block the shared thread pool waiting on a threading.Semaphore.
+        # The endpoint is intentionally public, so excess concurrent requests must
+        # fail fast instead of occupying all to_thread workers used by other APIs.
+        acquired = core_module._expiration_slots.acquire(blocking=False)
+        if not acquired:
+            raise HTTPException(
+                status_code=503,
+                detail="Hệ thống đang xử lý nhiều yêu cầu hạn dùng. Hãy thử lại sau ít giây.",
+                headers={"Retry-After": "2"},
+            )
         try:
             frame, sheet_name, cache_hit = await asyncio.to_thread(
                 core_module._load_expiration_cached, content
             )
+            if frame.empty or "ITEMID" not in frame.columns or not frame["ITEMID"].astype(str).str.strip().ne("").any():
+                raise ValueError(
+                    f"Sheet hạn dùng '{sheet_name}' không có dòng sản phẩm ITEMID để đối chiếu."
+                )
             results = await asyncio.to_thread(expiration_mod.check_entries, frame, entries)
         except HTTPException:
             raise
