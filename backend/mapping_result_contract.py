@@ -13,17 +13,21 @@ def install_mapping_result_contract(core_module, validate_mapping) -> None:
         raise RuntimeError("Không tìm thấy _ctkm_main_core để cài mapping result contract")
 
     def evict_cache(df, schema_section) -> None:
-        prompt_version = main_mod.cfg.GEMINI_CONFIG.get(
-            "prompt_version", "column-mapping-v2"
-        )
-        signature = main_mod.MC.compute_signature(
-            list(df.columns), schema_section, prompt_version
-        )
+        compute_signature = getattr(main_mod.MC, "compute_signature", None)
         lock = getattr(main_mod.MC, "_CACHE_LOCK", None)
         load_unlocked = getattr(main_mod.MC, "_load_unlocked", None)
         save_unlocked = getattr(main_mod.MC, "_save_unlocked", None)
-        if lock is None or not callable(load_unlocked) or not callable(save_unlocked):
+        if (
+            not callable(compute_signature) or lock is None
+            or not callable(load_unlocked) or not callable(save_unlocked)
+        ):
             return
+        prompt_version = main_mod.cfg.GEMINI_CONFIG.get(
+            "prompt_version", "column-mapping-v2"
+        )
+        signature = compute_signature(
+            list(df.columns), schema_section, prompt_version
+        )
         with lock:
             cache = load_unlocked()
             if signature in cache:
