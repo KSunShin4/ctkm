@@ -45,6 +45,22 @@ def _xlsx_bytes():
     return buffer.getvalue()
 
 
+def _fact_frame():
+    return pd.DataFrame([{
+        "Item": "P1001",
+        "Campaign": "Promo",
+        "From": "2026-09-01",
+        "To": "2026-09-30",
+    }])
+
+
+def _fake_normalizer():
+    return SimpleNamespace(
+        apply_mapping=lambda frame, mapping: frame.rename(columns=mapping),
+        clean_values=lambda frame: frame,
+    )
+
+
 def _load_normalizer_module():
     path = Path("modules/5_normalizer.py")
     spec = importlib.util.spec_from_file_location("_test_ctkm_normalizer", path)
@@ -146,7 +162,7 @@ def test_selected_output_columns_are_canonical_unique_strings():
 
 
 def test_stale_preset_falls_back_to_deterministic_mapping_without_gemini():
-    df = pd.DataFrame(columns=["Item", "Campaign", "From", "To"])
+    df = _fact_frame()
     valid = {
         "Item": "item_id",
         "Campaign": "campaign_name",
@@ -164,6 +180,7 @@ def test_stale_preset_falls_back_to_deterministic_mapping_without_gemini():
         _infer_standard_fact_mapping=lambda frame: valid,
         _infer_standard_pog_mapping=lambda frame: {},
         CM=SimpleNamespace(),
+        NM=_fake_normalizer(),
         cfg=SimpleNamespace(GEMINI_CONFIG={"prompt_version": "v-test"}),
         MC=SimpleNamespace(get_cached_mapping=lambda *_args, **_kwargs: None),
     )
@@ -181,7 +198,7 @@ def test_stale_preset_falls_back_to_deterministic_mapping_without_gemini():
 
 
 def test_validated_cache_is_a_zero_gemini_preflight_source():
-    df = pd.DataFrame(columns=["Item", "Campaign", "From", "To"])
+    df = _fact_frame()
     valid = {
         "Item": "item_id",
         "Campaign": "campaign_name",
@@ -197,6 +214,7 @@ def test_validated_cache_is_a_zero_gemini_preflight_source():
         _infer_standard_fact_mapping=lambda frame: {},
         _infer_standard_pog_mapping=lambda frame: {},
         CM=SimpleNamespace(),
+        NM=_fake_normalizer(),
         cfg=SimpleNamespace(GEMINI_CONFIG={"prompt_version": "v-test"}),
         MC=SimpleNamespace(
             get_cached_mapping=lambda *_args, **_kwargs: {"mapping": valid},
@@ -213,7 +231,7 @@ def test_validated_cache_is_a_zero_gemini_preflight_source():
 
 
 def test_invalid_cache_is_recovered_once_then_validated_before_use():
-    df = pd.DataFrame(columns=["Item", "Campaign", "From", "To"])
+    df = _fact_frame()
     valid = {
         "Item": "item_id",
         "Campaign": "campaign_name",
@@ -241,6 +259,7 @@ def test_invalid_cache_is_recovered_once_then_validated_before_use():
     fake_main = SimpleNamespace(
         _core=fake_main_core,
         CM=SimpleNamespace(map_columns_with_gemini=gemini),
+        NM=_fake_normalizer(),
         cfg=SimpleNamespace(GEMINI_CONFIG={"prompt_version": "v-test"}),
         MC=fake_mc,
         _infer_standard_fact_mapping=lambda frame: {},
