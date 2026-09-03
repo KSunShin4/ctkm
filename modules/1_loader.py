@@ -10,6 +10,7 @@ from __future__ import annotations
 import importlib.util
 import io
 from pathlib import Path
+import re
 import sys
 
 import openpyxl
@@ -65,7 +66,59 @@ def _open_workbook_safely(filepath: str):
     return workbook
 
 
-# load_workbook_raw resolves this helper in loader_core globals.
+def _snapshot_month_candidate(parts, *, month_index: int, day_index: int):
+    """Infer one month only when every DATEID date supports the same format."""
+    if not parts:
+        return None
+    months = []
+    years = []
+    for values in parts:
+        month = int(values[month_index])
+        day = int(values[day_index])
+        year = int(values[2])
+        if not (1 <= month <= 12 and 1 <= day <= 31 and 1900 <= year <= 9999):
+            return None
+        months.append(month)
+        years.append(year)
+    if len(set(months)) != 1 or len(set(years)) != 1:
+        return None
+    return f"{years[0]:04d}-{months[0]:02d}"
+
+
+def _extract_pog_snapshot_month_from_values(row_values):
+    """Read DATEID metadata without guessing an ambiguous day/month order.
+
+    Pharmacity's real export currently uses ``DATEID 9/1/2026 - 9/30/2026``
+    (MM/DD/YYYY). Some Excel exports can instead render DD/MM/YYYY. We inspect the
+    whole date range: if only one interpretation is valid and stays in one month,
+    use it; if both interpretations disagree, return ``None`` so the pipeline
+    warns instead of silently assigning the wrong POG month.
+    """
+    pattern = re.compile(r"(\d{1,2})/(\d{1,2})/(\d{4})")
+    for value in row_values:
+        if value is None:
+            continue
+        text = str(value)
+        lower = text.lower()
+        if "applied filter" not in lower and "dateid" not in lower:
+            continue
+        parts = pattern.findall(text)
+        if not parts:
+            continue
+
+        month_first = _snapshot_month_candidate(parts, month_index=0, day_index=1)
+        day_first = _snapshot_month_candidate(parts, month_index=1, day_index=0)
+        candidates = {candidate for candidate in (month_first, day_first) if candidate}
+        if len(candidates) == 1:
+            return next(iter(candidates))
+        if len(candidates) > 1:
+            # Both formats are valid but imply different months: do not guess.
+            return None
+    return None
+
+
+# load_workbook_raw resolves these helpers in loader_core globals.
 _core._open_workbook_safely = _open_workbook_safely
+_core._extract_pog_snapshot_month_from_values = _extract_pog_snapshot_month_from_values
 load_workbook_raw = _core.load_workbook_raw
 inspect_workbook_sheets = _core.inspect_workbook_sheets
