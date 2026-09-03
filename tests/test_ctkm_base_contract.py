@@ -61,4 +61,5 @@ def test_exporter_base_entrypoint_is_business_first_and_keeps_both_channels():
 
     assert prepared.columns.get_loc("item_id") < prepared.columns.get_loc("task_id")
     assert prepared.columns.get_loc("key_channel") < prepared.columns.get_loc("promotion_id")
-    assert selected.columns.tolist() == ["item_name", "item_id", "key_channel", "channel"]
+    # selected_output_columns is a filter, not click-order: identifier stays first.
+    assert selected.columns.tolist() == ["item_id", "item_name", "key_channel", "channel"]
