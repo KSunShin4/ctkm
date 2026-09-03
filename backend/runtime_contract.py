@@ -19,7 +19,6 @@ import threading
 import time
 
 
-_TERMINAL_STATUSES = {"completed", "failed"}
 _ACTIVE_STATUSES = {"queued", "running"}
 
 
@@ -107,6 +106,11 @@ class ReservedHeavyJobQueue:
             }
 
 
+def _output_path(job: dict) -> Path | None:
+    raw = str(job.get("output_path") or "").strip()
+    return Path(raw) if raw else None
+
+
 def _created_timestamp(job: dict) -> float:
     raw = job.get("created_timestamp")
     try:
@@ -120,11 +124,13 @@ def _created_timestamp(job: dict) -> float:
             return datetime.fromisoformat(str(created_at)).timestamp()
         except (TypeError, ValueError):
             pass
-    output_path = Path(str(job.get("output_path") or ""))
-    try:
-        return output_path.stat().st_mtime
-    except OSError:
-        return 0.0
+    output_path = _output_path(job)
+    if output_path is not None:
+        try:
+            return output_path.stat().st_mtime
+        except OSError:
+            pass
+    return 0.0
 
 
 def _effective_status(job: dict) -> str:
@@ -133,13 +139,15 @@ def _effective_status(job: dict) -> str:
         return status
     # Legacy synchronous /api/tem-r stores a job only after successful workbook
     # creation and historically omitted status/progress fields.
-    path = Path(str(job.get("output_path") or ""))
-    if path.is_file() and job.get("summary") is not None:
+    path = _output_path(job)
+    if path is not None and path.is_file() and job.get("summary") is not None:
         return "completed"
     return "failed"
 
 
-def _remove_tree(path: Path) -> None:
+def _remove_tree(path: Path | None) -> None:
+    if path is None:
+        return
     try:
         if path.is_dir():
             shutil.rmtree(path, ignore_errors=True)
@@ -153,7 +161,6 @@ def _job_temp_paths(core_module, job_id: str, kind: str | None = None) -> list[P
     paths = [core_module._TMP_DIR / job_id, core_module._TMP_DIR / f"tem_r_{job_id}"]
     if kind:
         paths.append(core_module._TMP_DIR / f"{kind}_{job_id}")
-    # Preserve order while removing duplicates.
     return list(dict.fromkeys(paths))
 
 
@@ -172,7 +179,7 @@ def install_runtime_contract(core_module) -> None:
         if output:
             job = core_module._jobs.get(job_id)
             if job:
-                _remove_tree(Path(str(job.get("output_path") or "")))
+                _remove_tree(_output_path(job))
 
     def job_public(job: dict) -> dict:
         status = _effective_status(job)
@@ -185,8 +192,8 @@ def install_runtime_contract(core_module) -> None:
             (item for item in snapshot["waiting"] if item["job_id"] == job.get("job_id")),
             None,
         )
-        output_path = Path(str(job.get("output_path") or ""))
-        has_output = status == "completed" and output_path.is_file()
+        output_path = _output_path(job)
+        has_output = status == "completed" and output_path is not None and output_path.is_file()
         return {
             key: job.get(key) for key in (
                 "job_id", "kind", "status", "progress", "message", "summary",
@@ -208,9 +215,9 @@ def install_runtime_contract(core_module) -> None:
                 job["status"] = status
             created = _created_timestamp(job)
             job.setdefault("created_timestamp", created)
-            output = Path(str(job.get("output_path") or ""))
+            output = _output_path(job)
             if status in _ACTIVE_STATUSES:
-                if output:
+                if output is not None:
                     protected_outputs.add(output)
                 protected_tmp.update(_job_temp_paths(core_module, job_id, job.get("kind")))
                 continue
@@ -245,8 +252,8 @@ def install_runtime_contract(core_module) -> None:
             job = core_module._jobs[job_id]
             job.update(status="running", progress=10, message="Đang xử lý file")
             summary, warnings = work(job)
-            output_path = Path(str(job.get("output_path") or ""))
-            if not output_path.is_file():
+            output_path = _output_path(job)
+            if output_path is None or not output_path.is_file():
                 raise RuntimeError("Tác vụ kết thúc nhưng không tạo được file kết quả.")
             job.update(
                 status="completed", progress=100, message="Hoàn tất",
@@ -255,7 +262,7 @@ def install_runtime_contract(core_module) -> None:
         except Exception as exc:
             job = core_module._jobs.get(job_id)
             if job is not None:
-                _remove_tree(Path(str(job.get("output_path") or "")))
+                _remove_tree(_output_path(job))
                 job.update(
                     status="failed", message="Xử lý thất bại", error=str(exc),
                     progress=100,
@@ -271,8 +278,10 @@ def install_runtime_contract(core_module) -> None:
         try:
             queue.reserve(job_id, kind)
         except RuntimeError as exc:
-            core_module._jobs.pop(job_id, None)
+            # Input files/directories are already written by the endpoint before
+            # submission. Remove them immediately if capacity reservation fails.
             cleanup_job_artifacts(job_id, kind, output=True)
+            core_module._jobs.pop(job_id, None)
             raise core_module.HTTPException(status_code=503, detail=str(exc)) from exc
 
         thread = threading.Thread(
@@ -282,14 +291,13 @@ def install_runtime_contract(core_module) -> None:
             thread.start()
         except Exception:
             queue.cancel(job_id)
-            core_module._jobs.pop(job_id, None)
             cleanup_job_artifacts(job_id, kind, output=True)
+            core_module._jobs.pop(job_id, None)
             raise
 
     def output_ready(job: dict) -> bool:
-        return _effective_status(job) == "completed" and Path(
-            str(job.get("output_path") or "")
-        ).is_file()
+        output = _output_path(job)
+        return _effective_status(job) == "completed" and output is not None and output.is_file()
 
     def replace_route(path: str, method: str, endpoint) -> None:
         for route in core_module.app.routes:
@@ -319,8 +327,8 @@ def install_runtime_contract(core_module) -> None:
             raise core_module.HTTPException(
                 status_code=409, detail="Tác vụ thất bại; không có file kết quả hợp lệ."
             )
-        path = Path(str(job.get("output_path") or ""))
-        if not path.is_file():
+        path = _output_path(job)
+        if path is None or not path.is_file():
             raise core_module.HTTPException(
                 status_code=404, detail="File kết quả đã hết hạn hoặc không còn tồn tại."
             )
