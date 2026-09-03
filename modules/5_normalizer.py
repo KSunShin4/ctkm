@@ -2,6 +2,7 @@
 """Module 5: Normalizer — map columns while preserving source values verbatim."""
 from __future__ import annotations
 import re
+import unicodedata
 from typing import Optional
 import pandas as pd
 
@@ -50,6 +51,53 @@ def make_item_key(v):
         text = text.split(".", 1)[0]
     key = text.upper()
     return key or None
+
+
+def _normalized_source_header(value) -> str:
+    text = str(value)
+    while text.startswith("extra__"):
+        text = text[len("extra__"):]
+    text = unicodedata.normalize("NFD", text.strip().lower())
+    return " ".join("".join(ch for ch in text if not unicodedata.combining(ch)).split())
+
+
+def _find_new_item_code_source_column(df: pd.DataFrame):
+    """Find the exact Pharmacity replacement-code source column after mapping.
+
+    Standard Monthly keeps ``Item code 1 (NEW)`` unmapped while standard
+    Clearance keeps ``New P code`` unmapped. Both therefore arrive here with an
+    ``extra__`` prefix. We copy their value to a derived field for matching but
+    never rename or overwrite the original source column.
+    """
+    aliases = {"item code 1 (new)", "new p code"}
+    for column in df.columns:
+        if _normalized_source_header(column) in aliases:
+            return column
+    return None
+
+
+def _attach_new_item_code_fields(df: pd.DataFrame) -> pd.DataFrame:
+    result = df.copy()
+    source_column = _find_new_item_code_source_column(result)
+    if source_column is None:
+        return result
+
+    result["new_item_id"] = result[source_column]
+    result["new_item_key"] = result["new_item_id"].apply(make_item_key)
+    source_keys = result.get("item_key", pd.Series(index=result.index, dtype=object))
+
+    statuses = []
+    for source_key, new_key in zip(source_keys, result["new_item_key"]):
+        if new_key is None or pd.isna(new_key):
+            statuses.append("")
+        elif source_key is None or pd.isna(source_key):
+            statuses.append("Có mã mới - mã nguồn trống")
+        elif str(source_key) == str(new_key):
+            statuses.append("Mã mới trùng mã nguồn")
+        else:
+            statuses.append("Có mã mới - đối chiếu song song")
+    result["item_code_transition_status"] = statuses
+    return result
 
 
 def _preserve_channel(v):
@@ -106,6 +154,7 @@ def clean_values(df: pd.DataFrame) -> pd.DataFrame:
     result = df.copy()
     if "item_id" in result.columns:
         result["item_key"] = result["item_id"].apply(make_item_key)
+    result = _attach_new_item_code_fields(result)
     return result.reset_index(drop=True)
 
 
