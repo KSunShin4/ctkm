@@ -6,6 +6,8 @@ import importlib.util
 from pathlib import Path
 import sys
 
+import pandas as pd
+
 _CORE_NAME = "_ctkm_reconciler_core"
 _CORE_PATH = Path(__file__).with_name("reconciler_core.py")
 
@@ -24,6 +26,16 @@ for _constant in ("_BUSINESS_COLUMNS", "_PROMOTION_ID_COLUMNS"):
     if isinstance(_columns, list) and "key_channel" not in _columns:
         _index = _columns.index("channel") if "channel" in _columns else len(_columns)
         _columns.insert(_index, "key_channel")
+
+# Replacement-code fields are visible source-derived context, but deliberately
+# excluded from _PROMOTION_ID_COLUMNS so existing promotion identity remains
+# anchored to the source Item code 2 / Item code contract.
+_business_columns = getattr(_core, "_BUSINESS_COLUMNS", None)
+if isinstance(_business_columns, list):
+    for _field in ("new_item_id", "item_code_transition_status"):
+        if _field not in _business_columns:
+            _index = _business_columns.index("item_name") if "item_name" in _business_columns else len(_business_columns)
+            _business_columns.insert(_index, _field)
 
 
 def _same_promotion_identity(a: dict, b: dict) -> bool:
@@ -124,6 +136,128 @@ def detect_campaign_time_overlaps(df_ctkm):
     return warnings
 
 
+def _replacement_key_map(frame: pd.DataFrame) -> tuple[dict[str, str], set[str], set[str]]:
+    if frame is None or frame.empty or "new_item_id" not in frame.columns:
+        return {}, set(), set()
+
+    source_values = frame.get("item_key", frame.get("item_id", pd.Series(index=frame.index, dtype=object)))
+    new_values = frame.get("new_item_key", frame["new_item_id"].map(_core._item_key))
+    new_to_source: dict[str, set[str]] = {}
+    source_to_new: dict[str, set[str]] = {}
+
+    for source_value, new_value in zip(source_values, new_values):
+        source = _core._item_key(source_value)
+        new = _core._item_key(new_value)
+        if not source or not new or source == new:
+            continue
+        if not _core.is_sku(source) or not _core.is_sku(new):
+            continue
+        new_to_source.setdefault(new, set()).add(source)
+        source_to_new.setdefault(source, set()).add(new)
+
+    ambiguous_new = {key for key, values in new_to_source.items() if len(values) != 1}
+    ambiguous_source = {key for key, values in source_to_new.items() if len(values) != 1}
+    mapping = {}
+    for new, source_values_for_new in new_to_source.items():
+        if new in ambiguous_new:
+            continue
+        source = next(iter(source_values_for_new))
+        if source in ambiguous_source:
+            continue
+        mapping[new] = source
+    return mapping, ambiguous_new, ambiguous_source
+
+
+def _prepare_fact_transition_status(frame: pd.DataFrame):
+    result = frame.copy()
+    mapping, ambiguous_new, ambiguous_source = _replacement_key_map(result)
+    if "new_item_id" not in result.columns:
+        return result, mapping
+
+    source_values = result.get("item_key", result.get("item_id", pd.Series(index=result.index, dtype=object)))
+    new_values = result.get("new_item_key", result["new_item_id"].map(_core._item_key))
+    statuses = []
+    for source_value, new_value in zip(source_values, new_values):
+        source = _core._item_key(source_value)
+        new = _core._item_key(new_value)
+        if not new:
+            statuses.append("")
+        elif not source:
+            statuses.append("Có mã mới - mã nguồn trống")
+        elif source == new:
+            statuses.append("Mã mới trùng mã nguồn")
+        elif new in ambiguous_new or source in ambiguous_source:
+            statuses.append("Mơ hồ - không tự remap")
+        elif mapping.get(new) == source:
+            statuses.append("Có mã mới - đối chiếu song song")
+        else:
+            statuses.append("Mơ hồ - không tự remap")
+    result["item_code_transition_status"] = statuses
+    return result, mapping
+
+
+def _remap_pog_replacement_keys(df_pog: pd.DataFrame | None, mapping: dict[str, str]):
+    if df_pog is None or df_pog.empty or not mapping:
+        return df_pog
+    result = df_pog.copy()
+    if "item_key" in result.columns:
+        keys = result["item_key"].map(_core._item_key)
+    elif "item_id" in result.columns:
+        keys = result["item_id"].map(_core._item_key)
+    else:
+        return result
+    result["item_key"] = keys.map(lambda value: mapping.get(value, value))
+    return result
+
+
+def _pog_source_item_lookup(df_pog: pd.DataFrame | None) -> dict[str, object]:
+    if df_pog is None or df_pog.empty or "item_id" not in df_pog.columns:
+        return {}
+    lookup = {}
+    has_lineage = "source_row_id" in df_pog.columns
+    for position, (_, row) in enumerate(df_pog.iterrows(), start=2):
+        if has_lineage:
+            value = row.get("source_row_id")
+            if value is None or pd.isna(value) or not str(value).strip():
+                row_id = f"POG:Sheet1:{position}"
+            else:
+                raw = str(value).strip()
+                row_id = raw if raw.startswith("POG:") else f"POG:{raw}"
+        else:
+            row_id = f"POG:Sheet1:{position}"
+        lookup[row_id] = row.get("item_id")
+    return lookup
+
+
+def _attach_pog_match_code_diagnostics(result: pd.DataFrame, df_pog: pd.DataFrame | None):
+    lookup = _pog_source_item_lookup(df_pog)
+    if "pog_source_row_id" in result.columns:
+        result["matched_pog_item_id"] = result["pog_source_row_id"].map(lookup)
+    else:
+        result["matched_pog_item_id"] = pd.NA
+
+    labels = []
+    for _, row in result.iterrows():
+        applicable = row.get("pog_applicable", True)
+        if applicable is False or str(applicable).strip().lower() == "false":
+            labels.append("Không áp dụng POG")
+            continue
+        matched = _core._item_key(row.get("matched_pog_item_id"))
+        if not matched:
+            labels.append("")
+            continue
+        source = _core._item_key(row.get("item_key")) or _core._item_key(row.get("item_id"))
+        new = _core._item_key(row.get("new_item_id"))
+        if new and new != source and matched == new:
+            labels.append("Khớp mã mới")
+        elif source and matched == source:
+            labels.append("Khớp mã nguồn")
+        else:
+            labels.append("Khớp alias chuyển mã")
+    result["pog_match_code_type"] = labels
+    return result
+
+
 _original_build_fefo_action_frame = _core.build_fefo_action_frame
 
 
@@ -164,16 +298,20 @@ def _attach_position_promotion_diagnostics(result):
     return result
 
 
-def build_fefo_action_frame(*args, **kwargs):
+def build_fefo_action_frame(df_ctkm, target_month, df_pog=None, *, business_date=None,
+                            overlap_warnings=None):
     """Keep calendar action and POG applicability/review as independent axes.
 
-    POG quality never changes ``scheduled_action``. Explicit invoice-level rows
-    (``item_key == BILL``) remain valid CTKM calendar records, but POG does not
-    apply to them. They therefore must not be reported as missing shelf locations.
-    Source values and P-code promotions whose scheme text mentions a bill remain
-    untouched and continue through normal POG matching.
+    POG quality never changes ``scheduled_action``. Replacement-code matching is
+    technical only: source Item code 2 / Item code remains the promotion identity,
+    while POG can match either that source code or an unambiguous New P code.
     """
-    result = _original_build_fefo_action_frame(*args, **kwargs)
+    fact_frame, replacement_map = _prepare_fact_transition_status(df_ctkm)
+    remapped_pog = _remap_pog_replacement_keys(df_pog, replacement_map)
+    result = _original_build_fefo_action_frame(
+        fact_frame, target_month, remapped_pog,
+        business_date=business_date, overlap_warnings=overlap_warnings,
+    )
     if result is None or result.empty:
         return result
     required = {
@@ -195,6 +333,7 @@ def build_fefo_action_frame(*args, **kwargs):
         item_keys = result.get("item_id")
     if item_keys is None:
         result["pog_applicable"] = True
+        result = _attach_pog_match_code_diagnostics(result, df_pog)
         return _attach_position_promotion_diagnostics(result)
 
     bill_mask = item_keys.apply(_core.is_bill_program)
@@ -216,6 +355,8 @@ def build_fefo_action_frame(*args, **kwargs):
             result.loc[bill_mask, "pog_source_row_count"] = 0
         if "pog_duplicate_status" in result.columns:
             result.loc[bill_mask, "pog_duplicate_status"] = "Không áp dụng POG"
+
+    result = _attach_pog_match_code_diagnostics(result, df_pog)
     return _attach_position_promotion_diagnostics(result)
 
 
