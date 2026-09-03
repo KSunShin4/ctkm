@@ -1,7 +1,9 @@
+from types import SimpleNamespace
+
 from openpyxl import Workbook
 from openpyxl.utils import get_column_letter
 
-from backend.preview_contract import build_visible_preview, sheet_kind
+from backend.preview_contract import build_visible_preview, install_preview_contract, sheet_kind
 from modules.ctkm_performance import hide_technical_columns
 
 
@@ -64,6 +66,29 @@ def test_preview_matches_final_workbook_visibility(tmp_path):
     assert preview["Tom tat"]["sheet_kind"] == "summary"
     assert preview["Tom tat"]["total_rows"] == 1
     assert preview["Tom tat"]["rows"] == [["Metric visible", "2"]]
+
+
+def test_preview_contract_rebinds_existing_route_without_adding_http_middleware():
+    old_call = object()
+    dependant = SimpleNamespace(call=old_call)
+    route = SimpleNamespace(
+        path="/api/preview/{job_id}", methods={"GET"}, endpoint=old_call, dependant=dependant,
+    )
+    app = SimpleNamespace(state=SimpleNamespace(), routes=[route])
+    core = SimpleNamespace(app=app)
+
+    install_preview_contract(core)
+
+    assert app.state.visible_preview_contract is True
+    assert route.endpoint is core.preview_result
+    assert dependant.call is core.preview_result
+    assert route.endpoint is not old_call
+
+    # Installation is idempotent and does not stack wrappers/middleware.
+    installed = route.endpoint
+    install_preview_contract(core)
+    assert route.endpoint is installed
+    assert dependant.call is installed
 
 
 def test_technical_keys_are_hidden_but_business_scope_stays_visible():
