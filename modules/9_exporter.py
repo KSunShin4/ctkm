@@ -27,8 +27,8 @@ _original_hide = _core._hide_technical_columns
 _original_shelf_colors = _core._apply_alternating_shelf_colors
 _original_export_final_report = _core.export_final_report
 
-# Snapshot quality and POG applicability are operational fields, not technical
-# audit tail. Keep them adjacent to the other location fields in action sheets.
+# Snapshot quality, POG applicability and same-position promotion diagnostics are
+# operational fields, not technical audit tail. Keep them near location context.
 if "pog_month_status" not in _performance.USER_ACTION_COLUMNS:
     _before = (
         _performance.USER_ACTION_COLUMNS.index("location_status")
@@ -43,6 +43,14 @@ if "pog_applicable" not in _performance.USER_ACTION_COLUMNS:
         else len(_performance.USER_ACTION_COLUMNS)
     )
     _performance.USER_ACTION_COLUMNS.insert(_before, "pog_applicable")
+for _field in ("promotion_count_at_position", "has_multiple_promotions_at_position"):
+    if _field not in _performance.USER_ACTION_COLUMNS:
+        _before = (
+            _performance.USER_ACTION_COLUMNS.index("location_completeness")
+            if "location_completeness" in _performance.USER_ACTION_COLUMNS
+            else len(_performance.USER_ACTION_COLUMNS)
+        )
+        _performance.USER_ACTION_COLUMNS.insert(_before, _field)
 
 _core._prepare_action_sheet = _performance.prepare_action_sheet_user_first
 _core._filter_selected_columns = _performance.filter_selected_columns_keep_channels
@@ -58,13 +66,41 @@ def _hide_technical_columns(ws, *, action_sheet=False):
     )
 
 
+def _truthy(value) -> bool:
+    return value is True or str(value).strip().lower() in {"true", "1", "yes"}
+
+
 def _apply_alternating_shelf_colors(ws, df):
-    """Keep shelf grouping, then visibly flag rows whose POG needs verification."""
+    """Keep shelf grouping, then flag POG review and same-position promotions."""
     _original_shelf_colors(ws, df)
-    if ws is None or df is None or df.empty or "location_needs_review" not in df.columns:
+    if ws is None or df is None or df.empty:
         return
 
     headers = [ws.cell(row=1, column=i).value for i in range(1, ws.max_column + 1)]
+
+    # Several valid promotions may deliberately share one physical shelf spot.
+    # Highlight only the diagnostic cells; do not repaint the action row or turn
+    # the condition into an error/review state.
+    collision_fields = [
+        field for field in (
+            "promotion_count_at_position", "has_multiple_promotions_at_position",
+        )
+        if field in headers
+    ]
+    if collision_fields and "has_multiple_promotions_at_position" in df.columns:
+        warning_fill = _core.PatternFill(fill_type="solid", fgColor="FFF2CC")
+        warning_font = _core.Font(bold=True, color="7F6000")
+        collision_columns = [headers.index(field) + 1 for field in collision_fields]
+        for excel_row, (_, row) in enumerate(df.iterrows(), start=2):
+            if not _truthy(row.get("has_multiple_promotions_at_position")):
+                continue
+            for column in collision_columns:
+                cell = ws.cell(row=excel_row, column=column)
+                cell.fill = warning_fill
+                cell.font = warning_font
+
+    if "location_needs_review" not in df.columns:
+        return
     review_fields = [
         field for field in (
             "location_completeness", "pog_month_status",
@@ -80,12 +116,7 @@ def _apply_alternating_shelf_colors(ws, df):
     column_indexes = [headers.index(field) + 1 for field in review_fields]
 
     for excel_row, (_, row) in enumerate(df.iterrows(), start=2):
-        value = row.get("location_needs_review")
-        needs_review = (
-            value is True
-            or str(value).strip().lower() in {"true", "1", "yes"}
-        )
-        if not needs_review:
+        if not _truthy(row.get("location_needs_review")):
             continue
         for column in column_indexes:
             cell = ws.cell(row=excel_row, column=column)
@@ -139,6 +170,12 @@ _core._apply_alternating_shelf_colors = _apply_alternating_shelf_colors
 _core._BILINGUAL_HEADERS["key_channel"] = "Phạm vi áp dụng (KEY Channel)"
 _core._BILINGUAL_HEADERS["channel"] = "Kênh chương trình (Channel)"
 _core._BILINGUAL_HEADERS["pog_applicable"] = "Có áp dụng vị trí POG? (pog_applicable)"
+_core._BILINGUAL_HEADERS["promotion_count_at_position"] = (
+    "Số CTKM tại cùng vị trí (promotion_count_at_position)"
+)
+_core._BILINGUAL_HEADERS["has_multiple_promotions_at_position"] = (
+    "Nhiều CTKM cùng vị trí? (has_multiple_promotions_at_position)"
+)
 
 for _name in dir(_core):
     if not _name.startswith("__"):
