@@ -19,7 +19,7 @@ services:
       MAX_TEM_R_FILE_MB: ${MAX_TEM_R_FILE_MB:-25}
       MAX_PIPELINE_FILE_MB: ${MAX_PIPELINE_FILE_MB:-50}
       JOB_TTL_SECONDS: ${JOB_TTL_SECONDS:-21600}
-    volumes:
-      - ./:/app
     # Keep one Uvicorn worker. Queue/job state is intentionally process-local.
+    # Do not mount the repository over /app here: that would hide frontend/dist
+    # built into the Docker image and make Compose behave differently from Render.
     command: python -m uvicorn backend.main_api:app --host 0.0.0.0 --port 8000
