@@ -7,6 +7,8 @@ import importlib.util
 from pathlib import Path
 import sys
 
+from openpyxl import load_workbook
+
 _CORE_NAME = "_ctkm_exporter_core"
 _CORE_PATH = Path(__file__).with_name("exporter_core.py")
 
@@ -23,6 +25,7 @@ else:
 _performance = importlib.import_module("modules.ctkm_performance")
 _original_hide = _core._hide_technical_columns
 _original_shelf_colors = _core._apply_alternating_shelf_colors
+_original_export_final_report = _core.export_final_report
 
 # Snapshot quality is an operational field, not a technical audit tail. Keep it
 # adjacent to the other location fields in the user-first action layout.
@@ -83,6 +86,47 @@ def _apply_alternating_shelf_colors(ws, df):
             cell.font = review_font
 
 
+def _append_pog_metadata_audit(output_path, metadata) -> None:
+    """Preserve export control rows without presenting them as operational errors."""
+    if metadata is None or metadata.empty:
+        return
+    workbook = load_workbook(output_path)
+    sheet_name = "POG metadata"
+    if sheet_name in workbook.sheetnames:
+        del workbook[sheet_name]
+    ws = workbook.create_sheet(sheet_name)
+    columns = list(metadata.columns)
+    ws.append(columns)
+    for _, row in metadata.iterrows():
+        values = []
+        for column in columns:
+            value = row[column]
+            try:
+                missing = bool(_core.pd.isna(value))
+            except (TypeError, ValueError):
+                missing = False
+            values.append(None if missing else value)
+        ws.append(values)
+    ws.freeze_panes = "A2"
+    if ws.max_row >= 1 and ws.max_column >= 1:
+        ws.auto_filter.ref = ws.dimensions
+    ws.sheet_state = "hidden"
+    workbook.save(output_path)
+
+
+def export_final_report(*args, **kwargs):
+    """Export normal report and retain recognized POG control rows in hidden audit."""
+    df_pog_review = kwargs.get("df_pog_review")
+    if df_pog_review is None and len(args) > 11:
+        df_pog_review = args[11]
+    metadata = None
+    if df_pog_review is not None:
+        metadata = getattr(df_pog_review, "attrs", {}).get("pog_metadata")
+    output_path = _original_export_final_report(*args, **kwargs)
+    _append_pog_metadata_audit(output_path, metadata)
+    return output_path
+
+
 _core._hide_technical_columns = _hide_technical_columns
 _core._apply_alternating_shelf_colors = _apply_alternating_shelf_colors
 _core._BILINGUAL_HEADERS["key_channel"] = "Phạm vi áp dụng (KEY Channel)"
@@ -92,6 +136,7 @@ for _name in dir(_core):
     if not _name.startswith("__"):
         globals()[_name] = getattr(_core, _name)
 
+# Keep facade wrappers after the core symbol export above.
 _prepare_action_sheet = _core._prepare_action_sheet
 _filter_selected_columns = _core._filter_selected_columns
 _add_work_tracking_columns = _core._add_work_tracking_columns
