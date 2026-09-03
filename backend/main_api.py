@@ -2,8 +2,9 @@
 """FastAPI entrypoint with exact, atomic workflow preset storage.
 
 The existing API implementation is preserved byte-for-byte in ``main_api_core.py``.
-Only preset identity/storage is hardened here, then this module resolves to the
-core module so monkeypatching and FastAPI endpoint globals keep normal semantics.
+Only preset identity/storage and compatibility contracts are hardened here, then
+this module resolves to the core module so monkeypatching and FastAPI endpoint
+globals keep normal semantics.
 """
 from __future__ import annotations
 
@@ -15,6 +16,8 @@ from pathlib import Path
 import sys
 import tempfile
 import threading
+
+from backend.preview_contract import install_preview_contract
 
 _CORE_NAME = "backend.main_api_core"
 _CORE_PATH = Path(__file__).with_name("main_api_core.py")
@@ -166,6 +169,8 @@ for _name, _value in {
     "_delete_preset": _delete_preset,
 }.items():
     setattr(_core, _name, _value)
+
+install_preview_contract(_core)
 
 # Make imports receive the actual core module. This preserves attribute mutation
 # semantics used by tests and by runtime monkeypatch/configuration code.
