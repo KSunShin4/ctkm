@@ -208,6 +208,38 @@ def unique_work_tracking_rows(df: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
+def align_task_summary_with_work_rows(summary: dict, df_fefo_actions: pd.DataFrame | None) -> dict:
+    """Make operational summary counts match the interactive action sheets.
+
+    The action audit can contain several source rows for one physical task. The
+    four editable work sheets intentionally show one row per stable ``task_id``;
+    therefore task-oriented summary metrics must use that same consolidated
+    frame. Join/location/source-row metrics are deliberately left untouched
+    because their corresponding audit sheets still represent rows, not tasks.
+    """
+    if not isinstance(summary, dict) or df_fefo_actions is None:
+        return summary
+
+    actions = df_fefo_actions.copy()
+    if "in_report_scope" in actions.columns:
+        actions = actions[actions["in_report_scope"].fillna(False).astype(bool)].copy()
+    tasks = unique_work_tracking_rows(actions)
+
+    scheduled = tasks.get(
+        "scheduled_action",
+        tasks.get("action", pd.Series(index=tasks.index, dtype=object)),
+    )
+    sources = tasks.get("program_source", pd.Series(index=tasks.index, dtype=object))
+
+    if "So dong tem tu Clearance" in summary:
+        summary["So dong tem tu Clearance"] = int(sources.eq("CLEARANCE").sum())
+    if "So dong cho gan" in summary:
+        summary["So dong cho gan"] = int(scheduled.eq("chờ gắn tem").sum())
+    if "So dong can review" in summary:
+        summary["So dong can review"] = int(scheduled.eq("review").sum())
+    return summary
+
+
 def hide_technical_columns(ws, *, get_column_letter, original_hide=None, action_sheet=False) -> None:
     if callable(original_hide):
         original_hide(ws, action_sheet=action_sheet)
@@ -336,6 +368,7 @@ def install_performance_patches(main_mod) -> None:
 
     original_overlap = main_mod.RC.detect_campaign_time_overlaps
     original_hide = main_mod.EX._hide_technical_columns
+    original_export = main_mod.EX.export_final_report
 
     def confirmation(df_ctkm, df_clearance):
         return build_ctkm_clearance_confirmation_fast(
@@ -360,6 +393,14 @@ def install_performance_patches(main_mod) -> None:
             action_sheet=action_sheet,
         )
 
+    def export_with_task_summary(*args, **kwargs):
+        summary = kwargs.get("reconciliation_summary")
+        if summary is None and len(args) > 6:
+            summary = args[6]
+        actions = kwargs.get("df_fefo_actions")
+        align_task_summary_with_work_rows(summary, actions)
+        return original_export(*args, **kwargs)
+
     # KEY Channel participates in duplicate identity and stable promotion IDs,
     # but its source value is never normalized/rewritten.
     for constant_name in ("_BUSINESS_COLUMNS", "_PROMOTION_ID_COLUMNS"):
@@ -376,6 +417,7 @@ def install_performance_patches(main_mod) -> None:
     main_mod.EX._filter_selected_columns = filter_selected_columns_keep_channels
     main_mod.EX._add_work_tracking_columns = unique_work_tracking_rows
     main_mod.EX._hide_technical_columns = hide_columns
+    main_mod.EX.export_final_report = export_with_task_summary
     main_mod.EX._BILINGUAL_HEADERS["key_channel"] = "Phạm vi áp dụng (KEY Channel)"
     main_mod.EX._BILINGUAL_HEADERS["channel"] = "Kênh chương trình (Channel)"
     main_mod._ctkm_performance_patched = True
