@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Validate every non-manual mapping before it reaches normalization."""
+"""Validate mapping results and reject sheets with no business rows."""
 from __future__ import annotations
 
 
@@ -34,11 +34,60 @@ def install_mapping_result_contract(core_module, validate_mapping) -> None:
                 del cache[signature]
                 save_unlocked(cache)
 
+    def validate_business_presence(sheet_name, df, mapping, schema_section) -> None:
+        """Reject only sheets whose mapped rows are all recognized control rows.
+
+        Genuine malformed business rows (for example a promotion missing ITEMID)
+        remain valid input so the pipeline can surface them in Cần review. The
+        check reuses the same fact/POG control classifiers as operational code.
+        """
+        mapped = main_mod.NM.apply_mapping(df.copy(), mapping)
+        mapped = main_mod.NM.clean_values(mapped)
+        if mapped.empty:
+            raise ValueError(f"Sheet '{sheet_name}' không có dòng dữ liệu nghiệp vụ.")
+
+        is_fact = (
+            "campaign_name" in schema_section
+            and "promo_from" in schema_section
+            and "promo_to" in schema_section
+        )
+        if is_fact:
+            separator = getattr(main_mod, "_separate_fact_control_rows", None)
+            if callable(separator):
+                business, _metadata = separator(mapped)
+            else:
+                business = mapped
+            if business.empty:
+                raise ValueError(
+                    f"Sheet '{sheet_name}' chỉ chứa subtotal/Total/control; "
+                    "hãy chọn sheet CTKM/Clearance có dòng sản phẩm nghiệp vụ."
+                )
+            return
+
+        is_pog = "store_id" in schema_section and "campaign_name" not in schema_section
+        if is_pog:
+            classifier = getattr(main_mod.JN, "_pog_control_row_kind", None)
+            if callable(classifier):
+                kinds = mapped.apply(classifier, axis=1)
+                business = mapped[kinds.isna()]
+            else:
+                business = mapped
+            if business.empty:
+                raise ValueError(
+                    f"Sheet POG '{sheet_name}' chỉ chứa Total/filter metadata; "
+                    "hãy chọn sheet có dữ liệu vị trí sản phẩm."
+                )
+
+    def validate_resolved(sheet_name, df, schema_section, mapping):
+        checked = validate_mapping(mapping, df, schema_section)
+        validate_business_presence(sheet_name, df, checked, schema_section)
+        return checked
+
     def recover_or_validate(original, sheet_name, df, schema_section, mapping_logs):
         before = len(mapping_logs)
         mapping = original(sheet_name, df, schema_section, mapping_logs)
         try:
-            return validate_mapping(mapping, df, schema_section)
+            checked = validate_mapping(mapping, df, schema_section)
         except ValueError as exc:
             entry = mapping_logs[-1] if len(mapping_logs) > before else {}
             source = str(entry.get("source") or "") if isinstance(entry, dict) else ""
@@ -69,7 +118,9 @@ def install_mapping_result_contract(core_module, validate_mapping) -> None:
                 "source": "gemini-cache-recovery",
                 "sheet_name": sheet_name,
             })
-            return checked
+
+        validate_business_presence(sheet_name, df, checked, schema_section)
+        return checked
 
     # Current facade wrapper includes deterministic Pharmacity mapping before the
     # historical cache/Gemini fallback. Validate its final result today.
@@ -104,13 +155,18 @@ def install_mapping_result_contract(core_module, validate_mapping) -> None:
     from backend import input_contract
 
     def mapping_or_none(main_module, df, schema_section, explicit, preset, *, kind: str):
+        sheet_label = str(getattr(df, "attrs", {}).get("sheet_name") or kind.upper())
         if explicit is not None:
-            return validate_mapping(explicit, df, schema_section), "manual"
+            return validate_resolved(sheet_label, df, schema_section, explicit), "manual"
         if preset:
             try:
-                return validate_mapping(preset, df, schema_section), "saved-preset"
-            except ValueError:
-                pass
+                checked = validate_resolved(sheet_label, df, schema_section, preset)
+                return checked, "saved-preset"
+            except ValueError as exc:
+                # A structurally stale preset may be ignored, but a control-only
+                # sheet must not silently fall through to another mapper.
+                if "subtotal/Total/control" in str(exc) or "Total/filter metadata" in str(exc):
+                    raise
         infer = (
             main_module._infer_standard_fact_mapping
             if kind == "fact" else main_module._infer_standard_pog_mapping
@@ -118,7 +174,8 @@ def install_mapping_result_contract(core_module, validate_mapping) -> None:
         inferred = infer(df)
         if inferred:
             suffix = "-after-stale-preset" if preset else ""
-            return validate_mapping(inferred, df, schema_section), f"standard-{kind}{suffix}"
+            checked = validate_resolved(sheet_label, df, schema_section, inferred)
+            return checked, f"standard-{kind}{suffix}"
 
         prompt_version = main_module.cfg.GEMINI_CONFIG.get(
             "prompt_version", "column-mapping-v2"
@@ -128,10 +185,14 @@ def install_mapping_result_contract(core_module, validate_mapping) -> None:
         )
         if isinstance(cached, dict) and cached.get("mapping"):
             try:
-                checked = validate_mapping(cached["mapping"], df, schema_section)
+                checked = validate_resolved(
+                    sheet_label, df, schema_section, cached["mapping"]
+                )
                 suffix = "-after-stale-preset" if preset else ""
                 return checked, f"cache{suffix}"
-            except ValueError:
+            except ValueError as exc:
+                if "subtotal/Total/control" in str(exc) or "Total/filter metadata" in str(exc):
+                    raise
                 evict_cache(df, schema_section)
 
         return None, "gemini-required-after-stale-preset" if preset else "gemini-required"
