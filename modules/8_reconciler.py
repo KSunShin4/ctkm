@@ -8,6 +8,8 @@ import sys
 
 import pandas as pd
 
+from modules.item_code_identity import build_transition_identity
+
 _CORE_NAME = "_ctkm_reconciler_core"
 _CORE_PATH = Path(__file__).with_name("reconciler_core.py")
 
@@ -63,22 +65,34 @@ def _scope_key(value):
 
 
 def detect_campaign_time_overlaps(df_ctkm):
+    """Detect conflicts by product identity, including safe old/new-code pairs.
+
+    Source ``item_key`` remains part of promotion identity. A separate comparison
+    key is used only to put a legacy-code row and its explicit one-to-one New P
+    code row into the same overlap bucket. Ambiguous transitions remain separate.
+    """
     warnings = []
     if not {"item_id", "promo_from", "promo_to"}.issubset(df_ctkm.columns):
         return warnings
 
     df = _core._ensure_item_key(df_ctkm)
+    transition = build_transition_identity(
+        df, key_func=_core._item_key, is_sku=_core.is_sku,
+    )
+    df["_comparison_item_key"] = df["item_key"].map(
+        lambda value: transition.canonical(value, key_func=_core._item_key)
+    )
     df["_overlap_from"] = df["promo_from"].apply(_core._parse_date)
     df["_overlap_to"] = df["promo_to"].apply(_core._parse_date)
     df = df[df["_overlap_from"].notna() & df["_overlap_to"].notna()].copy()
     if df.empty:
         return warnings
-    df = df[df["item_key"].apply(_core.is_sku)]
+    df = df[df["_comparison_item_key"].apply(_core.is_sku)]
     df = _core._ensure_source_lineage(df)
 
     from itertools import combinations
 
-    for item_key, grp in df.groupby("item_key"):
+    for comparison_item_key, grp in df.groupby("_comparison_item_key"):
         if len(grp) < 2:
             continue
         rows = grp.to_dict("records")
@@ -88,9 +102,10 @@ def detect_campaign_time_overlaps(df_ctkm):
             if not (af <= bt and bf <= at):
                 continue
 
-            # Equality and stable promotion IDs must use one contract. Otherwise
-            # the pipeline can assign the same promotion_id to two rows and then
-            # simultaneously report those rows as conflicting campaigns.
+            # Equality and stable promotion IDs must use one contract. Different
+            # source codes deliberately remain different promotion identities; if
+            # they refer to one transitioned product, the overlap should therefore
+            # be visible rather than silently collapsed.
             if _same_promotion_identity(a, b):
                 continue
 
@@ -119,7 +134,7 @@ def detect_campaign_time_overlaps(df_ctkm):
                 else "potential_cross_channel_overlap"
             )
             warnings.append(_core.OverlapWarning(
-                str(item_key), ca, cb,
+                str(comparison_item_key), ca, cb,
                 f"{af.date()} -> {at.date()}",
                 f"{bf.date()} -> {bt.date()}",
                 _core._display_value(a.get("channel")),
