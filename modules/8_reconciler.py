@@ -127,6 +127,43 @@ def detect_campaign_time_overlaps(df_ctkm):
 _original_build_fefo_action_frame = _core.build_fefo_action_frame
 
 
+def _attach_position_promotion_diagnostics(result):
+    """Surface multiple valid promotion tasks sharing one physical POG position.
+
+    Different channel/scoped offers remain independent promotions and tasks. This
+    diagnostic does not merge, block or reschedule them; it only tells the store
+    operator that several promotion rows point at the same shelf position. Exact
+    source duplicates that share one promotion_id count once.
+    """
+    result["promotion_count_at_position"] = 0
+    result["has_multiple_promotions_at_position"] = False
+    required = {
+        "pog_position_id", "promotion_id", "scheduled_action",
+        "location_completeness", "pog_applicable",
+    }
+    if not required.issubset(result.columns):
+        return result
+
+    eligible = (
+        result["pog_applicable"].fillna(True).astype(bool)
+        & result["location_completeness"].eq("Đủ vị trí")
+    )
+    if "pog_position_count" in result.columns:
+        eligible &= result["pog_position_count"].fillna(0).astype(int).gt(0)
+    if not eligible.any():
+        return result
+
+    working = result.loc[
+        eligible, ["pog_position_id", "scheduled_action", "promotion_id"]
+    ].copy()
+    counts = working.groupby(
+        ["pog_position_id", "scheduled_action"], dropna=False
+    )["promotion_id"].transform("nunique")
+    result.loc[eligible, "promotion_count_at_position"] = counts.astype(int).to_numpy()
+    result.loc[eligible, "has_multiple_promotions_at_position"] = counts.gt(1).to_numpy()
+    return result
+
+
 def build_fefo_action_frame(*args, **kwargs):
     """Keep calendar action and POG applicability/review as independent axes.
 
@@ -158,7 +195,7 @@ def build_fefo_action_frame(*args, **kwargs):
         item_keys = result.get("item_id")
     if item_keys is None:
         result["pog_applicable"] = True
-        return result
+        return _attach_position_promotion_diagnostics(result)
 
     bill_mask = item_keys.apply(_core.is_bill_program)
     result["pog_applicable"] = ~bill_mask
@@ -179,7 +216,7 @@ def build_fefo_action_frame(*args, **kwargs):
             result.loc[bill_mask, "pog_source_row_count"] = 0
         if "pog_duplicate_status" in result.columns:
             result.loc[bill_mask, "pog_duplicate_status"] = "Không áp dụng POG"
-    return result
+    return _attach_position_promotion_diagnostics(result)
 
 
 _core._same_campaign_row = _same_promotion_identity
