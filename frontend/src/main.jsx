@@ -78,7 +78,7 @@ const rewriteLegacyUiText = root => {
   })
   root?.querySelectorAll?.('.section-title > span').forEach(node => {
     if (node.textContent?.trim() === '50 dòng đầu mỗi sheet') {
-      node.textContent = 'Tối đa 100 dòng visible mỗi sheet'
+      node.textContent = 'Tối đa 100 dòng hiển thị mỗi sheet'
     }
   })
   root?.querySelectorAll?.('.stat-box').forEach(box => {
@@ -87,7 +87,9 @@ const rewriteLegacyUiText = root => {
     if (label !== 'Thiếu vị trí POG' || !sub) return
     const text = sub.textContent?.trim() || ''
     const match = text.match(/^(\d+)\s+CTKM theo hóa đơn(?:\s+·\s+không tính thiếu POG)?$/)
-    if (match) sub.textContent = `${match[1]} CTKM theo hóa đơn · không tính thiếu POG`
+    if (!match) return
+    const replacement = `${match[1]} CTKM theo hóa đơn · không tính thiếu POG`
+    if (text !== replacement) sub.textContent = replacement
   })
 }
 
