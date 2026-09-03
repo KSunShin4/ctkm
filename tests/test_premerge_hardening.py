@@ -2,6 +2,7 @@ import asyncio
 
 import pytest
 from fastapi import HTTPException
+from openpyxl import Workbook
 
 from backend import main_api
 
@@ -63,10 +64,12 @@ def test_inspect_pog_multiple_sheets_does_not_load_full_workbook_before_selectio
     class FakeUpload:
         filename = "POG.XLSX"
 
-        async def read(self, _limit):
-            return b"xlsx-placeholder"
+    async def validated_upload(_upload, _max_bytes, _label):
+        # Container validation is covered separately; this test isolates sheet-selection behavior.
+        return b"validated-xlsx-fixture"
 
     monkeypatch.setattr(main_api, "_TMP_DIR", tmp_path)
+    monkeypatch.setattr(main_api, "_read_upload_limited", validated_upload)
     monkeypatch.setattr(
         main_api._main_mod.L,
         "inspect_workbook_sheets",
@@ -90,40 +93,24 @@ def test_inspect_pog_multiple_sheets_does_not_load_full_workbook_before_selectio
     assert result["sheet_names"] == ["POG A", "POG B"]
 
 
-def test_preview_reads_only_requested_rows(monkeypatch, tmp_path):
-    class FakeSheet:
-        max_row = 100_001
-
-        def iter_rows(self, *, min_row=None, max_row=None, values_only=False):
-            assert min_row == 1
-            assert max_row == 4  # header + three requested data rows
-            assert values_only is True
-            yield ("A", "B")
-            yield (1, "one")
-            yield (2, "two")
-            yield (3, "three")
-
-    class FakeWorkbook:
-        sheetnames = ["Large"]
-
-        def __init__(self):
-            self.sheet = FakeSheet()
-            self.closed = False
-
-        def __getitem__(self, _name):
-            return self.sheet
-
-        def close(self):
-            self.closed = True
-
-    fake_workbook = FakeWorkbook()
-    monkeypatch.setattr("openpyxl.load_workbook", lambda *_args, **_kwargs: fake_workbook)
-
+def test_preview_counts_visible_rows_and_limits_only_returned_rows(tmp_path):
     output = tmp_path / "result.xlsx"
-    output.write_bytes(b"placeholder")
+    workbook = Workbook()
+    ws = workbook.active
+    ws.title = "Large"
+    ws.append(["A", "B"])
+    for number in range(1, 6):
+        ws.append([number, f"row-{number}"])
+    # Hide the second data row. It must not count toward the preview badge.
+    ws.row_dimensions[3].hidden = True
+    workbook.save(output)
+
     job_id = "preview-hardening"
     main_api._jobs[job_id] = {
         "job_id": job_id,
+        "kind": "ctkm",
+        "status": "completed",
+        "progress": 100,
         "month": "2026-08",
         "output_path": str(output),
         "output_name": output.name,
@@ -136,7 +123,7 @@ def test_preview_reads_only_requested_rows(monkeypatch, tmp_path):
         main_api._jobs.pop(job_id, None)
 
     assert result["sheets"]["Large"]["rows"] == [
-        ["1", "one"], ["2", "two"], ["3", "three"],
+        ["1", "row-1"], ["3", "row-3"], ["4", "row-4"],
     ]
-    assert result["sheets"]["Large"]["total_rows"] == 100_000
-    assert fake_workbook.closed is True
+    assert result["sheets"]["Large"]["total_rows"] == 4
+    assert result["sheets"]["Large"]["sheet_kind"] == "data"
