@@ -118,8 +118,9 @@ def test_overlap_warning_does_not_suppress_different_channels():
     warnings = detect_campaign_time_overlaps(df)
 
     assert len(warnings) == 1
-    assert warnings[0].channel_a == "OFFLINE"
-    assert warnings[0].channel_b == "WEBAPP"
+    assert warnings[0].channel_a == "KEY=(không rõ) | Channel=OFFLINE"
+    assert warnings[0].channel_b == "KEY=(không rõ) | Channel=WEBAPP"
+    assert warnings[0].scope_relation in {"disjoint", "unknown"}
 
 
 def test_overlap_warning_keeps_channels_that_can_apply_together():
@@ -132,5 +133,6 @@ def test_overlap_warning_keeps_channels_that_can_apply_together():
     warnings = detect_campaign_time_overlaps(df)
 
     assert len(warnings) == 1
-    assert warnings[0].channel_a == "ALL CHANNEL"
-    assert warnings[0].channel_b == "OFFLINE"
+    assert warnings[0].channel_a == "KEY=(không rõ) | Channel=ALL CHANNEL"
+    assert warnings[0].channel_b == "KEY=(không rõ) | Channel=OFFLINE"
+    assert warnings[0].is_blocking is False
