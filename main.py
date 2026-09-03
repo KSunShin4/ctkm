@@ -241,10 +241,25 @@ def _align_pog_promotion_coverage_summary(
             row_keys = pd.Series(index=df_pog_only.index, dtype=object)
         missing_rows = int(row_keys.isin(missing_km_keys).sum())
 
+    # Preserve the original Monthly reconciliation counts explicitly before the
+    # legacy public keys are repurposed as operational all-KM aliases.
+    monthly_rows = int(summary.get("So dong POG khong co CTKM phu hop", len(df_pog_only or [])))
+    monthly_items = int(summary.get("So item POG khong co CTKM phu hop", len(monthly_pog_only_keys)))
+    summary["So dong POG khong co CTKM Monthly phu hop"] = monthly_rows
+    summary["So item POG khong co CTKM Monthly phu hop"] = monthly_items
+
     summary["So dong POG khong co KM phu hop"] = missing_rows
     summary["So item POG khong co KM phu hop"] = len(missing_km_keys)
     summary["So item POG co KM phu hop"] = len(covered_km_keys)
     summary["So item POG tong hop de doi chieu KM"] = len(all_pog_keys)
+
+    # Existing frontend releases read the historical key. Point it at the
+    # operationally correct all-KM value while keeping Monthly under explicit
+    # keys above. Workbook summary hides this legacy label to avoid ambiguity.
+    if "So dong POG khong co CTKM phu hop" in summary:
+        summary["So dong POG khong co CTKM phu hop"] = missing_rows
+    if "So item POG khong co CTKM phu hop" in summary:
+        summary["So item POG khong co CTKM phu hop"] = len(missing_km_keys)
     return summary
 
 
@@ -261,6 +276,8 @@ def _clarify_location_workbook(output_path):
         legacy = {
             "So dong CTKM thieu vi tri ke",
             "So item CTKM thieu vi tri ke",
+            "So dong POG khong co CTKM phu hop",
+            "So item POG khong co CTKM phu hop",
         }
         for row in range(2, ws.max_row + 1):
             if ws.cell(row=row, column=1).value in legacy:
