@@ -28,6 +28,7 @@ def test_backend_suite_has_one_verified_installation_order_and_is_idempotent():
 
     queue_before = main_api._heavy_queue
     mapper_before = main_api._main_mod._core._get_or_map
+    exporter_before = main_api._main_mod._core.EX.export_final_report
     routes_before = {
         (method, route.path): route.endpoint
         for route in main_api.app.routes
@@ -39,6 +40,7 @@ def test_backend_suite_has_one_verified_installation_order_and_is_idempotent():
     assert main_api._heavy_queue is queue_before
     assert main_api._main_mod._core._get_or_map is mapper_before
     assert main_api._main_mod._get_or_map is mapper_before
+    assert main_api._main_mod._core.EX.export_final_report is exporter_before
     routes_after = {
         (method, route.path): route.endpoint
         for route in main_api.app.routes
@@ -55,6 +57,7 @@ def test_health_reports_verified_hardened_facade_state():
     assert payload["contract_order"] == list(CONTRACT_ORDER)
     assert payload["main_facade_hooks"] == [
         "mapping-result-contract-v1",
+        "export-memory-contract-v1",
         "backend-contract-suite-verify-v1",
     ]
 
@@ -92,6 +95,7 @@ def test_main_reload_reapplies_mapping_hardening_without_mutating_baseline():
     hooks = registered_post_facade_hooks(core)
     assert hooks == (
         "mapping-result-contract-v1",
+        "export-memory-contract-v1",
         "backend-contract-suite-verify-v1",
     )
 
@@ -102,6 +106,8 @@ def test_main_reload_reapplies_mapping_hardening_without_mutating_baseline():
     assert getattr(core._get_or_map, "_ctkm_mapping_result_contract_v1", False)
     assert repeated._get_or_map is core._get_or_map
     assert main_api._main_mod._get_or_map is core._get_or_map
+    assert getattr(core.EX.export_final_report, "_ctkm_export_memory_contract_v1", False)
+    assert core.EX.export_final_report.__wrapped__ is repeated._export_with_location_summary
     assert core._ctkm_main_last_post_facade_hooks == hooks
     assert main_api.app.state.registered_main_facade_hooks == hooks
 
