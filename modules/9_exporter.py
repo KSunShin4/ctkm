@@ -27,8 +27,16 @@ _original_hide = _core._hide_technical_columns
 _original_shelf_colors = _core._apply_alternating_shelf_colors
 _original_export_final_report = _core.export_final_report
 
-# Snapshot quality, POG applicability and same-position promotion diagnostics are
-# operational fields, not technical audit tail. Keep them near location context.
+# Replacement-code context, snapshot quality, POG applicability and same-position
+# diagnostics are operational fields rather than technical audit tail.
+for _field in ("item_code_transition_status", "new_item_id"):
+    if _field not in _performance.USER_ACTION_COLUMNS:
+        _before = (
+            _performance.USER_ACTION_COLUMNS.index("item_name")
+            if "item_name" in _performance.USER_ACTION_COLUMNS
+            else len(_performance.USER_ACTION_COLUMNS)
+        )
+        _performance.USER_ACTION_COLUMNS.insert(_before, _field)
 if "pog_month_status" not in _performance.USER_ACTION_COLUMNS:
     _before = (
         _performance.USER_ACTION_COLUMNS.index("location_status")
@@ -43,6 +51,14 @@ if "pog_applicable" not in _performance.USER_ACTION_COLUMNS:
         else len(_performance.USER_ACTION_COLUMNS)
     )
     _performance.USER_ACTION_COLUMNS.insert(_before, "pog_applicable")
+for _field in ("matched_pog_item_id", "pog_match_code_type"):
+    if _field not in _performance.USER_ACTION_COLUMNS:
+        _before = (
+            _performance.USER_ACTION_COLUMNS.index("store_id")
+            if "store_id" in _performance.USER_ACTION_COLUMNS
+            else len(_performance.USER_ACTION_COLUMNS)
+        )
+        _performance.USER_ACTION_COLUMNS.insert(_before, _field)
 for _field in ("promotion_count_at_position", "has_multiple_promotions_at_position"):
     if _field not in _performance.USER_ACTION_COLUMNS:
         _before = (
@@ -169,6 +185,12 @@ _core._hide_technical_columns = _hide_technical_columns
 _core._apply_alternating_shelf_colors = _apply_alternating_shelf_colors
 _core._BILINGUAL_HEADERS["key_channel"] = "Phạm vi áp dụng (KEY Channel)"
 _core._BILINGUAL_HEADERS["channel"] = "Kênh chương trình (Channel)"
+_core._BILINGUAL_HEADERS["new_item_id"] = "Mã mới (Item code 1 NEW / New P code)"
+_core._BILINGUAL_HEADERS["item_code_transition_status"] = (
+    "Trạng thái chuyển mã (item_code_transition_status)"
+)
+_core._BILINGUAL_HEADERS["matched_pog_item_id"] = "Mã ITEMID thực tế trên POG"
+_core._BILINGUAL_HEADERS["pog_match_code_type"] = "POG khớp theo mã nào?"
 _core._BILINGUAL_HEADERS["pog_applicable"] = "Có áp dụng vị trí POG? (pog_applicable)"
 _core._BILINGUAL_HEADERS["promotion_count_at_position"] = (
     "Số CTKM tại cùng vị trí (promotion_count_at_position)"
