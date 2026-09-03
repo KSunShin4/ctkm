@@ -29,9 +29,6 @@ for _constant in ("_BUSINESS_COLUMNS", "_PROMOTION_ID_COLUMNS"):
         _index = _columns.index("channel") if "channel" in _columns else len(_columns)
         _columns.insert(_index, "key_channel")
 
-# Replacement-code fields are visible source-derived context, but deliberately
-# excluded from _PROMOTION_ID_COLUMNS so existing promotion identity remains
-# anchored to the source Item code 2 / Item code contract.
 _business_columns = getattr(_core, "_BUSINESS_COLUMNS", None)
 if isinstance(_business_columns, list):
     for _field in ("new_item_id", "item_code_transition_status"):
@@ -41,13 +38,6 @@ if isinstance(_business_columns, list):
 
 
 def _same_promotion_identity(a: dict, b: dict) -> bool:
-    """Use the exact same source fields as ``promotion_id`` for equality.
-
-    Descriptive source fields such as item_name, product_type or source_sheet may
-    legitimately differ while referring to the same promotion. They remain
-    preserved on their source rows, but must not make overlap detection claim
-    that one stable promotion conflicts with itself.
-    """
     columns = [
         column for column in _core._PROMOTION_ID_COLUMNS
         if column in a or column in b
@@ -60,17 +50,11 @@ def _same_promotion_identity(a: dict, b: dict) -> bool:
 
 
 def _scope_key(value):
-    """Normalize only for comparison; never write this key over source values."""
     return _core._normalize_text(value)
 
 
 def detect_campaign_time_overlaps(df_ctkm):
-    """Detect conflicts by product identity, including safe old/new-code pairs.
-
-    Source ``item_key`` remains part of promotion identity. A separate comparison
-    key is used only to put a legacy-code row and its explicit one-to-one New P
-    code row into the same overlap bucket. Ambiguous transitions remain separate.
-    """
+    """Detect conflicts by product identity, including safe old/new-code pairs."""
     warnings = []
     if not {"item_id", "promo_from", "promo_to"}.issubset(df_ctkm.columns):
         return warnings
@@ -101,11 +85,6 @@ def detect_campaign_time_overlaps(df_ctkm):
             bf, bt = b["_overlap_from"], b["_overlap_to"]
             if not (af <= bt and bf <= at):
                 continue
-
-            # Equality and stable promotion IDs must use one contract. Different
-            # source codes deliberately remain different promotion identities; if
-            # they refer to one transitioned product, the overlap should therefore
-            # be visible rather than silently collapsed.
             if _same_promotion_identity(a, b):
                 continue
 
@@ -148,46 +127,13 @@ def detect_campaign_time_overlaps(df_ctkm):
 
 
 def _replacement_key_map(frame: pd.DataFrame) -> tuple[dict[str, str], set[str], set[str]]:
-    if frame is None or frame.empty or "new_item_id" not in frame.columns:
-        return {}, set(), set()
-
-    source_values = frame.get(
-        "item_key", frame.get("item_id", pd.Series(index=frame.index, dtype=object))
+    """Use the same fail-safe alias boundary as joiner/comparison logic."""
+    identity = build_transition_identity(
+        frame, key_func=_core._item_key, is_sku=_core.is_sku,
     )
-    new_values = frame.get("new_item_key", frame["new_item_id"].map(_core._item_key))
-    direct_source_keys = {
-        key for key in source_values.map(_core._item_key).dropna()
-        if _core.is_sku(key)
-    }
-    new_to_source: dict[str, set[str]] = {}
-    source_to_new: dict[str, set[str]] = {}
-
-    for source_value, new_value in zip(source_values, new_values):
-        source = _core._item_key(source_value)
-        new = _core._item_key(new_value)
-        if not source or not new or source == new:
-            continue
-        if not _core.is_sku(source) or not _core.is_sku(new):
-            continue
-        new_to_source.setdefault(new, set()).add(source)
-        source_to_new.setdefault(source, set()).add(new)
-
-    ambiguous_new = {key for key, values in new_to_source.items() if len(values) != 1}
-    ambiguous_source = {key for key, values in source_to_new.items() if len(values) != 1}
-    # If the replacement code is also a direct item_id in another promotion row,
-    # a POG row with that code may belong to the direct promotion rather than the
-    # legacy-code row. Never steal it through an alias.
-    ambiguous_new |= set(new_to_source) & direct_source_keys
-
-    mapping = {}
-    for new, source_values_for_new in new_to_source.items():
-        if new in ambiguous_new:
-            continue
-        source = next(iter(source_values_for_new))
-        if source in ambiguous_source:
-            continue
-        mapping[new] = source
-    return mapping, ambiguous_new, ambiguous_source
+    ambiguous_new = set(identity.ambiguous_keys) | set(identity.shadowed_new_keys)
+    ambiguous_source = set(identity.ambiguous_keys)
+    return dict(identity.pog_alias_map), ambiguous_new, ambiguous_source
 
 
 def _prepare_fact_transition_status(frame: pd.DataFrame):
@@ -284,13 +230,6 @@ _original_build_fefo_action_frame = _core.build_fefo_action_frame
 
 
 def _attach_position_promotion_diagnostics(result):
-    """Surface multiple valid promotion tasks sharing one physical POG position.
-
-    Different channel/scoped offers remain independent promotions and tasks. This
-    diagnostic does not merge, block or reschedule them; it only tells the store
-    operator that several promotion rows point at the same shelf position. Exact
-    source duplicates that share one promotion_id count once.
-    """
     result["promotion_count_at_position"] = 0
     result["has_multiple_promotions_at_position"] = False
     required = {
@@ -322,12 +261,7 @@ def _attach_position_promotion_diagnostics(result):
 
 def build_fefo_action_frame(df_ctkm, target_month, df_pog=None, *, business_date=None,
                             overlap_warnings=None):
-    """Keep calendar action and POG applicability/review as independent axes.
-
-    POG quality never changes ``scheduled_action``. Replacement-code matching is
-    technical only: source Item code 2 / Item code remains the promotion identity,
-    while POG can match either that source code or an unambiguous New P code.
-    """
+    """Keep source promotion identity while matching POG through safe aliases."""
     fact_frame, replacement_map = _prepare_fact_transition_status(df_ctkm)
     remapped_pog = _remap_pog_replacement_keys(df_pog, replacement_map)
     result = _original_build_fefo_action_frame(
