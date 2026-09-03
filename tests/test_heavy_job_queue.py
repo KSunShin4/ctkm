@@ -3,7 +3,7 @@ import time
 
 import pytest
 
-from backend.main_api import _HeavyJobQueue
+from backend.runtime_contract import ReservedHeavyJobQueue
 
 
 def _wait_until(predicate, timeout=1.0):
@@ -15,8 +15,10 @@ def _wait_until(predicate, timeout=1.0):
     raise AssertionError("Timed out waiting for queue state")
 
 
-def test_heavy_queue_runs_jobs_fifo_one_at_a_time():
-    queue = _HeavyJobQueue(max_jobs=3)
+def test_heavy_queue_runs_reserved_jobs_fifo_one_at_a_time():
+    queue = ReservedHeavyJobQueue(max_jobs=3)
+    queue.reserve("first", "ctkm")
+    queue.reserve("second", "tem_r")
     queue.acquire("first", "ctkm")
     entered = threading.Event()
 
@@ -41,18 +43,24 @@ def test_heavy_queue_runs_jobs_fifo_one_at_a_time():
     thread.join(timeout=1)
 
 
-def test_heavy_queue_rejects_requests_beyond_capacity():
-    queue = _HeavyJobQueue(max_jobs=2)
-    queue.acquire("first", "ctkm")
-
-    thread = threading.Thread(target=lambda: queue.acquire("second", "tem_r"), daemon=True)
-    thread.start()
-    _wait_until(lambda: len(queue.snapshot()["waiting"]) == 1)
+def test_heavy_queue_rejects_reservation_beyond_capacity_before_worker_start():
+    queue = ReservedHeavyJobQueue(max_jobs=2)
+    queue.reserve("first", "ctkm")
+    queue.reserve("second", "tem_r")
 
     with pytest.raises(RuntimeError, match="Hàng đợi đang đầy"):
-        queue.acquire("third", "ctkm")
+        queue.reserve("third", "ctkm")
 
-    queue.release("first")
-    _wait_until(lambda: (queue.snapshot()["active"] or {}).get("job_id") == "second")
-    queue.release("second")
-    thread.join(timeout=1)
+    snapshot = queue.snapshot()
+    assert [entry["job_id"] for entry in snapshot["waiting"]] == ["first", "second"]
+
+
+def test_heavy_queue_cancel_releases_reserved_capacity():
+    queue = ReservedHeavyJobQueue(max_jobs=1)
+    queue.reserve("first", "ctkm")
+    with pytest.raises(RuntimeError, match="Hàng đợi đang đầy"):
+        queue.reserve("second", "tem_r")
+
+    queue.cancel("first")
+    queue.reserve("second", "tem_r")
+    assert queue.snapshot()["waiting"][0]["job_id"] == "second"
