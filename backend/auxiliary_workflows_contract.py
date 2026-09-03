@@ -136,10 +136,23 @@ def _resolve_tem_r_selection(
 
     # Inspect already validates the header. Also require at least one real ITEMID
     # below it so a title/control-only sheet is rejected before queue acceptance.
+    # Resolve the source column from the actual worksheet row: inspect's display
+    # ``columns`` intentionally drops blank header gaps, so its list index is not
+    # guaranteed to be the physical Excel column number.
     workbook = openpyxl.load_workbook(source_path, read_only=True, data_only=True, keep_links=False)
     try:
         worksheet = workbook[selected_name]
-        item_col = columns.index(resolved["ITEMID"]) + 1
+        actual_headers = [
+            "" if worksheet.cell(detected_header, column).value is None
+            else str(worksheet.cell(detected_header, column).value).strip()
+            for column in range(1, (worksheet.max_column or 0) + 1)
+        ]
+        try:
+            item_col = actual_headers.index(resolved["ITEMID"]) + 1
+        except ValueError as exc:
+            raise ValueError(
+                f"Không tìm thấy cột ITEMID đã ánh xạ '{resolved['ITEMID']}' trên dòng tiêu đề thật."
+            ) from exc
         has_item = False
         for row in worksheet.iter_rows(
             min_row=detected_header + 1,
