@@ -42,6 +42,14 @@ if isinstance(_business_columns, list):
             _index = _business_columns.index("item_name") if "item_name" in _business_columns else len(_business_columns)
             _business_columns.insert(_index, _field)
 
+# This facade is also loaded directly by some tests/tools under a second module
+# name. Capture the pristine core implementation once so repeated executions
+# replace the facade wrapper instead of wrapping the previous facade wrapper.
+_baseline = getattr(_core, "_ctkm_reconciler_facade_baseline", None)
+if not isinstance(_baseline, dict):
+    _baseline = {"build_fefo_action_frame": _core.build_fefo_action_frame}
+    _core._ctkm_reconciler_facade_baseline = _baseline
+
 
 def _same_promotion_identity(a: dict, b: dict) -> bool:
     columns = [column for column in _core._PROMOTION_ID_COLUMNS if column in a or column in b]
@@ -287,7 +295,7 @@ def _attach_position_promotion_diagnostics(result):
     return result
 
 
-_original_build_fefo_action_frame = _core.build_fefo_action_frame
+_original_build_fefo_action_frame = _baseline["build_fefo_action_frame"]
 
 
 def build_fefo_action_frame(df_ctkm, target_month, df_pog=None, *, business_date=None,
@@ -339,6 +347,8 @@ def build_fefo_action_frame(df_ctkm, target_month, df_pog=None, *, business_date
     result = _attach_operational_scope_identity(result)
     return _attach_position_promotion_diagnostics(result)
 
+
+build_fefo_action_frame.__wrapped__ = _original_build_fefo_action_frame
 
 _core._same_campaign_row = _same_promotion_identity
 _core.detect_campaign_time_overlaps = detect_campaign_time_overlaps
