@@ -117,6 +117,97 @@ def filter_selected_columns_keep_channels(df: pd.DataFrame, selected_columns) ->
     return df.loc[:, [column for column in keep if column in df.columns]].copy()
 
 
+def _lineage_parts(value) -> list[str]:
+    if value is None or pd.isna(value):
+        return []
+    return [part.strip() for part in str(value).split("|") if part.strip()]
+
+
+def _unique_lineage(group: pd.DataFrame, plural: str, singular: str) -> list[str]:
+    values: list[str] = []
+    if plural in group.columns:
+        for value in group[plural]:
+            values.extend(_lineage_parts(value))
+    if singular in group.columns:
+        for value in group[singular]:
+            values.extend(_lineage_parts(value))
+    return list(dict.fromkeys(values))
+
+
+def unique_work_tracking_rows(df: pd.DataFrame) -> pd.DataFrame:
+    """Return one editable Excel row per physical ``task_id``.
+
+    Reconciler intentionally preserves non-identical source rows for audit. Two
+    such rows can still describe the same promotion/action/POG position and thus
+    share one stable ``task_id``. Showing both as separately editable work rows
+    is ambiguous: staff could mark one Done and leave the other Unprocessed.
+
+    Only the interactive action sheets are consolidated here. ``Audit hành động``
+    receives the original frame before this helper, so every source value remains
+    available there. Source lineage is unioned onto the operational row so the
+    chosen display row can always be traced back to all contributing source rows.
+    Rows without a usable task_id are never consolidated.
+    """
+    if df is None:
+        return df
+    result = df.copy()
+
+    if not result.empty and "task_id" in result.columns:
+        groups: dict[tuple[str, object], list[object]] = {}
+        for position, (idx, row) in enumerate(result.iterrows()):
+            task = row.get("task_id")
+            if task is None or pd.isna(task) or not str(task).strip():
+                key = ("row", position)
+            else:
+                key = ("task", str(task).strip())
+            groups.setdefault(key, []).append(idx)
+
+        rows = []
+        for key, indices in groups.items():
+            group = result.loc[indices]
+            first = group.iloc[0].copy()
+            if key[0] == "task" and len(group) > 1:
+                source_ids = _unique_lineage(group, "source_row_ids", "source_row_id")
+                if source_ids:
+                    if "source_row_id" in result.columns:
+                        first["source_row_id"] = source_ids[0]
+                    if "source_row_ids" in result.columns:
+                        first["source_row_ids"] = " | ".join(source_ids)
+                    if "source_row_count" in result.columns:
+                        first["source_row_count"] = len(source_ids)
+                elif "source_row_count" in result.columns:
+                    counts = pd.to_numeric(group["source_row_count"], errors="coerce").fillna(1)
+                    first["source_row_count"] = int(counts.sum())
+
+                if "duplicate_status" in result.columns:
+                    first["duplicate_status"] = (
+                        "Đã gom cùng task_id từ nhiều dòng nguồn; xem Audit hành động"
+                    )
+
+                # The same physical task repeats the same POG lineage across
+                # source rows. Union IDs instead of summing repeated counts.
+                pog_ids = _unique_lineage(group, "pog_source_row_ids", "pog_source_row_id")
+                if pog_ids:
+                    if "pog_source_row_id" in result.columns:
+                        first["pog_source_row_id"] = pog_ids[0]
+                    if "pog_source_row_ids" in result.columns:
+                        first["pog_source_row_ids"] = " | ".join(pog_ids)
+                    if "pog_source_row_count" in result.columns:
+                        first["pog_source_row_count"] = len(pog_ids)
+                elif "pog_source_row_count" in result.columns:
+                    counts = pd.to_numeric(group["pog_source_row_count"], errors="coerce").fillna(0)
+                    first["pog_source_row_count"] = int(counts.max()) if not counts.empty else 0
+            rows.append(first.to_dict())
+        result = pd.DataFrame(rows, columns=result.columns).reset_index(drop=True)
+
+    for column in ["processing_status", "processed_by", "processed_at", "staff_note"]:
+        if column not in result.columns:
+            result[column] = ""
+    if not result.empty:
+        result["processing_status"] = "Chưa xử lý"
+    return result
+
+
 def hide_technical_columns(ws, *, get_column_letter, original_hide=None, action_sheet=False) -> None:
     if callable(original_hide):
         original_hide(ws, action_sheet=action_sheet)
@@ -283,6 +374,7 @@ def install_performance_patches(main_mod) -> None:
     main_mod.RC.detect_campaign_time_overlaps = overlap
     main_mod.EX._prepare_action_sheet = prepare_action_sheet_user_first
     main_mod.EX._filter_selected_columns = filter_selected_columns_keep_channels
+    main_mod.EX._add_work_tracking_columns = unique_work_tracking_rows
     main_mod.EX._hide_technical_columns = hide_columns
     main_mod.EX._BILINGUAL_HEADERS["key_channel"] = "Phạm vi áp dụng (KEY Channel)"
     main_mod.EX._BILINGUAL_HEADERS["channel"] = "Kênh chương trình (Channel)"
