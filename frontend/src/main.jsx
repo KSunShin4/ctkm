@@ -62,4 +62,25 @@ window.fetch = async (...args) => {
   }
 }
 
-ReactDOM.createRoot(document.getElementById('root')).render(<App />)
+// Keep legacy App.jsx summary cards aligned with the backend contract without a
+// risky full-file rewrite. The historical API aliases still carry correct values,
+// but these three labels predate the all-KM/POG semantics now used by the backend.
+const SUMMARY_LABEL_REWRITES = new Map([
+  ['Dòng khớp (CTKM + kệ)', 'Dòng khớp (CTKM + POG)'],
+  ['POG không có CTKM phù hợp', 'POG không có KM phù hợp'],
+  ['Cảnh báo trùng thời gian', 'Sản phẩm có cảnh báo trùng thời gian'],
+])
+
+const rewriteLegacySummaryLabels = root => {
+  root?.querySelectorAll?.('.stat-label').forEach(node => {
+    const replacement = SUMMARY_LABEL_REWRITES.get(node.textContent?.trim())
+    if (replacement && node.textContent !== replacement) node.textContent = replacement
+  })
+}
+
+const rootElement = document.getElementById('root')
+const labelObserver = new MutationObserver(() => rewriteLegacySummaryLabels(rootElement))
+labelObserver.observe(rootElement, { childList: true, subtree: true, characterData: true })
+
+ReactDOM.createRoot(rootElement).render(<App />)
+queueMicrotask(() => rewriteLegacySummaryLabels(rootElement))
