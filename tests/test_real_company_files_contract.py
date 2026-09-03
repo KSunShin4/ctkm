@@ -32,6 +32,63 @@ def test_monthly_campaign_wins_when_both_campaign_columns_exist():
     assert "Campaign Detail" not in mapping
 
 
+def test_real_monthly_headers_map_deterministically_without_gemini(monkeypatch):
+    frame = pd.DataFrame(columns=[
+        "KEY Channel", "Channel", "NOTE - Cần lưu ý", "Item code 1 (NEW)",
+        "Item code 2", "Product Name", "Promo UoM", "Unit 2", "RSP (+VAT)",
+        "Normal", "Promo", "Saving per unit", "Out", "Support type for customer",
+        "Scheme detail for customer", "From", "To", "Campaign", "Campaign Detail",
+        "ƯU ĐÃI THÀNH VIÊN PMC", "Product type", "Big cat", "Cat 2", "CODE LINE",
+        "LOOKUP NOTE 1", "LOOKUP DATE", "LOOKUP\nSTATUS",
+    ])
+
+    def gemini_must_not_run(*_args, **_kwargs):
+        raise AssertionError("Standard Pharmacity Monthly must not call Gemini")
+
+    monkeypatch.setattr(main.CM, "map_columns_with_gemini", gemini_must_not_run)
+    logs = []
+    mapping = main._get_or_map(
+        "TỔNG HỢP CTKM UPDATE", frame, main.SCHEMA["fact_fields"], logs
+    )
+
+    assert mapping["Item code 2"] == "item_id"
+    assert mapping["Product Name"] == "item_name"
+    assert mapping["Promo UoM"] == "promo_uom"
+    assert mapping["KEY Channel"] == "key_channel"
+    assert mapping["Channel"] == "channel"
+    assert mapping["Scheme detail for customer"] == "campaign_detail"
+    assert mapping["Campaign"] == "campaign_name"
+    assert "Campaign Detail" not in mapping
+    assert mapping["From"] == "promo_from"
+    assert mapping["To"] == "promo_to"
+    assert logs[-1]["source"] == "standard-fact"
+
+
+def test_real_clearance_headers_use_standard_fact_path_without_gemini(monkeypatch):
+    frame = pd.DataFrame(columns=[
+        "Kênh áp dụng", "NOTE - Cần lưu ý", "New P code", "Item code",
+        "Product Name", "Promo UoM", "Unit 2", "RSP (+VAT)", "Normal", "Promo",
+        "Saving per unit", "Out", "Support type for customer",
+        "Scheme detail for customer", "From", "To", "Campaign Detail",
+        "Product type", "Big cat", "Cat 2", "CODE LINE", "LOOKUP",
+    ])
+
+    def gemini_must_not_run(*_args, **_kwargs):
+        raise AssertionError("Standard Pharmacity Clearance must not call Gemini")
+
+    monkeypatch.setattr(main.CM, "map_columns_with_gemini", gemini_must_not_run)
+    logs = []
+    mapping = main._get_or_map(
+        "TỔNG HỢP CTKM UPDATE", frame, main.SCHEMA["fact_fields"], logs
+    )
+
+    assert mapping["Item code"] == "item_id"
+    assert mapping["Kênh áp dụng"] == "channel"
+    assert mapping["Campaign Detail"] == "campaign_name"
+    assert mapping["Scheme detail for customer"] == "campaign_detail"
+    assert logs[-1]["source"] == "standard-fact"
+
+
 def test_real_pharmacity_pog_headers_map_deterministically_without_gemini(monkeypatch):
     frame = pd.DataFrame(columns=[
         "STOREID", "POGTYPE", "POGCODE", "ITEMID", "ITEMNAME", "FIXELNAME",
