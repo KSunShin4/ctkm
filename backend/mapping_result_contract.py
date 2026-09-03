@@ -128,12 +128,19 @@ def install_mapping_result_contract(core_module, validate_mapping) -> None:
         validate_business_presence(sheet_name, df, checked, schema_section)
         return checked
 
+    def bind_facades(current, facade_module=None) -> None:
+        # ``main_mod`` is the facade instance retained by backend.main_api_core.
+        # A later execution may use another module name. Keep both references and
+        # the shared core on the exact same hardened callable.
+        main_mod._get_or_map = current
+        if facade_module is not None:
+            facade_module._get_or_map = current
+
     def apply_get_or_map_contract(core, facade_module=None) -> None:
         """Wrap the current facade mapper, never the immutable facade baseline."""
         current = core._get_or_map
         if getattr(current, _WRAPPER_MARKER, False):
-            if facade_module is not None:
-                facade_module._get_or_map = current
+            bind_facades(current, facade_module)
             return
 
         def validated_current(sheet_name, df, schema_section, mapping_logs):
@@ -144,8 +151,7 @@ def install_mapping_result_contract(core_module, validate_mapping) -> None:
         setattr(validated_current, _WRAPPER_MARKER, True)
         validated_current.__wrapped__ = current
         core._get_or_map = validated_current
-        if facade_module is not None:
-            facade_module._get_or_map = validated_current
+        bind_facades(validated_current, facade_module)
 
     # Register once on the shared core. The initial API import has already built
     # main.py, so apply immediately; future facade executions invoke the same hook
