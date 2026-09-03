@@ -32,6 +32,61 @@ def test_monthly_campaign_wins_when_both_campaign_columns_exist():
     assert "Campaign Detail" not in mapping
 
 
+def test_real_pharmacity_pog_headers_map_deterministically_without_gemini(monkeypatch):
+    frame = pd.DataFrame(columns=[
+        "STOREID", "POGTYPE", "POGCODE", "ITEMID", "ITEMNAME", "FIXELNAME",
+        "FIXELID", "LOCATIONID", "TOTALFACING", "TOTALUNIT", "PURCHUNIT",
+        "INVENTUNIT", "PROMOTIONTYPE", "ISCHANGED", "ton",
+    ])
+
+    def gemini_must_not_run(*_args, **_kwargs):
+        raise AssertionError("Standard Pharmacity POG must not call Gemini")
+
+    monkeypatch.setattr(main.CM, "map_columns_with_gemini", gemini_must_not_run)
+    logs = []
+    mapping = main._get_or_map("Export", frame, main.SCHEMA["pog_fields"], logs)
+
+    assert mapping == {
+        "ITEMID": "item_id",
+        "ITEMNAME": "item_name",
+        "STOREID": "store_id",
+        "POGCODE": "pog_code",
+        "LOCATIONID": "location_id",
+        "TOTALFACING": "facing",
+    }
+    assert logs[-1]["source"] == "standard-pog"
+    assert "ton" not in mapping
+
+
+def test_real_pog_multi_position_same_sku_is_preserved_not_deduplicated():
+    ctkm = main.NM.clean_values(pd.DataFrame([{
+        "item_id": "P30539",
+        "campaign_name": "Full month",
+        "promo_from": "2026-09-01",
+        "promo_to": "2026-09-30",
+    }]))
+    pog = main.NM.clean_values(pd.DataFrame([
+        {
+            "item_id": "P30539", "store_id": "SGPMC1885",
+            "pog_code": "BABY2.1885", "location_id": 4,
+            "source_row_id": "POG:Export:5",
+        },
+        {
+            "item_id": "P30539", "store_id": "SGPMC1885",
+            "pog_code": "EC.PRO", "location_id": 1,
+            "source_row_id": "POG:Export:356",
+        },
+    ]))
+
+    joined = main.JN.join_ctkm_pog(ctkm, pog)
+
+    assert len(joined.df_matched) == 2
+    assert set(joined.df_matched["pog_code"]) == {"BABY2.1885", "EC.PRO"}
+    assert set(joined.df_matched["source_row_id"]) == {
+        "POG:Export:5", "POG:Export:356",
+    }
+
+
 def test_overlap_blocks_case_only_channel_variants_without_mutating_source():
     frame = pd.DataFrame([
         {
