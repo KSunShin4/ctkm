@@ -28,6 +28,18 @@ def _promotion(item_id, *, new_item_id=None, source="CTKM", campaign="A", channe
     }
 
 
+def _pog(item_id):
+    return {
+        "item_id": item_id,
+        "store_id": "S1",
+        "pog_code": "A",
+        "location_id": "1",
+        "facing": 1,
+        "pog_snapshot_month": "2026-09",
+        "source_row_id": f"POG:{item_id}",
+    }
+
+
 def test_overlap_detects_direct_new_code_row_as_same_transition_product():
     frame = pd.DataFrame([
         _promotion("P1001", new_item_id="P9001", campaign="Legacy offer"),
@@ -59,7 +71,6 @@ def test_ctkm_clearance_confirmation_compares_safe_old_and_new_codes_as_one_prod
     assert set(confirmation["trang_thai_doi_chieu"]) == {"Có cả CTKM và Clearance"}
     assert set(confirmation["transition_match_key"]) == {"P1001"}
     assert set(confirmation["quan_he_thoi_gian"]) == {"Trùng thời gian - cần xác nhận"}
-    # Source codes are still visible and unmodified.
     assert set(confirmation["item_id"]) == {"P1001", "P9001"}
     assert confirmation.loc[
         confirmation["nguon_chuong_trinh"].eq("CTKM"), "new_item_id"
@@ -127,7 +138,6 @@ def test_transition_identity_aligns_location_cross_source_matched_and_pog_covera
     main._align_matched_unique_summary(summary, matched, actions)
     main._align_pog_promotion_coverage_summary(summary, matched, pog_only, actions)
 
-    # Two source rows remain two audit rows, but they are one transitioned product.
     assert summary["So dong KM thieu vi tri POG"] == 2
     assert summary["So item KM thieu vi tri POG"] == 1
     assert summary["So item CTKM Monthly thieu vi tri POG"] == 1
@@ -135,9 +145,6 @@ def test_transition_identity_aligns_location_cross_source_matched_and_pog_covera
     assert summary["So item trung CTKM va Clearance"] == 1
     assert summary["So item duy nhat khop"] == 1
 
-    # A POG code already migrated to P9001 is covered by the same product family;
-    # it must not be reported as having no promotion merely because action identity
-    # intentionally keeps the legacy source code P1001.
     assert summary["So dong POG khong co KM phu hop"] == 0
     assert summary["So item POG khong co KM phu hop"] == 0
     assert summary["So item POG co KM phu hop"] == 1
@@ -146,7 +153,7 @@ def test_transition_identity_aligns_location_cross_source_matched_and_pog_covera
     assert summary["So item POG khong co CTKM phu hop"] == 0
 
 
-def test_transition_helper_rejects_chains_for_automatic_comparison():
+def test_chain_transition_is_rejected_consistently_by_helper_joiner_and_actions():
     frame = pd.DataFrame([
         _promotion("P1001", new_item_id="P9001", campaign="A"),
         _promotion("P9001", new_item_id="P9999", campaign="B"),
@@ -155,6 +162,23 @@ def test_transition_helper_rejects_chains_for_automatic_comparison():
         frame, key_func=main.NM.make_item_key, is_sku=main.RC.is_sku,
     )
 
-    assert {"P1001", "P9001", "P9999"} & set(identity.ambiguous_keys)
+    assert "P9001" in identity.ambiguous_keys
     assert identity.comparison_map == {}
     assert identity.pog_alias_map == {}
+
+    pog = pd.DataFrame([_pog("P9999")])
+    joined = main.JN.join_ctkm_pog(frame, pog)
+    assert joined.df_matched.empty
+    assert len(joined.df_ctkm_only) == 2
+    assert len(joined.df_pog_only) == 1
+
+    actions = main.RC.build_fefo_action_frame(
+        frame,
+        "2026-09",
+        pog,
+        business_date=pd.Timestamp("2026-09-15"),
+        overlap_warnings=[],
+    )
+    assert set(actions["item_code_transition_status"]) == {"Mơ hồ - không tự remap"}
+    assert set(actions["location_completeness"]) == {"Không tìm thấy SKU trong POG"}
+    assert set(actions["matched_pog_item_id"].dropna()) == set()
