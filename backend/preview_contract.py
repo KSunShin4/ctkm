@@ -132,17 +132,37 @@ def install_preview_contract(core_module) -> None:
             raise core_module.HTTPException(
                 status_code=404, detail=f"Khong tim thay job '{job_id}'"
             )
+
+        status_fn = getattr(core_module, "_effective_job_status", None)
+        status = status_fn(job) if callable(status_fn) else str(job.get("status") or "").lower()
+        ready_fn = getattr(core_module, "_job_output_ready", None)
+        if callable(ready_fn) and not ready_fn(job):
+            if status in {"queued", "running"}:
+                raise core_module.HTTPException(
+                    status_code=409, detail="Tác vụ chưa hoàn tất; chưa thể xem trước file."
+                )
+            if status == "failed":
+                raise core_module.HTTPException(
+                    status_code=409, detail="Tác vụ thất bại; không có file hợp lệ để xem trước."
+                )
+
         path = Path(job["output_path"])
-        if not path.exists():
+        if not path.is_file():
             raise core_module.HTTPException(
-                status_code=404, detail="File ket qua khong ton tai."
+                status_code=404, detail="File kết quả đã hết hạn hoặc không còn tồn tại."
             )
         if rows < 1 or rows > 500:
             raise core_module.HTTPException(
                 status_code=422, detail="rows phải nằm trong khoảng 1..500"
             )
         try:
-            return build_visible_preview(path, rows)
+            preview = build_visible_preview(path, rows)
+            return {
+                "job_id": job_id,
+                "month": job.get("month"),
+                "summary": job.get("summary") or {},
+                **preview,
+            }
         except core_module.HTTPException:
             raise
         except Exception as exc:
