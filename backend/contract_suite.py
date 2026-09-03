@@ -2,7 +2,10 @@
 """Install and verify the FastAPI compatibility contracts as one ordered suite."""
 from __future__ import annotations
 
-from modules.facade_contracts import registered_post_facade_hooks
+from modules.facade_contracts import (
+    register_post_facade_hook,
+    registered_post_facade_hooks,
+)
 from modules.mapping_validation import validate_manual_mapping
 
 from backend import input_contract
@@ -134,6 +137,19 @@ def install_contract_suite(core_module) -> None:
     install_expiration_api_contract(core_module)
     install_final_output_contract(core_module)
     install_preview_contract(core_module)
+
+    main_core = getattr(core_module._main_mod, "_core", None)
+    if main_core is None:
+        raise RuntimeError("Backend contract suite không tìm thấy _ctkm_main_core")
+
+    def verify_after_facade_rebuild(_main_core, _facade_module=None) -> None:
+        verify_contract_suite(core_module)
+
+    register_post_facade_hook(
+        main_core,
+        "backend-contract-suite-verify-v1",
+        verify_after_facade_rebuild,
+    )
 
     verify_contract_suite(core_module)
     core_module.app.state.contract_suite_v1 = True
