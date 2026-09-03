@@ -1,10 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Drop-in CTKM performance, fidelity and presentation patches.
-
-Source workbook values are immutable. Normalization used for matching or business
-logic is kept in technical keys/local variables and never written back over source
-fields such as item_id, campaign, dates, prices, UoM, KEY Channel or Channel.
-"""
+"""Drop-in CTKM performance, fidelity and presentation patches."""
 from __future__ import annotations
 
 import pandas as pd
@@ -24,7 +19,9 @@ USER_ACTION_COLUMNS = [
 ]
 
 TECHNICAL_ACTION_COLUMNS = [
-    "task_id", "promotion_id", "pog_position_id", "item_key",
+    "task_id", "task_ids", "promotion_id", "pog_position_id", "item_key",
+    "scope_identity_key", "operational_promotion_key", "operational_task_key",
+    "new_item_key", "transition_match_key",
     "target_month", "business_date", "pog_snapshot_month", "pog_position_count",
     "source_sheet", "source_row_id", "source_row_ids", "source_row_count",
     "duplicate_status", "pog_source_row_id", "pog_source_row_ids",
@@ -55,7 +52,6 @@ def preserve_both_channel_mappings(mapping: dict, df: pd.DataFrame, *, normalize
     elif apply_source is not None:
         result = {source: target for source, target in result.items() if target != "channel"}
         result[apply_source] = "channel"
-
     return result
 
 
@@ -79,19 +75,11 @@ def prepare_action_sheet_user_first(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def filter_selected_columns_keep_channels(df: pd.DataFrame, selected_columns) -> pd.DataFrame:
-    """Filter columns without turning checkbox click order into Excel layout.
-
-    ``selected_columns`` means "fields to keep", not a requested column order.
-    ``item_id`` remains the leading business identifier, matching the original
-    exporter contract. KEY Channel and Channel are mandatory operational context
-    and are retained even when the user did not explicitly select them.
-    """
     if df is None or df.empty:
         return df
     selected_fields = {
         str(column).strip().lower()
-        for column in (selected_columns or [])
-        if str(column).strip()
+        for column in (selected_columns or []) if str(column).strip()
     }
     if not selected_fields:
         return df
@@ -102,16 +90,13 @@ def filter_selected_columns_keep_channels(df: pd.DataFrame, selected_columns) ->
         return base in selected_fields or exact in selected_fields
 
     keep = [column for column in df.columns if matches(column)]
-
     if "item_id" in df.columns:
         if "item_id" in keep:
             keep.remove("item_id")
         keep.insert(0, "item_id")
-
     for column in ("key_channel", "channel"):
         if column in df.columns and column not in keep:
             keep.append(column)
-
     return df.loc[:, [column for column in keep if column in df.columns]].copy()
 
 
@@ -132,27 +117,44 @@ def _unique_lineage(group: pd.DataFrame, plural: str, singular: str) -> list[str
     return list(dict.fromkeys(values))
 
 
+def _usable_key(value) -> str | None:
+    if value is None or pd.isna(value) or not str(value).strip():
+        return None
+    return str(value).strip()
+
+
 def unique_work_tracking_rows(df: pd.DataFrame) -> pd.DataFrame:
-    """Return one editable Excel row per physical ``task_id``."""
+    """Return one editable row per operational task, retaining source task IDs.
+
+    ``task_id`` remains the source-faithful stable identity. When the only
+    difference is Channel/KEY Channel formatting, reconciler emits one shared
+    ``operational_task_key``. Interactive sheets consolidate on that derived key;
+    Audit hành động still keeps every original task/source row.
+    """
     if df is None:
         return df
     result = df.copy()
+    if "task_id" in result.columns and "task_ids" not in result.columns:
+        result["task_ids"] = result["task_id"]
 
     if not result.empty and "task_id" in result.columns:
         groups: dict[tuple[str, object], list[object]] = {}
         for position, (idx, row) in enumerate(result.iterrows()):
-            task = row.get("task_id")
-            if task is None or pd.isna(task) or not str(task).strip():
-                key = ("row", position)
+            operational = _usable_key(row.get("operational_task_key"))
+            task = _usable_key(row.get("task_id"))
+            if operational:
+                key = ("operational", operational)
+            elif task:
+                key = ("task", task)
             else:
-                key = ("task", str(task).strip())
+                key = ("row", position)
             groups.setdefault(key, []).append(idx)
 
         rows = []
         for key, indices in groups.items():
             group = result.loc[indices]
             first = group.iloc[0].copy()
-            if key[0] == "task" and len(group) > 1:
+            if key[0] != "row" and len(group) > 1:
                 source_ids = _unique_lineage(group, "source_row_ids", "source_row_id")
                 if source_ids:
                     if "source_row_id" in result.columns:
@@ -161,14 +163,6 @@ def unique_work_tracking_rows(df: pd.DataFrame) -> pd.DataFrame:
                         first["source_row_ids"] = " | ".join(source_ids)
                     if "source_row_count" in result.columns:
                         first["source_row_count"] = len(source_ids)
-                elif "source_row_count" in result.columns:
-                    counts = pd.to_numeric(group["source_row_count"], errors="coerce").fillna(1)
-                    first["source_row_count"] = int(counts.sum())
-
-                if "duplicate_status" in result.columns:
-                    first["duplicate_status"] = (
-                        "Đã gom cùng task_id từ nhiều dòng nguồn; xem Audit hành động"
-                    )
 
                 pog_ids = _unique_lineage(group, "pog_source_row_ids", "pog_source_row_id")
                 if pog_ids:
@@ -178,9 +172,21 @@ def unique_work_tracking_rows(df: pd.DataFrame) -> pd.DataFrame:
                         first["pog_source_row_ids"] = " | ".join(pog_ids)
                     if "pog_source_row_count" in result.columns:
                         first["pog_source_row_count"] = len(pog_ids)
-                elif "pog_source_row_count" in result.columns:
-                    counts = pd.to_numeric(group["pog_source_row_count"], errors="coerce").fillna(0)
-                    first["pog_source_row_count"] = int(counts.max()) if not counts.empty else 0
+
+                task_ids = list(dict.fromkeys(
+                    key for key in group["task_id"].map(_usable_key).tolist() if key
+                ))
+                if "task_ids" in result.columns:
+                    first["task_ids"] = " | ".join(task_ids)
+                if "duplicate_status" in result.columns:
+                    if len(task_ids) > 1 and key[0] == "operational":
+                        first["duplicate_status"] = (
+                            "Đã gom task khác ID nhưng cùng phạm vi vận hành; xem Audit hành động"
+                        )
+                    else:
+                        first["duplicate_status"] = (
+                            "Đã gom cùng task_id từ nhiều dòng nguồn; xem Audit hành động"
+                        )
             rows.append(first.to_dict())
         result = pd.DataFrame(rows, columns=result.columns).reset_index(drop=True)
 
@@ -193,21 +199,16 @@ def unique_work_tracking_rows(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def align_task_summary_with_work_rows(summary: dict, df_fefo_actions: pd.DataFrame | None) -> dict:
-    """Make operational summary counts match the interactive action sheets."""
     if not isinstance(summary, dict) or df_fefo_actions is None:
         return summary
-
     actions = df_fefo_actions.copy()
     if "in_report_scope" in actions.columns:
         actions = actions[actions["in_report_scope"].fillna(False).astype(bool)].copy()
     tasks = unique_work_tracking_rows(actions)
-
     scheduled = tasks.get(
-        "scheduled_action",
-        tasks.get("action", pd.Series(index=tasks.index, dtype=object)),
+        "scheduled_action", tasks.get("action", pd.Series(index=tasks.index, dtype=object)),
     )
     sources = tasks.get("program_source", pd.Series(index=tasks.index, dtype=object))
-
     if "So dong tem tu Clearance" in summary:
         summary["So dong tem tu Clearance"] = int(sources.eq("CLEARANCE").sum())
     if "So dong cho gan" in summary:
@@ -224,19 +225,12 @@ def hide_technical_columns(ws, *, get_column_letter, original_hide=None, action_
         return
     technical = set(TECHNICAL_ACTION_COLUMNS)
     for index, cell in enumerate(ws[1], start=1):
-        header = str(cell.value or "").strip()
-        if header in technical:
+        if str(cell.value or "").strip() in technical:
             ws.column_dimensions[get_column_letter(index)].hidden = True
 
 
 def build_ctkm_clearance_confirmation_fast(df_ctkm, df_clearance, *, make_item_key):
-    """Compare Monthly and Clearance by safe product-transition identity.
-
-    Raw item_id/new_item_id remain visible. ``transition_match_key`` is derived
-    only for comparison, so old-code Monthly rows and direct new-code Clearance
-    rows for the same one-to-one migration no longer appear as unrelated items.
-    Ambiguous chains/one-to-many transitions remain separate.
-    """
+    """Compare Monthly/Clearance by safe product-transition identity."""
     columns = [
         "item_id", "item_key", "new_item_id", "new_item_key",
         "item_code_transition_status", "transition_match_key",
@@ -244,30 +238,29 @@ def build_ctkm_clearance_confirmation_fast(df_ctkm, df_clearance, *, make_item_k
         "campaign_name", "campaign_detail", "promo_from", "promo_to", "normal_price",
         "promo_price", "product_type", "source_sheet",
     ]
-
-    transition_input_frames = [df_ctkm.copy()]
+    transition_frames = [df_ctkm.copy()]
     if df_clearance is not None and not df_clearance.empty:
-        transition_input_frames.append(df_clearance.copy())
-    transition_input = pd.concat(transition_input_frames, ignore_index=True, sort=False)
+        transition_frames.append(df_clearance.copy())
+    transition_input = pd.concat(transition_frames, ignore_index=True, sort=False)
     identity = build_transition_identity(
         transition_input,
         key_func=make_item_key,
-        is_sku=lambda value: bool(value and str(value).upper().startswith("P") and str(value)[1:].isdigit()),
+        is_sku=lambda value: bool(
+            value and str(value).upper().startswith("P") and str(value)[1:].isdigit()
+        ),
     )
 
     def tagged(frame: pd.DataFrame, source: str) -> pd.DataFrame:
         result = frame.copy()
         existing_row_ids = (
             result["source_row_id"].copy()
-            if "source_row_id" in result.columns
-            else pd.Series(pd.NA, index=result.index)
+            if "source_row_id" in result.columns else pd.Series(pd.NA, index=result.index)
         )
         for column in columns:
             if column not in result.columns:
                 result[column] = pd.NA
         result["item_key"] = result["item_id"].map(make_item_key)
-        if "new_item_id" in result.columns:
-            result["new_item_key"] = result["new_item_id"].map(make_item_key)
+        result["new_item_key"] = result["new_item_id"].map(make_item_key)
         result["transition_match_key"] = result["item_key"].map(
             lambda value: identity.canonical(value, key_func=make_item_key)
         )
@@ -342,7 +335,6 @@ def build_ctkm_clearance_confirmation_fast(df_ctkm, df_clearance, *, make_item_k
 
 def build_promo_action_source_without_inference(df_ctkm: pd.DataFrame,
                                                 df_clearance: pd.DataFrame | None) -> pd.DataFrame:
-    """Combine CTKM/Clearance without inventing or overwriting any source value."""
     ctkm = df_ctkm.copy()
     ctkm["program_source"] = "CTKM"
     if "source_row_id" in ctkm.columns:
@@ -351,7 +343,6 @@ def build_promo_action_source_without_inference(df_ctkm: pd.DataFrame,
         )
     if df_clearance is None or df_clearance.empty:
         return ctkm
-
     clearance = df_clearance.copy()
     clearance["program_source"] = "CLEARANCE"
     if "source_row_id" in clearance.columns:
@@ -364,7 +355,6 @@ def build_promo_action_source_without_inference(df_ctkm: pd.DataFrame,
 def install_performance_patches(main_mod) -> None:
     if getattr(main_mod, "_ctkm_performance_patched", False):
         return
-
     original_overlap = main_mod.RC.detect_campaign_time_overlaps
     original_hide = main_mod.EX._hide_technical_columns
     original_export = main_mod.EX.export_final_report
@@ -386,10 +376,8 @@ def install_performance_patches(main_mod) -> None:
 
     def hide_columns(ws, *, action_sheet=False):
         return hide_technical_columns(
-            ws,
-            get_column_letter=main_mod.EX.get_column_letter,
-            original_hide=original_hide,
-            action_sheet=action_sheet,
+            ws, get_column_letter=main_mod.EX.get_column_letter,
+            original_hide=original_hide, action_sheet=action_sheet,
         )
 
     def export_with_task_summary(*args, **kwargs):
