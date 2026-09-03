@@ -20,6 +20,7 @@ import threading
 from backend.runtime_contract import install_runtime_contract
 from backend.input_contract import install_input_contract, validate_manual_mapping
 from backend.mapping_result_contract import install_mapping_result_contract
+from backend.gemini_availability_contract import install_gemini_availability_contract
 from backend.preview_contract import install_preview_contract
 
 _CORE_NAME = "backend.main_api_core"
@@ -174,11 +175,12 @@ for _name, _value in {
     setattr(_core, _name, _value)
 
 # Runtime reservation must be installed first. Input preflight then reuses that
-# lifecycle. Mapping validation hardens cache/Gemini results, and preview is last
-# so it sees the final output/lifecycle contracts.
+# lifecycle. Mapping validation hardens cache/Gemini results. Availability wraps
+# only the point where Gemini is genuinely required, and preview is installed last.
 install_runtime_contract(_core)
 install_input_contract(_core)
 install_mapping_result_contract(_core, validate_manual_mapping)
+install_gemini_availability_contract(_core)
 install_preview_contract(_core)
 
 # Make imports receive the actual core module. This preserves attribute mutation
