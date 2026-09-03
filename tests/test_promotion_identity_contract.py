@@ -44,7 +44,7 @@ def test_descriptive_source_differences_do_not_make_same_promotion_conflict_with
 
     assert warnings == []
     assert actions["promotion_id"].nunique() == 1
-    # Source rows are still preserved; identity alignment must not overwrite them.
+    # Descriptive business rows remain distinct because the source display values differ.
     assert actions["item_name"].tolist() == ["Product A", "Product A renamed"]
     assert actions["product_type"].tolist() == ["Medicine", "Other label"]
 
@@ -84,4 +84,11 @@ def test_source_lineage_does_not_change_stable_promotion_identity():
     actions = _actions([first, second])
 
     assert actions["promotion_id"].nunique() == 1
-    assert set(actions["source_row_id"]) == {"CTKM:Monthly:10", "CTKM:Monthly:999"}
+    # Exact duplicate operational rows are consolidated; all lineage survives in
+    # source_row_ids/source_row_count for Audit hành động and traceability.
+    assert len(actions) == 1
+    assert actions.loc[0, "source_row_count"] == 2
+    assert set(actions.loc[0, "source_row_ids"].split(" | ")) == {
+        "CTKM:Monthly:10", "CTKM:Monthly:999"
+    }
+    assert actions.loc[0, "duplicate_status"] == "Đã gom dòng trùng hoàn toàn"
