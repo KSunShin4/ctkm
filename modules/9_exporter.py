@@ -114,7 +114,7 @@ def _append_pog_metadata_audit(output_path, metadata) -> None:
     workbook.save(output_path)
 
 
-def export_final_report(*args, **kwargs):
+def _export_final_report_with_pog_metadata(*args, **kwargs):
     """Export normal report and retain recognized POG control rows in hidden audit."""
     df_pog_review = kwargs.get("df_pog_review")
     if df_pog_review is None and len(args) > 11:
@@ -137,6 +137,7 @@ for _name in dir(_core):
         globals()[_name] = getattr(_core, _name)
 
 # Keep facade wrappers after the core symbol export above.
+export_final_report = _export_final_report_with_pog_metadata
 _prepare_action_sheet = _core._prepare_action_sheet
 _filter_selected_columns = _core._filter_selected_columns
 _add_work_tracking_columns = _core._add_work_tracking_columns
