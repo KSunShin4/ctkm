@@ -191,6 +191,63 @@ def _align_location_summary_with_program_sources(summary, df_fefo_actions):
     return summary
 
 
+def _frame_item_keys(frame):
+    """Return technical comparison keys without changing source item values."""
+    if frame is None or frame.empty:
+        return set()
+    if "item_key" in frame.columns:
+        return {value for value in frame["item_key"].dropna() if str(value).strip()}
+    if "item_id" not in frame.columns:
+        return set()
+    return {
+        key for key in frame["item_id"].map(_core.NM.make_item_key).dropna()
+        if str(key).strip()
+    }
+
+
+def _align_pog_promotion_coverage_summary(
+    summary, df_matched, df_pog_only, df_fefo_actions
+):
+    """Separate Monthly reconciliation from coverage by all promotion sources.
+
+    ``df_matched``/``df_pog_only`` intentionally come from the Monthly CTKM join.
+    They remain untouched. Operationally, however, a POG SKU covered only by
+    Clearance must not be described as having no promotion at all. The all-KM
+    coverage metrics below use in-scope CTKM + Clearance action identities and
+    expose a neutral dashboard count without changing Monthly reconciliation.
+    """
+    if not isinstance(summary, dict):
+        return summary
+
+    matched_keys = _frame_item_keys(df_matched)
+    monthly_pog_only_keys = _frame_item_keys(df_pog_only)
+    all_pog_keys = matched_keys | monthly_pog_only_keys
+
+    actions = df_fefo_actions.copy() if df_fefo_actions is not None else pd.DataFrame()
+    if not actions.empty and "in_report_scope" in actions.columns:
+        actions = actions[actions["in_report_scope"].fillna(False).astype(bool)].copy()
+    km_keys = _frame_item_keys(actions)
+
+    missing_km_keys = all_pog_keys - km_keys
+    covered_km_keys = all_pog_keys & km_keys
+
+    missing_rows = 0
+    if df_pog_only is not None and not df_pog_only.empty:
+        if "item_key" in df_pog_only.columns:
+            row_keys = df_pog_only["item_key"]
+        elif "item_id" in df_pog_only.columns:
+            row_keys = df_pog_only["item_id"].map(_core.NM.make_item_key)
+        else:
+            row_keys = pd.Series(index=df_pog_only.index, dtype=object)
+        missing_rows = int(row_keys.isin(missing_km_keys).sum())
+
+    summary["So dong POG khong co KM phu hop"] = missing_rows
+    summary["So item POG khong co KM phu hop"] = len(missing_km_keys)
+    summary["So item POG co KM phu hop"] = len(covered_km_keys)
+    summary["So item POG tong hop de doi chieu KM"] = len(all_pog_keys)
+    return summary
+
+
 def _clarify_location_workbook(output_path):
     """Hide misleading legacy summary aliases while preserving workbook schema."""
     path = Path(output_path)
@@ -227,8 +284,7 @@ _core._infer_standard_pog_mapping = _infer_standard_pog_mapping
 _core._get_or_map = _get_or_map
 
 # The performance layer already wraps exporter summary counts by unique task_id.
-# Layer the location-source clarification on top without changing the established
-# workbook sheet name, which remains a compatibility surface for existing users.
+# Layer source/coverage clarification on top without changing Monthly join output.
 _task_aligned_export = _core.EX.export_final_report
 
 
@@ -239,7 +295,15 @@ def _export_with_location_summary(*args, **kwargs):
     actions = kwargs.get("df_fefo_actions")
     if actions is None and len(args) > 9:
         actions = args[9]
+    df_matched = kwargs.get("df_matched")
+    if df_matched is None and len(args) > 1:
+        df_matched = args[1]
+    df_pog_only = kwargs.get("df_pog_only")
+    if df_pog_only is None and len(args) > 3:
+        df_pog_only = args[3]
+
     _align_location_summary_with_program_sources(summary, actions)
+    _align_pog_promotion_coverage_summary(summary, df_matched, df_pog_only, actions)
     output_path = _task_aligned_export(*args, **kwargs)
     _clarify_location_workbook(output_path)
     return output_path
