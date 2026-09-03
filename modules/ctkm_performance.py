@@ -77,6 +77,13 @@ def prepare_action_sheet_user_first(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def filter_selected_columns_keep_channels(df: pd.DataFrame, selected_columns) -> pd.DataFrame:
+    """Filter columns without turning checkbox click order into Excel layout.
+
+    ``selected_columns`` means "fields to keep", not a requested column order.
+    ``item_id`` remains the leading business identifier, matching the original
+    exporter contract. KEY Channel and Channel are mandatory operational context
+    and are retained even when the user did not explicitly select them.
+    """
     if df is None or df.empty:
         return df
     selected_fields = {
@@ -93,9 +100,20 @@ def filter_selected_columns_keep_channels(df: pd.DataFrame, selected_columns) ->
         return base in selected_fields or exact in selected_fields
 
     keep = [column for column in df.columns if matches(column)]
-    for column in ("item_id", "key_channel", "channel"):
+
+    # The display/source item id is always the first visible identifier. This is
+    # intentionally independent from the user's checkbox click order.
+    if "item_id" in df.columns:
+        if "item_id" in keep:
+            keep.remove("item_id")
+        keep.insert(0, "item_id")
+
+    # Both source channel fields are required for store-side filtering. Preserve
+    # their relative business order when they were not explicitly selected.
+    for column in ("key_channel", "channel"):
         if column in df.columns and column not in keep:
             keep.append(column)
+
     return df.loc[:, [column for column in keep if column in df.columns]].copy()
 
 
