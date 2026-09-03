@@ -32,6 +32,23 @@ _original_infer_standard_fact_mapping = _core._infer_standard_fact_mapping
 
 def _infer_standard_fact_mapping(df):
     mapping = _original_infer_standard_fact_mapping(df)
+
+    # Real Clearance exports use "Campaign Detail" as the campaign label while
+    # "Scheme detail for customer" remains the promotion/detail text. Only use
+    # this fallback when a plain Campaign column is absent, so Monthly workbooks
+    # that contain both columns keep their existing semantics unchanged.
+    if not mapping:
+        normalized_columns = {
+            _core._normalized_header(column): column for column in df.columns
+        }
+        campaign_detail_source = normalized_columns.get("campaign detail")
+        if "campaign" not in normalized_columns and campaign_detail_source is not None:
+            inference_frame = df.rename(columns={campaign_detail_source: "Campaign"})
+            mapping = _original_infer_standard_fact_mapping(inference_frame)
+            if "Campaign" in mapping:
+                campaign_target = mapping.pop("Campaign")
+                mapping[campaign_detail_source] = campaign_target
+
     if not mapping:
         return mapping
     return _performance.preserve_both_channel_mappings(

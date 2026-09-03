@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Reconciler entrypoint with KEY Channel included in business identity."""
+"""Reconciler entrypoint with source-safe business identity and overlap scope keys."""
 from __future__ import annotations
 
 import importlib.util
@@ -25,6 +25,86 @@ for _constant in ("_BUSINESS_COLUMNS", "_PROMOTION_ID_COLUMNS"):
         _index = _columns.index("channel") if "channel" in _columns else len(_columns)
         _columns.insert(_index, "key_channel")
 
+
+def _scope_key(value):
+    """Normalize only for comparison; never write this key over source values."""
+    return _core._normalize_text(value)
+
+
+def detect_campaign_time_overlaps(df_ctkm):
+    warnings = []
+    if not {"item_id", "promo_from", "promo_to"}.issubset(df_ctkm.columns):
+        return warnings
+
+    df = _core._ensure_item_key(df_ctkm)
+    df["_overlap_from"] = df["promo_from"].apply(_core._parse_date)
+    df["_overlap_to"] = df["promo_to"].apply(_core._parse_date)
+    df = df[df["_overlap_from"].notna() & df["_overlap_to"].notna()].copy()
+    if df.empty:
+        return warnings
+    df = df[df["item_key"].apply(_core.is_sku)]
+    df = _core._ensure_source_lineage(df)
+
+    from itertools import combinations
+
+    for item_key, grp in df.groupby("item_key"):
+        if len(grp) < 2:
+            continue
+        rows = grp.to_dict("records")
+        for a, b in combinations(rows, 2):
+            af, at = a["_overlap_from"], a["_overlap_to"]
+            bf, bt = b["_overlap_from"], b["_overlap_to"]
+            if not (af <= bt and bf <= at):
+                continue
+            if _core._same_campaign_row(a, b):
+                continue
+
+            ca = _core._display_value(a.get("campaign_name"), "(không rõ)")
+            cb = _core._display_value(b.get("campaign_name"), "(không rõ)")
+            source_a = _core._normalize_text(a.get("program_source"))
+            source_b = _core._normalize_text(b.get("program_source"))
+            cross_source_clearance = (
+                source_a != source_b and {source_a, source_b} == {"ctkm", "clearance"}
+            )
+
+            # Compare derived scope keys, not raw source bytes. Pharmacity files
+            # contain variants such as OFFLINE/Offline and ALL CHANNEL/All Channel.
+            # KEY Channel is included when present because it represents the
+            # application scope independently of the raw Channel label.
+            channel_a_key = _scope_key(a.get("channel"))
+            channel_b_key = _scope_key(b.get("channel"))
+            key_channel_a_key = _scope_key(a.get("key_channel"))
+            key_channel_b_key = _scope_key(b.get("key_channel"))
+
+            same_channel_scope = channel_a_key == channel_b_key
+            if key_channel_a_key or key_channel_b_key:
+                same_channel_scope = (
+                    same_channel_scope and key_channel_a_key == key_channel_b_key
+                )
+
+            is_blocking = cross_source_clearance or same_channel_scope
+            conflict_type = (
+                "blocking_conflict" if is_blocking
+                else "potential_cross_channel_overlap"
+            )
+            warnings.append(_core.OverlapWarning(
+                str(item_key), ca, cb,
+                f"{af.date()} -> {at.date()}",
+                f"{bf.date()} -> {bt.date()}",
+                _core._display_value(a.get("channel")),
+                _core._display_value(b.get("channel")),
+                _core._display_value(a.get("source_row_id"), ""),
+                _core._display_value(b.get("source_row_id"), ""),
+                conflict_type,
+                is_blocking,
+            ))
+    return warnings
+
+
+_core.detect_campaign_time_overlaps = detect_campaign_time_overlaps
+
 for _name in dir(_core):
     if not _name.startswith("__"):
         globals()[_name] = getattr(_core, _name)
+
+detect_campaign_time_overlaps = _core.detect_campaign_time_overlaps
