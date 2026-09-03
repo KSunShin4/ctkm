@@ -28,13 +28,14 @@ def _summary():
     return {
         "Thang bao cao": "2026-09",
         "Ngay nghiep vu": pd.Timestamp("2026-09-15"),
-        # Deliberately wrong raw-row counts. Export adapter must replace only
-        # task-oriented metrics with the same unique-task semantics as work sheets.
+        # Deliberately wrong raw-row counts. Export adapter must replace task metrics.
         "So dong tem tu Clearance": 99,
         "So dong cho gan": 99,
         "So dong can review": 99,
-        # Audit/location metrics keep their existing row semantics.
+        # Legacy location values are intentionally stale. Full export alignment now
+        # recalculates canonical + legacy aliases from the actual action frame.
         "So dong CTKM thieu vi tri ke": 7,
+        "So dong KM thieu vi tri POG": 7,
         "So dong can kiem tra vi tri": 9,
     }
 
@@ -54,6 +55,7 @@ def test_operational_summary_counts_unique_in_scope_tasks_only():
     assert summary["So dong tem tu Clearance"] == 1
     assert summary["So dong cho gan"] == 1
     assert summary["So dong can review"] == 1
+    # This helper only aligns task counts; location metrics are handled by exporter.
     assert summary["So dong CTKM thieu vi tri ke"] == 7
     assert summary["So dong can kiem tra vi tri"] == 9
 
@@ -83,6 +85,10 @@ def test_export_mutates_pipeline_summary_before_writing_tom_tat(tmp_path):
     assert summary["So dong tem tu Clearance"] == 1
     assert summary["So dong cho gan"] == 1
     assert summary["So dong can review"] == 1
+    # All fixture actions have complete POG locations, so export must replace the
+    # deliberately stale location numbers with zero and keep the legacy alias equal.
+    assert summary["So dong KM thieu vi tri POG"] == 0
+    assert summary["So dong CTKM thieu vi tri ke"] == 0
 
     workbook = load_workbook(output, data_only=True)
     tom_tat = {
@@ -93,8 +99,8 @@ def test_export_mutates_pipeline_summary_before_writing_tom_tat(tmp_path):
     assert tom_tat["So dong tem tu Clearance"] == 1
     assert tom_tat["So dong cho gan"] == 1
     assert tom_tat["So dong can review"] == 1
-    assert tom_tat["So dong CTKM thieu vi tri ke"] == 7
-    assert tom_tat["So dong can kiem tra vi tri"] == 9
+    assert tom_tat["So dong KM thieu vi tri POG"] == 0
+    assert tom_tat["So dong CTKM thieu vi tri ke"] == 0
 
     # Workbook work sheets use the exact same task semantics as the summary.
     assert workbook["Chờ gắn"].max_row == 2
