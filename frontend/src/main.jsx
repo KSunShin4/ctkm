@@ -98,6 +98,10 @@ const SUMMARY_LABEL_REWRITES = new Map([
 const TEXT_REWRITES = new Map([
   ['Chỉ dùng mapping đã lưu (không gọi Gemini)', 'Không gọi Gemini (mapping chuẩn/đã lưu)'],
   ['Gemini nhận diện cột…', 'Nhận diện và kiểm tra mapping cột…'],
+  [
+    'Không lấy được gợi ý từ Gemini. Hãy chọn các cột thủ công rồi bấm “Lưu mapping đã xác nhận”.',
+    'Có cảnh báo mapping. Hãy kiểm tra các cột bên dưới trước khi lưu hoặc chạy.',
+  ],
 ])
 
 const rewriteTextNodes = root => {
@@ -107,7 +111,19 @@ const rewriteTextNodes = root => {
   while (node) {
     const raw = node.nodeValue || ''
     const trimmed = raw.trim()
-    const replacement = TEXT_REWRITES.get(trimmed)
+    let replacement = TEXT_REWRITES.get(trimmed)
+    if (!replacement && trimmed.startsWith('Gemini không khả dụng. Bạn vẫn có thể chọn mapping thủ công bên dưới.')) {
+      replacement = trimmed.replace(
+        'Gemini không khả dụng. Bạn vẫn có thể chọn mapping thủ công bên dưới.',
+        'Có cảnh báo mapping. Hãy kiểm tra mapping bên dưới.'
+      )
+    }
+    if (!replacement && trimmed.startsWith('Gemini đang nhận diện cột, ghép CTKM với POG theo tháng')) {
+      replacement = trimmed.replace(
+        'Gemini đang nhận diện cột',
+        'Hệ thống đang kiểm tra mapping cột'
+      )
+    }
     if (replacement && trimmed !== replacement) {
       node.nodeValue = raw.replace(trimmed, replacement)
     }
@@ -134,6 +150,11 @@ const rewriteLegacyUiText = root => {
     if (!match) return
     const replacement = `${match[1]} CTKM theo hóa đơn · không tính thiếu POG`
     if (text !== replacement) sub.textContent = replacement
+  })
+  root?.querySelectorAll?.('.download-name').forEach(node => {
+    const text = node.textContent?.trim() || ''
+    const match = text.match(/^tong_hop_ctkm_(\d{4}-\d{2})\.xlsx$/i)
+    if (match) node.textContent = `Workbook CTKM tháng ${match[1]}`
   })
   rewriteTextNodes(root)
 }
