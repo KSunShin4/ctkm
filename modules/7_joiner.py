@@ -37,20 +37,25 @@ def _with_item_key(frame: pd.DataFrame) -> pd.DataFrame:
 
 
 def _replacement_key_map(frame: pd.DataFrame) -> tuple[dict[str, str], set[str], set[str]]:
-    """Return only one-to-one new-code -> source-code aliases.
+    """Return only safe one-to-one new-code -> source-code aliases.
 
     Source ``item_id``/``item_key`` stays canonical for reconciliation identity.
-    A Pharmacity replacement code is only used as an additional lookup path when
-    both directions are unambiguous and both values are real P-code SKUs.
-    Ambiguous/non-SKU mappings are deliberately ignored rather than silently
-    connecting unrelated rows.
+    A replacement code is an alias only when both values are real P-code SKUs,
+    both directions are one-to-one, and the new code is not itself a direct
+    source ``item_key`` elsewhere in the CTKM frame. That last guard prevents a
+    migration alias from stealing POG rows that belong to a real promotion already
+    authored under the new code.
     """
     if frame is None or frame.empty or "new_item_key" not in frame.columns:
         return {}, set(), set()
 
+    source_series = frame.get("item_key", pd.Series(index=frame.index, dtype=object))
+    direct_source_keys = {
+        key for key in source_series.map(_item_key).dropna() if _is_sku_key(key)
+    }
     new_to_source: dict[str, set[str]] = {}
     source_to_new: dict[str, set[str]] = {}
-    for source_key, new_key in zip(frame.get("item_key", []), frame["new_item_key"]):
+    for source_key, new_key in zip(source_series, frame["new_item_key"]):
         source = _item_key(source_key)
         new = _item_key(new_key)
         if not source or not new or source == new:
@@ -62,6 +67,10 @@ def _replacement_key_map(frame: pd.DataFrame) -> tuple[dict[str, str], set[str],
 
     ambiguous_new = {key for key, values in new_to_source.items() if len(values) != 1}
     ambiguous_source = {key for key, values in source_to_new.items() if len(values) != 1}
+    # A replacement code that is also directly authored as an item_id has two
+    # possible meanings in POG. Never guess which promotion owns that POG row.
+    ambiguous_new |= set(new_to_source) & direct_source_keys
+
     mapping = {}
     for new, source_values in new_to_source.items():
         if new in ambiguous_new:
