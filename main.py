@@ -242,10 +242,17 @@ def _align_pog_promotion_coverage_summary(
         missing_rows = int(row_keys.isin(missing_km_keys).sum())
 
     # Preserve the original Monthly reconciliation counts explicitly before the
-    # legacy public keys are repurposed as operational all-KM aliases.
+    # legacy public keys are repurposed as operational all-KM aliases. Prefer
+    # already-explicit Monthly values so repeated alignment is idempotent.
     monthly_row_fallback = len(df_pog_only) if df_pog_only is not None else 0
-    monthly_rows = int(summary.get("So dong POG khong co CTKM phu hop", monthly_row_fallback))
-    monthly_items = int(summary.get("So item POG khong co CTKM phu hop", len(monthly_pog_only_keys)))
+    monthly_rows = int(summary.get(
+        "So dong POG khong co CTKM Monthly phu hop",
+        summary.get("So dong POG khong co CTKM phu hop", monthly_row_fallback),
+    ))
+    monthly_items = int(summary.get(
+        "So item POG khong co CTKM Monthly phu hop",
+        summary.get("So item POG khong co CTKM phu hop", len(monthly_pog_only_keys)),
+    ))
     summary["So dong POG khong co CTKM Monthly phu hop"] = monthly_rows
     summary["So item POG khong co CTKM Monthly phu hop"] = monthly_items
 
