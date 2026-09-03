@@ -48,15 +48,54 @@ def test_canonical_ctkm_queue_passes_business_date_and_clearance_to_pipeline(mon
         def __init__(self, filename):
             self.filename = filename
 
-        async def read(self, _limit):
-            return b"xlsx-placeholder"
+    async def fake_read_upload(_upload, _max_bytes, _label):
+        # This test covers queue/preflight propagation, not XLSX container parsing.
+        return b"validated-by-fixture"
 
-    def fake_workbook(sheet_name):
-        sheet = SimpleNamespace(df=pd.DataFrame(columns=["Item", "Campaign"]))
-        return SimpleNamespace(sheets={sheet_name: sheet})
+    def fact_frame(*, clearance=False):
+        if clearance:
+            return pd.DataFrame([{
+                "Item code": "P2001",
+                "Product Name": "Clearance item",
+                "From": "2026-08-01",
+                "To": "2026-08-31",
+                "Campaign Detail": "Clearance Isstop 1-3-4",
+                "Scheme detail for customer": "Clearance",
+                "Kênh áp dụng": "All channel",
+            }])
+        return pd.DataFrame([{
+            "Item code 2": "P1001",
+            "Product Name": "Monthly item",
+            "From": "2026-08-01",
+            "To": "2026-08-31",
+            "Campaign": "Monthly",
+            "KEY Channel": "Offline",
+            "Channel": "OFFLINE",
+        }])
+
+    def pog_frame():
+        return pd.DataFrame([{
+            "ITEMID": "P1001",
+            "STOREID": "SGPMC0001",
+            "POGCODE": "POG.0001",
+            "LOCATIONID": 1,
+        }])
 
     def fake_load(path, **_kwargs):
-        return fake_workbook("POG" if path.endswith("pog.xlsx") else "CTKM")
+        if path.endswith("pog.xlsx"):
+            return SimpleNamespace(
+                sheets={"POG": SimpleNamespace(df=pog_frame())},
+                pog_snapshot_month="2026-08",
+            )
+        if path.endswith("clearance.xlsx"):
+            return SimpleNamespace(
+                sheets={"CLEARANCE": SimpleNamespace(df=fact_frame(clearance=True))},
+                pog_snapshot_month=None,
+            )
+        return SimpleNamespace(
+            sheets={"CTKM": SimpleNamespace(df=fact_frame())},
+            pog_snapshot_month=None,
+        )
 
     def fake_run_pipeline(**kwargs):
         captured.update(kwargs)
@@ -72,15 +111,9 @@ def test_canonical_ctkm_queue_passes_business_date_and_clearance_to_pipeline(mon
     monkeypatch.setattr(main_api, "_OUT_DIR", tmp_path / "out")
     main_api._TMP_DIR.mkdir()
     main_api._OUT_DIR.mkdir()
+    monkeypatch.setattr(main_api, "_read_upload_limited", fake_read_upload)
     monkeypatch.setattr(main_api._main_mod.L, "load_workbook_raw", fake_load)
-    monkeypatch.setattr(
-        main_api._main_mod, "_select_primary_ctkm_sheet",
-        lambda workbook, _selected: ("CTKM", workbook.sheets["CTKM"]),
-    )
-    monkeypatch.setattr(
-        main_api, "_get_saved_preset",
-        lambda *_args: {"ctkm_mapping": {"Item": "item_id"}, "pog_mapping": {"Item": "item_id"}},
-    )
+    monkeypatch.setattr(main_api, "_get_saved_preset", lambda *_args: {})
     monkeypatch.setattr(main_api, "run_pipeline", fake_run_pipeline)
     monkeypatch.setattr(main_api, "_submit_job", run_immediately)
 
@@ -106,5 +139,8 @@ def test_canonical_ctkm_queue_passes_business_date_and_clearance_to_pipeline(mon
         assert captured["business_date"] == "2026-08-15"
         assert captured["clearance_sheet_name"] == "CLEARANCE"
         assert captured["clearance_filepath"].endswith("clearance.xlsx")
+        assert captured["ctkm_mapping_override"]["Item code 2"] == "item_id"
+        assert captured["pog_mapping_override"]["ITEMID"] == "item_id"
+        assert captured["clearance_mapping_override"]["Item code"] == "item_id"
     finally:
         main_api._jobs.pop(response["job_id"], None)
