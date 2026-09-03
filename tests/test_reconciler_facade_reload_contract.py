@@ -58,7 +58,8 @@ def test_reconciler_facade_uses_pristine_build_fefo_baseline_across_aliases():
 
 def test_reconciler_reload_does_not_duplicate_operational_columns():
     _load_reconciler_again("_ctkm_reconciler_repeat_result")
-    result = main.RC.build_fefo_action_frame(
+    core = sys.modules["_ctkm_reconciler_core"]
+    result = core.build_fefo_action_frame(
         _promotion(),
         "2026-09",
         business_date="2026-09-10",
