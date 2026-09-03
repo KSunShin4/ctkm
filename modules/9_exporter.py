@@ -25,6 +25,7 @@ _original_hide = _core._hide_technical_columns
 
 _core._prepare_action_sheet = _performance.prepare_action_sheet_user_first
 _core._filter_selected_columns = _performance.filter_selected_columns_keep_channels
+_core._add_work_tracking_columns = _performance.unique_work_tracking_rows
 
 
 def _hide_technical_columns(ws, *, action_sheet=False):
@@ -46,5 +47,6 @@ for _name in dir(_core):
 
 _prepare_action_sheet = _core._prepare_action_sheet
 _filter_selected_columns = _core._filter_selected_columns
+_add_work_tracking_columns = _core._add_work_tracking_columns
 _hide_technical_columns = _core._hide_technical_columns
 _BILINGUAL_HEADERS = _core._BILINGUAL_HEADERS
