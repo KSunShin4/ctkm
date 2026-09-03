@@ -29,10 +29,11 @@ def test_compose_keeps_built_frontend_and_requires_admin_runtime_config():
     assert "- .:/app" not in compose
 
 
-def test_render_uses_the_same_docker_single_process_entrypoint():
+def test_render_uses_the_same_docker_single_process_entrypoint_and_waits_for_ci():
     render = (_repo_root() / "render.yaml").read_text(encoding="utf-8")
 
     assert "runtime: docker" in render
     assert "dockerfilePath: ./Dockerfile" in render
     assert "healthCheckPath: /api/health" in render
+    assert "autoDeployTrigger: checksPass" in render
     assert "backend.main_api_core:app" not in render
