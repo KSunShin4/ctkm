@@ -45,6 +45,7 @@ _STATE_FLAGS = {
 }
 
 _ROUTE_BINDINGS = (
+    ("GET", "/api/health", "health"),
     ("GET", "/api/download/{job_id}", "download_result"),
     ("GET", "/api/jobs", "list_jobs"),
     ("POST", "/api/jobs/ctkm", "enqueue_ctkm"),
@@ -69,6 +70,36 @@ def _route_for(core_module, method: str, path: str):
     return matches[0]
 
 
+def _install_health_contract(core_module) -> None:
+    if getattr(core_module.app.state, "contract_health_v1", False):
+        return
+
+    original_health = core_module.health
+
+    def health():
+        payload = original_health()
+        result = dict(payload) if isinstance(payload, dict) else {"status": "ok"}
+        main_core = getattr(core_module._main_mod, "_core", None)
+        result.update({
+            "contract_suite": "v1",
+            "contracts_ok": True,
+            "contract_order": list(CONTRACT_ORDER),
+            "main_facade_hooks": (
+                list(registered_post_facade_hooks(main_core))
+                if main_core is not None else []
+            ),
+        })
+        return result
+
+    route = _route_for(core_module, "GET", "/api/health")
+    route.endpoint = health
+    dependant = getattr(route, "dependant", None)
+    if dependant is not None:
+        dependant.call = health
+    core_module.health = health
+    core_module.app.state.contract_health_v1 = True
+
+
 def verify_contract_suite(core_module) -> None:
     missing_flags = [
         name for name in CONTRACT_ORDER
@@ -78,6 +109,8 @@ def verify_contract_suite(core_module) -> None:
         raise RuntimeError(
             "Backend contract suite chưa cài đủ: " + ", ".join(missing_flags)
         )
+    if not getattr(core_module.app.state, "contract_health_v1", False):
+        raise RuntimeError("Backend health chưa phản ánh trạng thái contract suite")
 
     if input_contract.validate_manual_mapping is not validate_manual_mapping:
         raise RuntimeError("Input contract không dùng shared mapping validator")
@@ -137,6 +170,7 @@ def install_contract_suite(core_module) -> None:
     install_expiration_api_contract(core_module)
     install_final_output_contract(core_module)
     install_preview_contract(core_module)
+    _install_health_contract(core_module)
 
     main_core = getattr(core_module._main_mod, "_core", None)
     if main_core is None:
