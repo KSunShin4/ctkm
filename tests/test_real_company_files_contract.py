@@ -202,10 +202,11 @@ def test_overlap_blocks_case_only_channel_variants_without_mutating_source():
 
     assert frame["channel"].tolist() == source_channels
     assert len(warnings) == 1
-    assert warnings[0].channel_a == "OFFLINE"
-    assert warnings[0].channel_b == "Offline"
+    assert warnings[0].channel_a == "KEY=Offline | Channel=OFFLINE"
+    assert warnings[0].channel_b == "KEY=Offline | Channel=Offline"
     assert warnings[0].conflict_type == "blocking_conflict"
     assert warnings[0].is_blocking is True
+    assert warnings[0].scope_relation == "same"
 
 
 def test_overlap_keeps_genuinely_different_channel_scopes_non_blocking():
