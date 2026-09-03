@@ -33,7 +33,8 @@ def test_main_facade_reuses_immutable_core_baselines_across_module_names():
     repeated = _load_main_again("_ctkm_main_repeat_contract")
 
     # The new facade replaces wrappers but always calls the same immutable
-    # baseline. It must never capture the wrapper installed by the first import.
+    # baseline. Runtime hooks may then add one hardened layer on top; they must
+    # never capture the wrapper installed by the previous facade generation.
     assert repeated._original_process is baseline["process"]
     assert repeated._original_process is not first_process_wrapper
     assert repeated._original_get_or_map is baseline["get_or_map"]
@@ -42,17 +43,28 @@ def test_main_facade_reuses_immutable_core_baselines_across_module_names():
     assert repeated._task_aligned_export is not first_export_wrapper
 
     assert core._process is repeated._process
-    assert core.EX.export_final_report is repeated._export_with_location_summary
+    hardened_export = core.EX.export_final_report
+    assert getattr(hardened_export, "_ctkm_export_memory_contract_v1", False)
+    assert hardened_export.__wrapped__ is repeated._export_with_location_summary
+    assert hardened_export is not first_export_wrapper
 
 
 def test_third_facade_load_still_has_one_wrapper_layer():
     core = sys.modules["_ctkm_main_core"]
     baseline = core._ctkm_main_facade_baseline
+    previous_export = core.EX.export_final_report
 
     repeated = _load_main_again("_ctkm_main_repeat_contract_2")
 
     assert repeated._original_process is baseline["process"]
     assert repeated._task_aligned_export is baseline["export_final_report"]
+    hardened_export = core.EX.export_final_report
+    assert getattr(hardened_export, "_ctkm_export_memory_contract_v1", False)
+    assert hardened_export.__wrapped__ is repeated._export_with_location_summary
+    assert hardened_export is not previous_export
+    assert not getattr(
+        hardened_export.__wrapped__, "_ctkm_export_memory_contract_v1", False
+    )
 
 
 def test_public_main_uses_shared_required_field_mapping_contract():
