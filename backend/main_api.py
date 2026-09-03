@@ -17,17 +17,7 @@ import sys
 import tempfile
 import threading
 
-from backend.runtime_contract import install_runtime_contract
-from backend import input_contract as _input_contract
-from backend.input_contract import install_input_contract
-from backend.mapping_validation import validate_manual_mapping
-from backend.mapping_result_contract import install_mapping_result_contract
-from backend.gemini_availability_contract import install_gemini_availability_contract
-from backend.tem_r_resource_contract import install_tem_r_resource_contract
-from backend.auxiliary_workflows_contract import install_auxiliary_workflows_contract
-from backend.expiration_api_contract import install_expiration_api_contract
-from backend.final_output_contract import install_final_output_contract
-from backend.preview_contract import install_preview_contract
+from backend.contract_suite import install_contract_suite
 
 _CORE_NAME = "backend.main_api_core"
 _CORE_PATH = Path(__file__).with_name("main_api_core.py")
@@ -180,24 +170,9 @@ for _name, _value in {
 }.items():
     setattr(_core, _name, _value)
 
-# Rebind input-contract globals before installation so preset/preview/run all use
-# the same validator that preserves intentional campaign_detail/promo_price slots.
-_input_contract.validate_manual_mapping = validate_manual_mapping
-
-# Runtime reservation must be installed first. Input validation wraps shared
-# upload reading, then mapping/Gemini contracts are installed. Tem R gets its
-# archive-expansion guard before the auxiliary routes capture inspect/create.
-# Expiration keeps its current public access model but shares the stricter
-# upload/resource contract. Final CTKM validation and preview are installed last.
-install_runtime_contract(_core)
-install_input_contract(_core)
-install_mapping_result_contract(_core, validate_manual_mapping)
-install_gemini_availability_contract(_core)
-install_tem_r_resource_contract(_core)
-install_auxiliary_workflows_contract(_core)
-install_expiration_api_contract(_core)
-install_final_output_contract(_core)
-install_preview_contract(_core)
+# All compatibility/hardening layers are installed and verified by one ordered
+# suite. The suite also binds the shared mapping validator before routes capture it.
+install_contract_suite(_core)
 
 # Make imports receive the actual core module. This preserves attribute mutation
 # semantics used by tests and by runtime monkeypatch/configuration code.
