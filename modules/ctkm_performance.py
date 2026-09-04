@@ -2,6 +2,8 @@
 """Drop-in CTKM performance, fidelity and presentation patches."""
 from __future__ import annotations
 
+import sys
+
 import pandas as pd
 
 from modules.item_code_identity import build_transition_identity
