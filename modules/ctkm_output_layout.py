@@ -210,3 +210,40 @@ def add_total_action_sheet(
 
     workbook.save(path)
     workbook.close()
+
+
+def install_output_layout(main_mod, performance_module) -> None:
+    """Install presentation-only wrappers after the existing correctness patches."""
+    if getattr(main_mod, "_ctkm_output_layout_patched", False):
+        return
+
+    exporter = main_mod.EX
+    original_style = exporter._apply_professional_style
+    original_export = exporter.export_final_report
+
+    def prepare_action_sheet(df: pd.DataFrame) -> pd.DataFrame:
+        return reorder_user_action_columns(df, performance_module.TECHNICAL_ACTION_COLUMNS)
+
+    def style_sheet(ws, sheet_name: str, df: pd.DataFrame | None = None):
+        original_style(ws, sheet_name, df)
+        apply_user_sheet_style(ws, sheet_name)
+
+    def export_with_total_sheet(*args, **kwargs):
+        actions = kwargs.get("df_fefo_actions")
+        if actions is None and len(args) > 9:
+            actions = args[9]
+        result = original_export(*args, **kwargs)
+        add_total_action_sheet(
+            result,
+            actions,
+            exporter_module=exporter,
+            unique_work_tracking_rows=performance_module.unique_work_tracking_rows,
+            technical_columns=performance_module.TECHNICAL_ACTION_COLUMNS,
+        )
+        return result
+
+    apply_header_labels(exporter)
+    exporter._prepare_action_sheet = prepare_action_sheet
+    exporter._apply_professional_style = style_sheet
+    exporter.export_final_report = export_with_total_sheet
+    main_mod._ctkm_output_layout_patched = True
