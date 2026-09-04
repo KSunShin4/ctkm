@@ -141,3 +141,67 @@ def test_guide_sheet_is_created_first_and_mentions_channel_first_workflow():
     text = " ".join(str(cell.value or "") for row in workbook["HƯỚNG DẪN"] for cell in row)
     assert "Lọc KEY Channel trước" in text
     assert "sau đó lọc Channel" in text
+
+
+def test_total_action_frame_matches_approved_21_column_mockup():
+    exporter = _exporter_module()
+    actions = pd.DataFrame([{
+        "key_channel": "All channel",
+        "channel": "All Channel",
+        "item_id": "P1001",
+        "item_name": "Thuốc A",
+        "promo_uom": "Hộp",
+        "pog_code": "A01",
+        "location_id": "1",
+        "facing": 2,
+        "scheduled_action": "gắn tem",
+        "ngay_gan_tem": pd.Timestamp("2026-09-01"),
+        "ngay_thao_tem": pd.Timestamp("2026-10-01"),
+        "campaign_name": "FULL MONTH",
+        "campaign_detail": "Giảm 10%",
+        "promo_from": pd.Timestamp("2026-09-01"),
+        "promo_to": pd.Timestamp("2026-09-30"),
+        "normal_price": 100000,
+        "promo_price": 90000,
+        "program_source": "CTKM",
+        "reason": "",
+        "product_type": "SKU",
+        "store_id": "SGPMC1885",
+        "in_report_scope": True,
+        "task_id": "T1",
+    }])
+
+    total = exporter._build_total_action_frame(actions)
+
+    assert list(total.columns) == exporter._APPROVED_ACTION_COLUMNS
+    assert len(total.columns) == 21
+    assert total.iloc[0]["key_channel"] == "All channel"
+    assert total.iloc[0]["channel"] == "All Channel"
+    assert total.iloc[0]["action"] == "gắn tem"
+
+
+def test_total_sheet_is_inserted_after_guide_and_uses_mockup_headers():
+    exporter = _exporter_module()
+    workbook = Workbook()
+    workbook.active.title = "HƯỚNG DẪN"
+    workbook.create_sheet("Gắn tem")
+    actions = pd.DataFrame([{
+        "key_channel": "Offline",
+        "channel": "OFFLINE",
+        "item_id": "P1",
+        "item_name": "Thuốc A",
+        "promo_uom": "Hộp",
+        "action": "gắn tem",
+    }])
+
+    exporter._write_total_action_sheet(workbook, actions)
+
+    assert workbook.sheetnames[:3] == ["HƯỚNG DẪN", "TỔNG HỢP - TEM", "Gắn tem"]
+    ws = workbook["TỔNG HỢP - TEM"]
+    headers = [cell.value for cell in ws[1]]
+    assert headers[:5] == [
+        "KEY Channel", "Channel", "Mã sản phẩm", "Tên sản phẩm",
+        "Đơn vị sản phẩm (Promo UoM)",
+    ]
+    assert ws.freeze_panes == "C2"
+    assert ws.auto_filter.ref is not None
