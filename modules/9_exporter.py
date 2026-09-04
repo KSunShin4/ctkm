@@ -26,6 +26,9 @@ _performance = importlib.import_module("modules.ctkm_performance")
 _original_hide = _core._hide_technical_columns
 _original_shelf_colors = _core._apply_alternating_shelf_colors
 _original_style = _core._apply_professional_style
+_original_action_inputs = _core._configure_action_inputs
+_original_confirmation_inputs = _core._configure_confirmation_inputs
+_original_guide_sheet = _core._create_guide_sheet
 _original_export_final_report = _core.export_final_report
 
 # Comparison-only keys remain available for audit/code but should not clutter
@@ -82,11 +85,20 @@ _core._add_work_tracking_columns = _performance.unique_work_tracking_rows
 
 
 _USER_ACTION_SHEETS = {"Gắn tem", "Tháo tem", "Chờ gắn", "Cần review"}
+_RECONCILIATION_SHEETS = {
+    "Tong hop", "CTKM thieu vi tri ke", "POG cần kiểm tra",
+    "POG không có CTKM", "POG cần review", "Xác nhận CTKM Clearance",
+}
+_WARNING_SHEETS = {"Canh bao trung thoi gian"}
+_AUDIT_SHEETS = {"Audit hành động", "Tom tat", "Mapping log"}
+
 _COLUMN_WIDTHS = {
     "key_channel": 18,
     "channel": 24,
     "item_id": 14,
     "item_name": 38,
+    "item_name__ctkm": 38,
+    "item_name__pog": 38,
     "promo_uom": 20,
     "new_item_id": 16,
     "item_code_transition_status": 22,
@@ -108,18 +120,38 @@ _COLUMN_WIDTHS = {
     "reason": 36,
     "product_type": 16,
     "store_id": 14,
+    "location_status": 22,
+    "location_completeness": 20,
+    "pog_month_status": 18,
+    "trang_thai_doi_chieu": 28,
+    "quan_he_thoi_gian": 30,
+    "nguon_chuong_trinh": 18,
+    "xac_nhan_ap_dung": 22,
+    "ghi_chu_xac_nhan": 34,
+    "campaign_a": 28,
+    "campaign_b": 28,
+    "period_a": 22,
+    "period_b": 22,
+    "channel_a": 18,
+    "channel_b": 18,
+    "conflict_type": 24,
 }
 _HEADER_GROUPS = {
     "key_channel": "1F4E78",
     "channel": "1F4E78",
     "item_id": "2F75B5",
     "item_name": "2F75B5",
+    "item_name__ctkm": "2F75B5",
+    "item_name__pog": "2F75B5",
     "promo_uom": "2F75B5",
     "new_item_id": "2F75B5",
     "item_code_transition_status": "2F75B5",
     "pog_code": "5B9BD5",
     "location_id": "5B9BD5",
     "facing": "5B9BD5",
+    "location_status": "5B9BD5",
+    "location_completeness": "5B9BD5",
+    "pog_month_status": "5B9BD5",
     "scheduled_action": "70AD47",
     "action": "70AD47",
     "ngay_gan_tem": "70AD47",
@@ -132,17 +164,25 @@ _HEADER_GROUPS = {
     "normal_price": "4472C4",
     "promo_price": "4472C4",
     "program_source": "7F8C8D",
+    "nguon_chuong_trinh": "7F8C8D",
+    "trang_thai_doi_chieu": "00A6A6",
+    "quan_he_thoi_gian": "00A6A6",
+    "xac_nhan_ap_dung": "00A6A6",
+    "ghi_chu_xac_nhan": "00A6A6",
     "reason": "C65911",
+    "campaign_a": "C79B00",
+    "campaign_b": "C79B00",
+    "period_a": "C79B00",
+    "period_b": "C79B00",
+    "channel_a": "C79B00",
+    "channel_b": "C79B00",
+    "conflict_type": "C65911",
+    "is_blocking": "C65911",
 }
 
 
 def _apply_runtime_header_labels() -> None:
-    """Apply concise user labels immediately before each export.
-
-    ctkm_performance also patches the shared header dictionary during startup, so
-    these assignments run at export time to make the final workbook deterministic
-    without changing any source values.
-    """
+    """Apply concise user labels immediately before each export."""
     labels = {
         "key_channel": "KEY Channel",
         "channel": "Channel",
@@ -176,16 +216,21 @@ def _apply_runtime_header_labels() -> None:
 
 
 def _apply_user_output_style(ws, sheet_name: str, df=None):
-    """Style user task sheets inside the existing ExcelWriter pass only."""
+    """Style all workbook views inside the existing ExcelWriter pass only."""
     _original_style(ws, sheet_name, df)
-    if ws is None or sheet_name not in _USER_ACTION_SHEETS:
+    if ws is None:
         return
 
-    # HƯỚNG DẪN ordering remains owned by exporter_core. This function only
-    # changes presentation of already-created task sheets and performs no IO.
-    ws.freeze_panes = "C2"
-    ws.auto_filter.ref = ws.dimensions if ws.max_row >= 1 and ws.max_column >= 1 else None
-    ws.sheet_view.showGridLines = False
+    if sheet_name in _USER_ACTION_SHEETS:
+        ws.freeze_panes = "C2"
+    elif sheet_name == "Xác nhận CTKM Clearance":
+        ws.freeze_panes = "D2"
+    elif sheet_name in _RECONCILIATION_SHEETS | _WARNING_SHEETS | _AUDIT_SHEETS:
+        ws.freeze_panes = "A2"
+
+    if sheet_name in _USER_ACTION_SHEETS | _RECONCILIATION_SHEETS | _WARNING_SHEETS | _AUDIT_SHEETS:
+        ws.auto_filter.ref = ws.dimensions if ws.max_row >= 1 and ws.max_column >= 1 else None
+        ws.sheet_view.showGridLines = False
 
     raw_headers = [str(cell.value or "") for cell in ws[1]]
     for index, raw_header in enumerate(raw_headers, start=1):
@@ -197,6 +242,56 @@ def _apply_user_output_style(ws, sheet_name: str, df=None):
             cell = ws.cell(row=1, column=index)
             cell.fill = _core.PatternFill(fill_type="solid", fgColor=fill_color)
             cell.font = _core.Font(bold=True, color="FFFFFF")
+
+    # Surface blocking overlap rows immediately; non-blocking cross-channel
+    # warnings remain visible but are less severe.
+    if sheet_name == "Canh bao trung thoi gian" and "is_blocking" in raw_headers:
+        blocking_col = raw_headers.index("is_blocking") + 1
+        for row_idx in range(2, ws.max_row + 1):
+            value = ws.cell(row=row_idx, column=blocking_col).value
+            is_blocking = value is True or str(value).strip().lower() in {"true", "1", "yes"}
+            fill = _core.PatternFill(
+                fill_type="solid", fgColor="FCE8E6" if is_blocking else "FFF4E5"
+            )
+            for col_idx in range(1, ws.max_column + 1):
+                ws.cell(row=row_idx, column=col_idx).fill = fill
+
+
+def _configure_action_inputs(ws) -> None:
+    """Keep editable task fields protected while allowing normal Excel filtering/sorting."""
+    _original_action_inputs(ws)
+    if ws is None:
+        return
+    # In openpyxl SheetProtection, True means the feature is locked.
+    ws.protection.autoFilter = False
+    ws.protection.sort = False
+
+
+def _configure_confirmation_inputs(ws) -> None:
+    """Allow filter/sort on the protected CTKM/Clearance confirmation sheet."""
+    _original_confirmation_inputs(ws)
+    if ws is None:
+        return
+    ws.protection.autoFilter = False
+    ws.protection.sort = False
+
+
+def _create_guide_sheet(*args, **kwargs) -> None:
+    """Keep HƯỚNG DẪN first and describe the approved channel-first workflow."""
+    _original_guide_sheet(*args, **kwargs)
+    workbook = args[0] if args else kwargs.get("workbook")
+    if workbook is None or "HƯỚNG DẪN" not in workbook.sheetnames:
+        return
+    ws = workbook["HƯỚNG DẪN"]
+    instructions = [
+        "1. Mở sheet Gắn tem, Tháo tem, Chờ gắn hoặc Cần review.",
+        "2. Lọc KEY Channel trước, sau đó lọc Channel theo đúng value gốc từ file công ty.",
+        "3. Lọc tiếp Cửa hàng → POG → Vị trí để đi thao tác tại quầy.",
+        "4. POG chỉ cung cấp vị trí; không phản ánh tem đã gắn thực tế hay chưa.",
+        "5. Cập nhật các ô màu vàng sau khi thực hiện; không sửa dữ liệu nguồn.",
+    ]
+    for offset, instruction in enumerate(instructions, start=5):
+        ws.cell(offset, 4, instruction)
 
 
 def _hide_technical_columns(ws, *, action_sheet=False):
@@ -307,6 +402,9 @@ def _export_final_report_with_pog_metadata(*args, **kwargs):
 
 _core._hide_technical_columns = _hide_technical_columns
 _core._apply_professional_style = _apply_user_output_style
+_core._configure_action_inputs = _configure_action_inputs
+_core._configure_confirmation_inputs = _configure_confirmation_inputs
+_core._create_guide_sheet = _create_guide_sheet
 _core._apply_alternating_shelf_colors = _apply_alternating_shelf_colors
 _apply_runtime_header_labels()
 
@@ -320,5 +418,8 @@ _filter_selected_columns = _core._filter_selected_columns
 _add_work_tracking_columns = _core._add_work_tracking_columns
 _hide_technical_columns = _core._hide_technical_columns
 _apply_professional_style = _core._apply_professional_style
+_configure_action_inputs = _core._configure_action_inputs
+_configure_confirmation_inputs = _core._configure_confirmation_inputs
+_create_guide_sheet = _core._create_guide_sheet
 _apply_alternating_shelf_colors = _core._apply_alternating_shelf_colors
 _BILINGUAL_HEADERS = _core._BILINGUAL_HEADERS
