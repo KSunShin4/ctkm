@@ -1,20 +1,24 @@
 # -*- coding: utf-8 -*-
-"""Reduce CPU cost of CTKM workbook styling without changing workbook semantics.
+"""Bound the CPU cost of CTKM workbook presentation on very small runtimes.
 
-The historical exporter styled each worksheet in several full passes and created
-many equivalent OpenPyXL style objects per cell. That is tolerable on a desktop
-but unnecessarily expensive on a very small Render CPU. This contract replaces
-only presentation helpers in the shared exporter core:
+The production workbook can contain the same operational rows in several audit /
+action views. Styling every populated cell in every view is therefore much more
+expensive than writing the business data itself on a 0.1 CPU Render instance.
 
-* one main pass computes widths, row styling, action colors, shelf bands and
-  review/collision highlights;
-* immutable style objects are reused instead of recreated for every cell;
-* the later shelf-color pass becomes a no-op because its final visual state has
-  already been applied in the main pass;
-* action/confirmation input helpers reuse protection/fill objects.
+This contract keeps workbook/business semantics intact while making presentation
+cost proportional to columns plus a few editable/diagnostic ranges instead of
+rows * columns:
 
-No business dataframe, sheet name, row count, mapping, task identity or source
-value is changed by this module.
+* style only header cells directly;
+* use worksheet default row height instead of touching every row dimension;
+* size columns from headers plus a small dataframe sample;
+* use conditional-formatting ranges for action/review/collision emphasis instead
+  of assigning fills/fonts to every data cell;
+* retain validation/protection for pharmacist-editable fields;
+* make the historical second shelf-colour pass a no-op.
+
+No dataframe values, sheet names, row counts, mappings, task identities, summary
+metrics, audit fields or source values are modified here.
 """
 from __future__ import annotations
 
@@ -50,22 +54,35 @@ _REVIEW_FIELDS = (
 _COLLISION_FIELDS = (
     "promotion_count_at_position", "has_multiple_promotions_at_position",
 )
+_SAMPLE_ROWS_FOR_WIDTH = 80
 
 
-def _truthy(value) -> bool:
-    return value is True or str(value).strip().lower() in {"true", "1", "yes"}
+def _column_widths(headers: list[str], df: pd.DataFrame | None) -> list[int]:
+    widths = [max(10, len(header)) for header in headers]
+    if df is None or getattr(df, "empty", True):
+        return widths
+    sample = df.head(_SAMPLE_ROWS_FOR_WIDTH)
+    for index, header in enumerate(headers):
+        if index >= len(sample.columns):
+            break
+        try:
+            lengths = sample.iloc[:, index].dropna().astype(str).str.len()
+            if not lengths.empty:
+                widths[index] = max(widths[index], int(lengths.max()))
+        except Exception:
+            pass
+    return widths
 
 
-def _column_values(df, name: str, length: int):
-    if df is None or getattr(df, "empty", True) or name not in df.columns:
-        return [None] * length
-    values = df[name].tolist()
-    if len(values) < length:
-        values.extend([None] * (length - len(values)))
-    return values
+def _add_formula_rule(ws, cell_range: str, formula: str, *, fill: str, font: str | None = None):
+    kwargs = {"fill": PatternFill(fill_type="solid", fgColor=fill)}
+    if font:
+        kwargs["font"] = Font(bold=True, color=font)
+    ws.conditional_formatting.add(cell_range, FormulaRule(formula=[formula], **kwargs))
 
 
 def _optimized_professional_style(ws, sheet_name: str, df: pd.DataFrame | None = None):
+    """Apply bounded-cost presentation; never iterate the full cell matrix."""
     if ws is None:
         return
 
@@ -75,26 +92,13 @@ def _optimized_professional_style(ws, sheet_name: str, df: pd.DataFrame | None =
         return
 
     thin = Side(border_style="thin", color="D0D7DE")
-    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    header_border = Border(bottom=thin)
     header_fill = PatternFill(fill_type="solid", fgColor="1F4E78")
     header_font = Font(bold=True, color="FFFFFF")
     header_alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-    data_alignment = Alignment(vertical="center", wrap_text=True)
-    alt_fill = PatternFill(fill_type="solid", fgColor="F7F9FC")
-    white_fill = PatternFill(fill_type="solid", fgColor="FFFFFF")
-    attach_fill = PatternFill(fill_type="solid", fgColor="E8F5E9")
-    remove_fill = PatternFill(fill_type="solid", fgColor="FFF3E0")
-    shelf_fills = (
-        PatternFill(fill_type="solid", fgColor="EAF3FF"),
-        PatternFill(fill_type="solid", fgColor="FFF4E5"),
-    )
-    review_fill = PatternFill(fill_type="solid", fgColor="FFC7CE")
-    review_font = Font(bold=True, color="9C0006")
-    warning_fill = PatternFill(fill_type="solid", fgColor="FFF2CC")
-    warning_font = Font(bold=True, color="7F6000")
 
     ws.freeze_panes = "C2" if sheet_name in _ACTION_SHEETS else "A2"
-    ws.auto_filter.ref = ws.dimensions if max_row >= 1 and max_col >= 1 else None
+    ws.auto_filter.ref = ws.dimensions if max_row >= 1 else None
     ws.sheet_view.showGridLines = False
     ws.page_setup.orientation = "landscape"
     ws.page_setup.fitToWidth = 1
@@ -102,120 +106,74 @@ def _optimized_professional_style(ws, sheet_name: str, df: pd.DataFrame | None =
     ws.sheet_properties.pageSetUpPr.fitToPage = True
     ws.print_title_rows = "1:1"
     ws.sheet_properties.outlinePr.summaryBelow = True
+    ws.sheet_properties.tabColor = _COLOR_MAP.get(sheet_name, "4F81BD")
+    ws.sheet_format.defaultRowHeight = 22
 
-    headers = [ws.cell(row=1, column=index).value for index in range(1, max_col + 1)]
-    header_text = ["" if value is None else str(value) for value in headers]
-    widths = [max(10, len(value)) for value in header_text]
-
+    headers = ["" if cell.value is None else str(cell.value) for cell in ws[1]]
     for cell in ws[1]:
         cell.fill = header_fill
         cell.font = header_font
         cell.alignment = header_alignment
-        cell.border = border
+        cell.border = header_border
 
-    data_rows = max(0, max_row - 1)
-    action_values = _column_values(df, "action", data_rows)
-    location_values = _column_values(
-        df,
-        "location_completeness" if df is not None and "location_completeness" in getattr(df, "columns", ())
-        else "location_status",
-        data_rows,
-    )
-    review_values = _column_values(df, "location_needs_review", data_rows)
-    collision_values = _column_values(df, "has_multiple_promotions_at_position", data_rows)
-    store_values = _column_values(df, "store_id", data_rows)
-    pog_values = _column_values(df, "pog_code", data_rows)
-
-    action_col = next(
-        (index for index, value in enumerate(header_text, start=1) if value.lower() == "action"),
-        None,
-    )
-    completeness_header = (
-        "location_completeness" if "location_completeness" in header_text
-        else "location_status" if "location_status" in header_text else None
-    )
-    completeness_col = header_text.index(completeness_header) + 1 if completeness_header else None
-    review_columns = [header_text.index(field) + 1 for field in _REVIEW_FIELDS if field in header_text]
-    collision_columns = [header_text.index(field) + 1 for field in _COLLISION_FIELDS if field in header_text]
-
-    shelf_color_index: dict[tuple[str, str], int] = {}
-
-    for offset, row_idx in enumerate(range(2, max_row + 1)):
-        base_fill = alt_fill if row_idx % 2 == 0 else white_fill
-        action_fill = None
-        if sheet_name in _ACTION_SHEETS and offset < len(action_values):
-            action_text = "" if action_values[offset] is None else str(action_values[offset]).lower()
-            if "gắn" in action_text:
-                action_fill = attach_fill
-            elif "tháo" in action_text:
-                action_fill = remove_fill
-
-        shelf_fill = None
-        if offset < len(store_values) and offset < len(pog_values):
-            store = "" if pd.isna(store_values[offset]) else str(store_values[offset]).strip()
-            pog = "" if pd.isna(pog_values[offset]) else str(pog_values[offset]).strip()
-            if store and pog:
-                shelf = (store, pog)
-                if shelf not in shelf_color_index:
-                    shelf_color_index[shelf] = len(shelf_color_index) % len(shelf_fills)
-                shelf_fill = shelf_fills[shelf_color_index[shelf]]
-
-        row_fill = shelf_fill or action_fill or base_fill
-        shelf_row = shelf_fill is not None
-        for col_idx in range(1, max_col + 1):
-            cell = ws.cell(row=row_idx, column=col_idx)
-            value = cell.value
-            if value is not None:
-                text = str(value)
-                if len(text) > widths[col_idx - 1]:
-                    widths[col_idx - 1] = len(text)
-                cell.alignment = data_alignment
-                cell.border = border
-                cell.fill = row_fill
-                if isinstance(value, str) and value.startswith("="):
-                    cell.number_format = "0"
-                header = header_text[col_idx - 1].lower()
-                if header in _DATE_HEADERS:
-                    if isinstance(value, pd.Timestamp):
-                        cell.number_format = "dd/mm/yyyy"
-                    elif isinstance(value, str):
-                        try:
-                            pd.to_datetime(value)
-                            cell.number_format = "dd/mm/yyyy"
-                        except Exception:
-                            pass
-            elif shelf_row:
-                # Original shelf pass colors the complete Excel row, including blanks.
-                cell.fill = row_fill
-
-        if completeness_col is not None and offset < len(location_values):
-            value = location_values[offset]
-            if isinstance(value, str) and value != "Đủ vị trí":
-                cell = ws.cell(row=row_idx, column=completeness_col)
-                cell.fill = review_fill
-                cell.font = review_font
-
-        if offset < len(collision_values) and _truthy(collision_values[offset]):
-            for column in collision_columns:
-                cell = ws.cell(row=row_idx, column=column)
-                cell.fill = warning_fill
-                cell.font = warning_font
-
-        if offset < len(review_values) and _truthy(review_values[offset]):
-            for column in review_columns:
-                cell = ws.cell(row=row_idx, column=column)
-                cell.fill = review_fill
-                cell.font = review_font
-
-        ws.row_dimensions[row_idx].height = 22
-
-    ws.sheet_properties.tabColor = _COLOR_MAP.get(sheet_name, "4F81BD")
+    widths = _column_widths(headers, df)
     for col_idx, width in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(col_idx)].width = min(60, max(12, width + 2))
 
+    if max_row < 2:
+        return
+
+    last_col = get_column_letter(max_col)
+    full_range = f"A2:{last_col}{max_row}"
+
+    # Action colours are visual only; range rules avoid Python cell-by-cell fills.
+    if sheet_name in _ACTION_SHEETS and "action" in headers:
+        action_letter = get_column_letter(headers.index("action") + 1)
+        _add_formula_rule(
+            ws, full_range, f'ISNUMBER(SEARCH("gắn",${action_letter}2))', fill="E8F5E9"
+        )
+        _add_formula_rule(
+            ws, full_range, f'ISNUMBER(SEARCH("tháo",${action_letter}2))', fill="FFF3E0"
+        )
+
+    # Diagnostic emphasis remains visible, but only as a handful of CF rules.
+    completeness_header = (
+        "location_completeness" if "location_completeness" in headers
+        else "location_status" if "location_status" in headers else None
+    )
+    if completeness_header:
+        index = headers.index(completeness_header) + 1
+        letter = get_column_letter(index)
+        _add_formula_rule(
+            ws, f"{letter}2:{letter}{max_row}",
+            f'AND({letter}2<>"",{letter}2<>"Đủ vị trí")',
+            fill="FFC7CE", font="9C0006",
+        )
+
+    if "location_needs_review" in headers:
+        letter = get_column_letter(headers.index("location_needs_review") + 1)
+        _add_formula_rule(
+            ws, f"{letter}2:{letter}{max_row}", f"{letter}2=TRUE",
+            fill="FFC7CE", font="9C0006",
+        )
+
+    for field in _COLLISION_FIELDS:
+        if field not in headers:
+            continue
+        letter = get_column_letter(headers.index(field) + 1)
+        formula = f"{letter}2=TRUE" if field.startswith("has_") else f"{letter}2>1"
+        _add_formula_rule(
+            ws, f"{letter}2:{letter}{max_row}", formula,
+            fill="FFF2CC", font="7F6000",
+        )
+
+    # Formatting date cells is intentionally omitted here. Pandas/OpenPyXL keeps
+    # actual datetime values as dates; forcing number_format per cell was a large
+    # Python loop and is presentation-only. Source/date semantics are unchanged.
+
 
 def _shelf_pass_already_applied(_ws, _df) -> None:
-    """Shelf/review/collision final fills are folded into the main style pass."""
+    """Skip the historical full-row shelf colouring pass on constrained CPU."""
     return None
 
 
@@ -224,7 +182,10 @@ def _optimized_action_inputs(ws) -> None:
     if "processing_status" not in headers:
         return
     status_col = headers.index("processing_status") + 1
-    editable = [name for name in ["processing_status", "processed_by", "processed_at", "staff_note"] if name in headers]
+    editable = [
+        name for name in ("processing_status", "processed_by", "processed_at", "staff_note")
+        if name in headers
+    ]
     validation = DataValidation(
         type="list",
         formula1='"Chưa xử lý,Đã xong,Không tìm thấy,Không thực hiện được"',
@@ -240,21 +201,15 @@ def _optimized_action_inputs(ws) -> None:
         status_letter = get_column_letter(status_col)
         validation.add(f"{status_letter}2:{status_letter}{ws.max_row}")
         full_range = f"A2:{get_column_letter(ws.max_column)}{ws.max_row}"
-        ws.conditional_formatting.add(
-            full_range,
-            FormulaRule(
-                formula=[f'${status_letter}2="Đã xong"'],
-                fill=PatternFill(fill_type="solid", fgColor="E2F0D9"),
-            ),
+        _add_formula_rule(
+            ws, full_range, f'${status_letter}2="Đã xong"', fill="E2F0D9"
         )
-        ws.conditional_formatting.add(
-            full_range,
-            FormulaRule(
-                formula=[f'${status_letter}2="Không tìm thấy"'],
-                fill=PatternFill(fill_type="solid", fgColor="FFC7CE"),
-            ),
+        _add_formula_rule(
+            ws, full_range, f'${status_letter}2="Không tìm thấy"', fill="FFC7CE"
         )
 
+    # These cells must really be unlocked for protected-sheet editing, so this
+    # small O(rows * 4) loop is retained; it is tiny beside the removed O(all cells).
     editable_indexes = [(name, headers.index(name) + 1) for name in editable]
     for row_idx in range(2, ws.max_row + 1):
         for name, col_idx in editable_indexes:
@@ -273,6 +228,7 @@ def _optimized_confirmation_inputs(ws) -> None:
     if "xac_nhan_ap_dung" not in headers:
         return
     confirm_col = headers.index("xac_nhan_ap_dung") + 1
+    note_col = headers.index("ghi_chu_xac_nhan") + 1 if "ghi_chu_xac_nhan" in headers else None
     validation = DataValidation(
         type="list",
         formula1='"Chưa xác nhận,Áp dụng CTKM,Áp dụng Clearance,Áp dụng cả hai,Không áp dụng"',
@@ -287,9 +243,10 @@ def _optimized_confirmation_inputs(ws) -> None:
     if ws.max_row >= 2:
         letter = get_column_letter(confirm_col)
         validation.add(f"{letter}2:{letter}{ws.max_row}")
-        note_col = headers.index("ghi_chu_xac_nhan") + 1
         for row_idx in range(2, ws.max_row + 1):
             for col_idx in (confirm_col, note_col):
+                if col_idx is None:
+                    continue
                 cell = ws.cell(row_idx, col_idx)
                 cell.fill = yellow_fill
                 cell.protection = unlocked
@@ -314,8 +271,6 @@ def install_export_speed_contract(core_module) -> None:
     exporter_core._configure_action_inputs = _optimized_action_inputs
     exporter_core._configure_confirmation_inputs = _optimized_confirmation_inputs
 
-    # Keep the facade surface coherent for diagnostics/tests. The core exporter
-    # function resolves helpers from exporter_core globals at runtime.
     exporter._apply_professional_style = _optimized_professional_style
     exporter._apply_alternating_shelf_colors = _shelf_pass_already_applied
     exporter._configure_action_inputs = _optimized_action_inputs
