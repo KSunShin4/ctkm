@@ -4,11 +4,6 @@ from openpyxl import Workbook
 from backend import main_api
 
 
-def _rgb(cell) -> str:
-    value = cell.fill.fgColor.rgb or ""
-    return str(value)[-6:].upper()
-
-
 def test_export_speed_contract_is_installed_on_shared_exporter_core():
     exporter = main_api._main_mod._core.EX
     exporter_core = exporter._core
@@ -17,7 +12,7 @@ def test_export_speed_contract_is_installed_on_shared_exporter_core():
     assert getattr(exporter_core._apply_alternating_shelf_colors, "_ctkm_export_speed_contract_v1", False)
 
 
-def test_single_pass_style_preserves_shelf_review_and_collision_precedence():
+def test_bounded_style_uses_range_rules_not_full_cell_matrix_mutation():
     exporter_core = main_api._main_mod._core.EX._core
     wb = Workbook()
     ws = wb.active
@@ -44,19 +39,18 @@ def test_single_pass_style_preserves_shelf_review_and_collision_precedence():
     exporter_core._apply_professional_style(ws, "Gắn tem", frame)
     exporter_core._apply_alternating_shelf_colors(ws, frame)
 
-    # Shelf grouping is the final row background and therefore overrides action
-    # green/orange fills, exactly as the historical second shelf pass did.
-    assert _rgb(ws["A2"]) == "EAF3FF"
-    assert _rgb(ws["A3"]) == "EAF3FF"
-    assert _rgb(ws["A4"]) == "FFF4E5"
+    # Header remains directly styled; data emphasis is represented as bounded
+    # conditional-format rules instead of assigning style to every cell.
+    assert ws["A1"].fill.fill_type == "solid"
+    assert ws["A1"].font.bold is True
+    assert len(ws.conditional_formatting) >= 5
 
-    # Review and same-position diagnostics intentionally override shelf color on
-    # their targeted diagnostic fields.
-    assert _rgb(ws["D4"]) == "FFC7CE"
-    assert _rgb(ws["E4"]) == "FFC7CE"
-    assert _rgb(ws["F4"]) == "FFF2CC"
-    assert _rgb(ws["G4"]) == "FFF2CC"
+    # No historical shelf pass should repaint ordinary body cells directly.
+    assert ws["A2"].fill.fill_type is None
+    assert ws["A3"].fill.fill_type is None
 
     assert ws.column_dimensions["A"].width >= 12
-    assert ws.row_dimensions[2].height == 22
+    assert ws.sheet_format.defaultRowHeight == 22
+    assert ws.freeze_panes == "C2"
+    assert ws.auto_filter.ref == ws.dimensions
     wb.close()
