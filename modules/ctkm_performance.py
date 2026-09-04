@@ -9,13 +9,13 @@ from modules.mapping_validation import validate_manual_mapping
 
 
 USER_ACTION_COLUMNS = [
-    "item_id", "item_name", "promo_uom", "program_source", "key_channel", "channel",
+    "key_channel", "channel", "item_id", "item_name", "promo_uom",
+    "pog_code", "location_id", "facing",
+    "scheduled_action", "action", "ngay_gan_tem", "ngay_thao_tem", "so_ngay_con_lai",
     "campaign_name", "campaign_detail", "promo_from", "promo_to",
     "normal_price", "promo_price", "product_type",
-    "store_id", "pog_code", "location_id", "facing",
-    "ngay_gan_tem", "ngay_thao_tem", "so_ngay_con_lai",
-    "scheduled_action", "action", "location_completeness", "location_status",
-    "location_needs_review", "reason",
+    "store_id", "program_source",
+    "location_completeness", "location_status", "location_needs_review", "reason",
     "processing_status", "processed_by", "processed_at", "staff_note",
 ]
 
@@ -91,14 +91,9 @@ def filter_selected_columns_keep_channels(df: pd.DataFrame, selected_columns) ->
         return base in selected_fields or exact in selected_fields
 
     keep = [column for column in df.columns if matches(column)]
-    if "item_id" in df.columns:
-        if "item_id" in keep:
-            keep.remove("item_id")
-        keep.insert(0, "item_id")
-    for column in ("key_channel", "channel"):
-        if column in df.columns and column not in keep:
-            keep.append(column)
-    return df.loc[:, [column for column in keep if column in df.columns]].copy()
+    pinned = [column for column in ("key_channel", "channel", "item_id") if column in df.columns]
+    keep = [column for column in keep if column not in pinned]
+    return df.loc[:, [*pinned, *[column for column in keep if column in df.columns]]].copy()
 
 
 def _lineage_parts(value) -> list[str]:
@@ -407,4 +402,5 @@ def install_performance_patches(main_mod) -> None:
     main_mod.EX.export_final_report = export_with_task_summary
     main_mod.EX._BILINGUAL_HEADERS["key_channel"] = "Phạm vi áp dụng (KEY Channel)"
     main_mod.EX._BILINGUAL_HEADERS["channel"] = "Kênh chương trình (Channel)"
+    main_mod.EX._BILINGUAL_HEADERS["promo_uom"] = "Đơn vị sản phẩm (Promo UoM)"
     main_mod._ctkm_performance_patched = True
