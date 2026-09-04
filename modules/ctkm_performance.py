@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pandas as pd
+from openpyxl import load_workbook
 
 from modules.item_code_identity import build_transition_identity
 from modules.mapping_validation import validate_manual_mapping
@@ -151,13 +152,7 @@ def _merge_review_metadata(first: pd.Series, group: pd.DataFrame) -> pd.Series:
 
 
 def unique_work_tracking_rows(df: pd.DataFrame) -> pd.DataFrame:
-    """Return one editable row per operational task, retaining source task IDs.
-
-    ``task_id`` remains the source-faithful stable identity. When the only
-    difference is Channel/KEY Channel formatting, reconciler emits one shared
-    ``operational_task_key``. Interactive sheets consolidate on that derived key;
-    Audit hành động still keeps every original task/source row.
-    """
+    """Return one editable row per operational task, retaining source task IDs."""
     if df is None:
         return df
     result = df.copy()
@@ -242,8 +237,7 @@ def align_task_summary_with_work_rows(summary: dict, df_fefo_actions: pd.DataFra
         summary["So dong cho gan"] = int(scheduled.eq("chờ gắn tem").sum())
     if "So dong can review" in summary:
         if "review_required" in tasks.columns:
-            review_required = tasks["review_required"].map(_truthy)
-            summary["So dong can review"] = int(review_required.sum())
+            summary["So dong can review"] = int(tasks["review_required"].map(_truthy).sum())
         else:
             summary["So dong can review"] = int(scheduled.eq("review").sum())
     return summary
@@ -383,6 +377,108 @@ def build_promo_action_source_without_inference(df_ctkm: pd.DataFrame,
     return pd.concat([ctkm, clearance], ignore_index=True)
 
 
+def _write_dataframe_sheet(main_mod, workbook, sheet_name: str, frame: pd.DataFrame) -> None:
+    if sheet_name in workbook.sheetnames:
+        index = workbook.sheetnames.index(sheet_name)
+        del workbook[sheet_name]
+    else:
+        index = len(workbook.sheetnames)
+    ws = workbook.create_sheet(sheet_name, index)
+
+    for col_idx, column in enumerate(frame.columns, start=1):
+        ws.cell(row=1, column=col_idx, value=column)
+    for row_idx, (_, row) in enumerate(frame.iterrows(), start=2):
+        for col_idx, column in enumerate(frame.columns, start=1):
+            value = row[column]
+            try:
+                missing = bool(pd.isna(value))
+            except (TypeError, ValueError):
+                missing = False
+            ws.cell(row=row_idx, column=col_idx, value=None if missing else value)
+
+    main_mod.EX._apply_professional_style(ws, sheet_name, frame)
+    if sheet_name == "Cần review":
+        main_mod.EX._configure_action_inputs(ws)
+        main_mod.EX._hide_technical_columns(ws, action_sheet=True)
+    main_mod.EX._apply_bilingual_headers(ws)
+
+
+def _review_frame(actions: pd.DataFrame | None) -> pd.DataFrame:
+    if actions is None:
+        return pd.DataFrame()
+    frame = actions.copy()
+    if "in_report_scope" in frame.columns:
+        frame = frame[frame["in_report_scope"].fillna(False).astype(bool)].copy()
+    if "review_required" in frame.columns:
+        frame = frame[frame["review_required"].map(_truthy)].copy()
+    else:
+        scheduled = frame.get("scheduled_action", frame.get("action", pd.Series(index=frame.index)))
+        frame = frame[scheduled.astype(str).str.strip().str.lower().eq("review")].copy()
+    frame = unique_work_tracking_rows(frame)
+    return prepare_action_sheet_user_first(frame)
+
+
+def _install_review_aware_finalize(main_mod) -> None:
+    if not hasattr(main_mod.EX, "_finalize_workbook_views"):
+        return
+
+    def finalize(output_path, metadata, df_fefo_actions):
+        if metadata is None and df_fefo_actions is None:
+            return
+        workbook = load_workbook(output_path)
+        main_mod.EX._write_total_action_sheet(workbook, df_fefo_actions)
+
+        review = _review_frame(df_fefo_actions)
+        _write_dataframe_sheet(main_mod, workbook, "Cần review", review)
+
+        if "HƯỚNG DẪN" in workbook.sheetnames:
+            guide = workbook["HƯỚNG DẪN"]
+            for row_idx in range(1, guide.max_row + 1):
+                cell = guide.cell(row_idx, 1)
+                if cell.value == "Cần review":
+                    guide.cell(row_idx, 2, len(review))
+                    break
+
+        if metadata is not None and not metadata.empty:
+            sheet_name = "POG metadata"
+            if sheet_name in workbook.sheetnames:
+                del workbook[sheet_name]
+            ws = workbook.create_sheet(sheet_name)
+            columns = list(metadata.columns)
+            ws.append(columns)
+            for _, row in metadata.iterrows():
+                values = []
+                for column in columns:
+                    value = row[column]
+                    try:
+                        missing = bool(pd.isna(value))
+                    except (TypeError, ValueError):
+                        missing = False
+                    values.append(None if missing else value)
+                ws.append(values)
+            ws.freeze_panes = "A2"
+            if ws.max_row >= 1 and ws.max_column >= 1:
+                ws.auto_filter.ref = ws.dimensions
+            ws.sheet_state = "hidden"
+
+        preferred_order = [
+            "HƯỚNG DẪN", "TỔNG HỢP - TEM",
+            "Gắn tem", "Tháo tem", "Chờ gắn", "Cần review",
+            "CTKM thieu vi tri ke", "POG cần kiểm tra", "Tong hop",
+            "POG không có CTKM", "POG cần review",
+            "Xác nhận CTKM Clearance", "Canh bao trung thoi gian",
+            "Audit hành động", "Tom tat", "Mapping log", "POG metadata",
+        ]
+        ordered = [workbook[name] for name in preferred_order if name in workbook.sheetnames]
+        ordered_names = {sheet.title for sheet in ordered}
+        ordered.extend(sheet for sheet in workbook.worksheets if sheet.title not in ordered_names)
+        workbook._sheets = ordered
+        workbook.save(output_path)
+        workbook.close()
+
+    main_mod.EX._finalize_workbook_views = finalize
+
+
 def install_performance_patches(main_mod) -> None:
     if getattr(main_mod, "_ctkm_performance_patched", False):
         return
@@ -434,8 +530,13 @@ def install_performance_patches(main_mod) -> None:
     main_mod.EX._filter_selected_columns = filter_selected_columns_keep_channels
     main_mod.EX._add_work_tracking_columns = unique_work_tracking_rows
     main_mod.EX._hide_technical_columns = hide_columns
+    _install_review_aware_finalize(main_mod)
     main_mod.EX.export_final_report = export_with_task_summary
     main_mod.EX._BILINGUAL_HEADERS["key_channel"] = "Phạm vi áp dụng (KEY Channel)"
     main_mod.EX._BILINGUAL_HEADERS["channel"] = "Kênh chương trình (Channel)"
     main_mod.EX._BILINGUAL_HEADERS["promo_uom"] = "Đơn vị sản phẩm (Promo UoM)"
+    main_mod.EX._BILINGUAL_HEADERS["review_required"] = "Cần review?"
+    main_mod.EX._BILINGUAL_HEADERS["review_severity"] = "Mức độ review"
+    main_mod.EX._BILINGUAL_HEADERS["review_blocks_action"] = "Review chặn action?"
+    main_mod.EX._BILINGUAL_HEADERS["review_reason"] = "Lý do review"
     main_mod._ctkm_performance_patched = True
