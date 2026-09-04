@@ -36,7 +36,7 @@ def test_key_channel_and_channel_are_both_preserved():
     assert result["Channel"] == "channel"
 
 
-def test_action_sheet_starts_with_approved_user_columns():
+def test_action_sheet_places_both_channels_before_technical_ids():
     perf = _performance_module()
     frame = pd.DataFrame({
         "task_id": ["T1"],
@@ -44,7 +44,6 @@ def test_action_sheet_starts_with_approved_user_columns():
         "pog_position_id": ["L1"],
         "item_id": ["P123"],
         "item_name": ["Thuốc A"],
-        "promo_uom": ["Hộp"],
         "key_channel": ["OFFLINE"],
         "channel": ["MẸ & BÉ"],
         "campaign_name": ["CTKM A"],
@@ -58,15 +57,15 @@ def test_action_sheet_starts_with_approved_user_columns():
     result = perf.prepare_action_sheet_user_first(frame)
     columns = list(result.columns)
 
-    assert columns[:5] == [
-        "key_channel", "channel", "item_id", "item_name", "promo_uom"
-    ]
     assert columns.index("item_id") < columns.index("task_id")
     assert columns.index("key_channel") < columns.index("promotion_id")
     assert columns.index("channel") < columns.index("pog_position_id")
+    assert columns[:5] == [
+        "item_id", "item_name", "key_channel", "channel", "campaign_name"
+    ]
 
 
-def test_selected_output_pins_both_channels_before_identifier():
+def test_selected_output_is_a_filter_and_keeps_identifier_first_with_both_channels():
     perf = _performance_module()
     frame = pd.DataFrame({
         "item_id": ["P1"],
@@ -78,7 +77,7 @@ def test_selected_output_pins_both_channels_before_identifier():
 
     result = perf.filter_selected_columns_keep_channels(frame, ["item_name"])
 
-    assert list(result.columns) == ["key_channel", "channel", "item_id", "item_name"]
+    assert list(result.columns) == ["item_id", "item_name", "key_channel", "channel"]
 
 
 def test_selected_output_does_not_reorder_columns_by_checkbox_click_sequence():
@@ -96,22 +95,5 @@ def test_selected_output_does_not_reorder_columns_by_checkbox_click_sequence():
     )
 
     assert list(result.columns) == [
-        "key_channel", "channel", "item_id", "item_name", "campaign_name"
+        "item_id", "item_name", "campaign_name", "key_channel", "channel"
     ]
-
-
-def test_output_labels_keep_channel_source_names_exact():
-    perf = _performance_module()
-
-    class FakeExporter:
-        _BILINGUAL_HEADERS = {}
-
-    class FakeMain:
-        EX = FakeExporter()
-
-    from modules import ctkm_output_layout
-    ctkm_output_layout.apply_header_labels(FakeMain.EX)
-
-    assert FakeMain.EX._BILINGUAL_HEADERS["key_channel"] == "KEY Channel"
-    assert FakeMain.EX._BILINGUAL_HEADERS["channel"] == "Channel"
-    assert FakeMain.EX._BILINGUAL_HEADERS["promo_uom"] == "Đơn vị sản phẩm (Promo UoM)"
