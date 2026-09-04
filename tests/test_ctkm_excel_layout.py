@@ -3,12 +3,23 @@ from pathlib import Path
 import sys
 
 import pandas as pd
+from openpyxl import Workbook
 
 
 def _performance_module():
     root = Path(__file__).resolve().parents[1]
     path = root / "modules" / "ctkm_performance.py"
     spec = importlib.util.spec_from_file_location("ctkm_excel_layout_test", path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _exporter_module():
+    root = Path(__file__).resolve().parents[1]
+    path = root / "modules" / "9_exporter.py"
+    spec = importlib.util.spec_from_file_location("ctkm_exporter_layout_test", path)
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
@@ -36,7 +47,7 @@ def test_key_channel_and_channel_are_both_preserved():
     assert result["Channel"] == "channel"
 
 
-def test_action_sheet_places_both_channels_before_technical_ids():
+def test_action_sheet_starts_with_approved_user_columns():
     perf = _performance_module()
     frame = pd.DataFrame({
         "task_id": ["T1"],
@@ -44,6 +55,7 @@ def test_action_sheet_places_both_channels_before_technical_ids():
         "pog_position_id": ["L1"],
         "item_id": ["P123"],
         "item_name": ["Thuốc A"],
+        "promo_uom": ["Hộp"],
         "key_channel": ["OFFLINE"],
         "channel": ["MẸ & BÉ"],
         "campaign_name": ["CTKM A"],
@@ -57,15 +69,15 @@ def test_action_sheet_places_both_channels_before_technical_ids():
     result = perf.prepare_action_sheet_user_first(frame)
     columns = list(result.columns)
 
+    assert columns[:5] == [
+        "key_channel", "channel", "item_id", "item_name", "promo_uom"
+    ]
     assert columns.index("item_id") < columns.index("task_id")
     assert columns.index("key_channel") < columns.index("promotion_id")
     assert columns.index("channel") < columns.index("pog_position_id")
-    assert columns[:5] == [
-        "item_id", "item_name", "key_channel", "channel", "campaign_name"
-    ]
 
 
-def test_selected_output_is_a_filter_and_keeps_identifier_first_with_both_channels():
+def test_selected_output_pins_both_channels_before_identifier():
     perf = _performance_module()
     frame = pd.DataFrame({
         "item_id": ["P1"],
@@ -77,7 +89,7 @@ def test_selected_output_is_a_filter_and_keeps_identifier_first_with_both_channe
 
     result = perf.filter_selected_columns_keep_channels(frame, ["item_name"])
 
-    assert list(result.columns) == ["item_id", "item_name", "key_channel", "channel"]
+    assert list(result.columns) == ["key_channel", "channel", "item_id", "item_name"]
 
 
 def test_selected_output_does_not_reorder_columns_by_checkbox_click_sequence():
@@ -95,5 +107,37 @@ def test_selected_output_does_not_reorder_columns_by_checkbox_click_sequence():
     )
 
     assert list(result.columns) == [
-        "item_id", "item_name", "campaign_name", "key_channel", "channel"
+        "key_channel", "channel", "item_id", "item_name", "campaign_name"
     ]
+
+
+def test_protected_action_sheet_still_allows_filter_and_sort():
+    exporter = _exporter_module()
+    workbook = Workbook()
+    ws = workbook.active
+    ws.append(["processing_status", "processed_by", "processed_at", "staff_note"])
+    ws.append(["Chưa xử lý", "", "", ""])
+
+    exporter._configure_action_inputs(ws)
+
+    assert ws.protection.sheet is True
+    assert ws.protection.autoFilter is False
+    assert ws.protection.sort is False
+
+
+def test_guide_sheet_is_created_first_and_mentions_channel_first_workflow():
+    exporter = _exporter_module()
+    workbook = Workbook()
+    del workbook[workbook.sheetnames[0]]
+    empty = pd.DataFrame()
+
+    exporter._create_guide_sheet(
+        workbook, empty, empty, empty, empty, empty,
+        {"Thang bao cao": "2026-09", "Ngay nghiep vu": "2026-09-04"},
+        empty, empty, empty,
+    )
+
+    assert workbook.sheetnames[0] == "HƯỚNG DẪN"
+    text = " ".join(str(cell.value or "") for row in workbook["HƯỚNG DẪN"] for cell in row)
+    assert "Lọc KEY Channel trước" in text
+    assert "sau đó lọc Channel" in text
