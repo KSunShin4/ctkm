@@ -16,6 +16,7 @@ USER_ACTION_COLUMNS = [
     "normal_price", "promo_price", "product_type",
     "store_id", "program_source",
     "location_completeness", "location_status", "location_needs_review", "reason",
+    "review_required", "review_severity", "review_blocks_action", "review_reason",
     "processing_status", "processed_by", "processed_at", "staff_note",
 ]
 
@@ -119,6 +120,36 @@ def _usable_key(value) -> str | None:
     return str(value).strip()
 
 
+def _truthy(value) -> bool:
+    return value is True or str(value).strip().lower() in {"true", "1", "yes"}
+
+
+def _merge_review_metadata(first: pd.Series, group: pd.DataFrame) -> pd.Series:
+    if "review_required" not in group.columns:
+        return first
+
+    required = group["review_required"].map(_truthy)
+    first["review_required"] = bool(required.any())
+    if "review_blocks_action" in group.columns:
+        blocked = group["review_blocks_action"].map(_truthy)
+        first["review_blocks_action"] = bool(blocked.any())
+    if "review_reason" in group.columns:
+        reasons = [
+            str(value).strip() for value in group["review_reason"]
+            if value is not None and not pd.isna(value) and str(value).strip()
+        ]
+        first["review_reason"] = " | ".join(dict.fromkeys(reasons))
+    if "review_severity" in group.columns:
+        values = {
+            str(value).strip().lower() for value in group["review_severity"]
+            if value is not None and not pd.isna(value) and str(value).strip()
+        }
+        first["review_severity"] = (
+            "blocking" if "blocking" in values else "warning" if "warning" in values else ""
+        )
+    return first
+
+
 def unique_work_tracking_rows(df: pd.DataFrame) -> pd.DataFrame:
     """Return one editable row per operational task, retaining source task IDs.
 
@@ -149,7 +180,7 @@ def unique_work_tracking_rows(df: pd.DataFrame) -> pd.DataFrame:
         rows = []
         for key, indices in groups.items():
             group = result.loc[indices]
-            first = group.iloc[0].copy()
+            first = _merge_review_metadata(group.iloc[0].copy(), group)
             if key[0] != "row" and len(group) > 1:
                 source_ids = _unique_lineage(group, "source_row_ids", "source_row_id")
                 if source_ids:
@@ -210,7 +241,11 @@ def align_task_summary_with_work_rows(summary: dict, df_fefo_actions: pd.DataFra
     if "So dong cho gan" in summary:
         summary["So dong cho gan"] = int(scheduled.eq("chờ gắn tem").sum())
     if "So dong can review" in summary:
-        summary["So dong can review"] = int(scheduled.eq("review").sum())
+        if "review_required" in tasks.columns:
+            review_required = tasks["review_required"].map(_truthy)
+            summary["So dong can review"] = int(review_required.sum())
+        else:
+            summary["So dong can review"] = int(scheduled.eq("review").sum())
     return summary
 
 
