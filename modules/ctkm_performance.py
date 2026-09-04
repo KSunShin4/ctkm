@@ -152,7 +152,12 @@ def _merge_review_metadata(first: pd.Series, group: pd.DataFrame) -> pd.Series:
 
 
 def unique_work_tracking_rows(df: pd.DataFrame) -> pd.DataFrame:
-    """Return one editable row per operational task, retaining source task IDs."""
+    """Return one editable row per stable raw-faithful ``task_id``.
+
+    Never collapse two different task IDs merely because a derived operational
+    scope key normalizes KEY Channel/Channel formatting. Raw source variants must
+    remain separately filterable on action sheets.
+    """
     if df is None:
         return df
     result = df.copy()
@@ -162,21 +167,15 @@ def unique_work_tracking_rows(df: pd.DataFrame) -> pd.DataFrame:
     if not result.empty and "task_id" in result.columns:
         groups: dict[tuple[str, object], list[object]] = {}
         for position, (idx, row) in enumerate(result.iterrows()):
-            operational = _usable_key(row.get("operational_task_key"))
             task = _usable_key(row.get("task_id"))
-            if operational:
-                key = ("operational", operational)
-            elif task:
-                key = ("task", task)
-            else:
-                key = ("row", position)
+            key = ("task", task) if task else ("row", position)
             groups.setdefault(key, []).append(idx)
 
         rows = []
         for key, indices in groups.items():
             group = result.loc[indices]
             first = _merge_review_metadata(group.iloc[0].copy(), group)
-            if key[0] != "row" and len(group) > 1:
+            if key[0] == "task" and len(group) > 1:
                 source_ids = _unique_lineage(group, "source_row_ids", "source_row_id")
                 if source_ids:
                     if "source_row_id" in result.columns:
@@ -195,20 +194,12 @@ def unique_work_tracking_rows(df: pd.DataFrame) -> pd.DataFrame:
                     if "pog_source_row_count" in result.columns:
                         first["pog_source_row_count"] = len(pog_ids)
 
-                task_ids = list(dict.fromkeys(
-                    key for key in group["task_id"].map(_usable_key).tolist() if key
-                ))
                 if "task_ids" in result.columns:
-                    first["task_ids"] = " | ".join(task_ids)
+                    first["task_ids"] = key[1]
                 if "duplicate_status" in result.columns:
-                    if len(task_ids) > 1 and key[0] == "operational":
-                        first["duplicate_status"] = (
-                            "Đã gom task khác ID nhưng cùng phạm vi vận hành; xem Audit hành động"
-                        )
-                    else:
-                        first["duplicate_status"] = (
-                            "Đã gom cùng task_id từ nhiều dòng nguồn; xem Audit hành động"
-                        )
+                    first["duplicate_status"] = (
+                        "Đã gom cùng task_id từ nhiều dòng nguồn; xem Audit hành động"
+                    )
             rows.append(first.to_dict())
         result = pd.DataFrame(rows, columns=result.columns).reset_index(drop=True)
 
