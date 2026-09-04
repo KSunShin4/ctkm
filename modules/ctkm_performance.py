@@ -400,7 +400,13 @@ def install_performance_patches(main_mod) -> None:
     main_mod.EX._add_work_tracking_columns = unique_work_tracking_rows
     main_mod.EX._hide_technical_columns = hide_columns
     main_mod.EX.export_final_report = export_with_task_summary
-    main_mod.EX._BILINGUAL_HEADERS["key_channel"] = "Phạm vi áp dụng (KEY Channel)"
-    main_mod.EX._BILINGUAL_HEADERS["channel"] = "Kênh chương trình (Channel)"
+    main_mod.EX._BILINGUAL_HEADERS["key_channel"] = "KEY Channel"
+    main_mod.EX._BILINGUAL_HEADERS["channel"] = "Channel"
     main_mod.EX._BILINGUAL_HEADERS["promo_uom"] = "Đơn vị sản phẩm (Promo UoM)"
+
+    # Install the presentation-only layer last so it wraps the already-hardened
+    # exporter without changing reconciliation/business logic.
+    from modules import ctkm_output_layout
+    ctkm_output_layout.install_output_layout(main_mod, sys.modules[__name__])
+
     main_mod._ctkm_performance_patched = True
