@@ -1,4 +1,5 @@
 import pandas as pd
+import pytest
 from openpyxl import load_workbook
 
 import main
@@ -27,12 +28,12 @@ def _promo(campaign_name, *, channel="OFFLINE", key_channel="Offline", source="C
     return row
 
 
-def _actions(frame, warnings=None):
+def _actions(frame, warnings=None, business_date=BUSINESS_DATE):
     return main.RC.build_fefo_action_frame(
         pd.DataFrame(frame),
         "2026-09",
         None,
-        business_date=BUSINESS_DATE,
+        business_date=business_date,
         overlap_warnings=warnings,
     )
 
@@ -85,6 +86,49 @@ def test_ctkm_clearance_overlap_keeps_action_but_requires_review():
     assert set(actions["scheduled_action"]) == {"gắn tem"}
     assert actions["review_required"].astype(bool).all()
     assert not actions["review_blocks_action"].astype(bool).any()
+
+
+@pytest.mark.parametrize(
+    ("overrides", "expected_reason"),
+    [
+        ({"promo_from": pd.NaT}, "thieu_thong_tin_ngay"),
+        ({"promo_to": pd.NaT}, "thieu_thong_tin_ngay"),
+        (
+            {
+                "promo_from": pd.Timestamp("2026-09-30"),
+                "promo_to": pd.Timestamp("2026-09-01"),
+            },
+            "ngay_bat_dau_sau_ngay_ket_thuc",
+        ),
+    ],
+)
+def test_invalid_or_missing_promotion_dates_block_action(overrides, expected_reason):
+    actions = _actions([_promo("Broken dates", **overrides)])
+
+    assert actions.loc[0, "scheduled_action"] == "review"
+    assert actions.loc[0, "action"] == "review"
+    assert actions.loc[0, "reason"] == expected_reason
+    assert bool(actions.loc[0, "review_required"]) is True
+    assert bool(actions.loc[0, "review_blocks_action"]) is True
+    assert actions.loc[0, "review_severity"] == "blocking"
+    assert actions.loc[0, "review_reason"] == expected_reason
+
+
+def test_valid_promotion_end_date_removes_on_next_day_without_review():
+    promotion = _promo(
+        "Ends Sep 14",
+        promo_from=pd.Timestamp("2026-09-01"),
+        promo_to=pd.Timestamp("2026-09-14"),
+    )
+    actions = _actions([promotion], business_date=pd.Timestamp("2026-09-15"))
+
+    assert actions.loc[0, "scheduled_action"] == "tháo tem"
+    assert actions.loc[0, "action"] == "tháo tem"
+    assert actions.loc[0, "ngay_gan_tem"] == pd.Timestamp("2026-09-01")
+    assert actions.loc[0, "ngay_thao_tem"] == pd.Timestamp("2026-09-15")
+    assert bool(actions.loc[0, "review_required"]) is False
+    assert bool(actions.loc[0, "review_blocks_action"]) is False
+    assert actions.loc[0, "review_reason"] == ""
 
 
 def test_intrinsic_data_error_still_blocks_action():
