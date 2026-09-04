@@ -1,4 +1,5 @@
 from openpyxl import load_workbook
+from openpyxl.utils import get_column_letter
 import pandas as pd
 
 import main
@@ -41,9 +42,22 @@ def _pog():
     }])
 
 
+def _conditional_rules(ws):
+    result = []
+    for condition, rules in ws.conditional_formatting._cf_rules.items():
+        for rule in rules:
+            dxf = getattr(rule, "dxf", None)
+            fill = getattr(dxf, "fill", None)
+            rgb = getattr(getattr(fill, "fgColor", None), "rgb", "") or ""
+            result.append({
+                "range": str(condition.sqref),
+                "formulas": list(getattr(rule, "formula", None) or []),
+                "color": str(rgb)[-6:].upper(),
+            })
+    return result
+
+
 def _realistic_cross_scope_promotions():
-    # Mirrors the real September Monthly pattern for P28944:
-    # an All-channel regular discount starts 16 Sep while an Offline PWP runs all month.
     return pd.DataFrame([
         _promo(
             key_channel="All channel",
@@ -70,7 +84,6 @@ def test_distinct_cross_scope_promotions_keep_distinct_tasks_and_flag_same_posit
     promotions = _realistic_cross_scope_promotions()
     warnings = main.RC.detect_campaign_time_overlaps(promotions)
 
-    # Existing reviewed contract: different channel scopes warn but do not block.
     assert len(warnings) == 1
     assert warnings[0].conflict_type == "potential_cross_channel_overlap"
     assert warnings[0].is_blocking is False
@@ -90,8 +103,6 @@ def test_distinct_cross_scope_promotions_keep_distinct_tasks_and_flag_same_posit
     assert actions["pog_position_id"].nunique() == 1
     assert set(actions["promotion_count_at_position"]) == {2}
     assert set(actions["has_multiple_promotions_at_position"]) == {True}
-
-    # Raw scope values remain source-faithful and visible; diagnostics are derived only.
     assert set(actions["key_channel"]) == {"All channel", "Offline"}
     assert set(actions["channel"]) == {"All Channel", "Offline"}
     assert set(actions["promo_price"]) == {141750, 94500}
@@ -121,7 +132,6 @@ def test_same_promotion_from_multiple_source_rows_counts_once_at_position():
         overlap_warnings=[],
     )
 
-    # Descriptive source differences preserve both audit rows but share one stable promotion/task.
     assert len(actions) == 2
     assert actions["promotion_id"].nunique() == 1
     assert actions["task_id"].nunique() == 1
@@ -192,8 +202,17 @@ def test_action_sheet_surfaces_same_position_warning_without_turning_it_into_rev
     for row in range(2, 4):
         assert action.cell(row=row, column=count_col).value == 2
         assert action.cell(row=row, column=flag_col).value is True
-        # Yellow diagnostic, not red error/review styling.
-        assert action.cell(row=row, column=flag_col).fill.fgColor.rgb.endswith("FFF2CC")
+
+    flag_letter = get_column_letter(flag_col)
+    yellow_rules = [
+        rule for rule in _conditional_rules(action)
+        if rule["color"] == "FFF2CC"
+    ]
+    assert yellow_rules
+    assert any(
+        f"{flag_letter}2=TRUE" in rule["formulas"]
+        for rule in yellow_rules
+    )
 
     review_values = [cell.value for row in review.iter_rows() for cell in row]
     assert "P28944" not in review_values
