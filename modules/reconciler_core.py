@@ -244,7 +244,6 @@ def detect_campaign_time_overlaps(df_ctkm) -> list:
             if af <= bt and bf <= at:
                 ca = _display_value(a.get("campaign_name"), "(không rõ)")
                 cb = _display_value(b.get("campaign_name"), "(không rõ)")
-                # Dòng giống hệt nhau là duplicate có lineage, không phải hai campaign xung đột.
                 if _same_campaign_row(a, b):
                     continue
                 channel_a = a.get("channel")
@@ -255,8 +254,6 @@ def detect_campaign_time_overlaps(df_ctkm) -> list:
                 cross_source_clearance = (
                     source_a != source_b and {source_a, source_b} == {"ctkm", "clearance"}
                 )
-                # Any overlapping, non-identical rows in the exact same raw channel
-                # are ambiguous, including when only their date ranges differ.
                 is_blocking = cross_source_clearance or not raw_channels_differ
                 conflict_type = (
                     "blocking_conflict" if is_blocking
@@ -314,8 +311,8 @@ def build_fefo_action_frame(
     overlap_warnings=None,
 ) -> pd.DataFrame:
     """
-    Phân loại hành động theo lịch rồi mới bổ sung vị trí POG. POG không bao giờ
-    được dùng để suy luận trạng thái tem hoặc thay đổi ``scheduled_action``.
+    Phân loại hành động theo lịch rồi mới bổ sung vị trí POG. POG và cảnh báo
+    overlap không bao giờ được dùng để thay đổi ``scheduled_action``.
     """
     if df_ctkm is None or df_ctkm.empty:
         return pd.DataFrame(columns=[*_BUSINESS_COLUMNS, "scheduled_action", "action", "reason",
@@ -331,7 +328,6 @@ def build_fefo_action_frame(
     if "promo_from" not in df.columns or "promo_to" not in df.columns:
         return pd.DataFrame(columns=[*base_cols, "action", "reason", "target_month"])
 
-    # Ngày nghiệp vụ có thể inject để test và chạy lại báo cáo ổn định.
     if business_date is None:
         business_date = pd.Timestamp(datetime.now(ZoneInfo("Asia/Ho_Chi_Minh")).date())
     else:
@@ -346,9 +342,6 @@ def build_fefo_action_frame(
             return "review", "thieu_ma_san_pham"
         if not is_sku(row.get("item_key")) and not is_bill_program(row.get("item_key")):
             return "review", "ma_san_pham_khong_hop_le"
-        campaign_name = row.get("campaign_name")
-        if pd.isna(campaign_name) or not str(campaign_name).strip():
-            return "review", "thieu_ten_chuong_trinh"
         promo_from = _parse_date(row.get("promo_from"))
         promo_to = _parse_date(row.get("promo_to"))
         if pd.isna(promo_from) or pd.isna(promo_to):
@@ -368,11 +361,10 @@ def build_fefo_action_frame(
         return "review", "khong_xac_dinh_duoc"
 
     df["scheduled_action"], df["reason"] = zip(*df.apply(_classify, axis=1))
-    df["action"] = df["scheduled_action"]  # Backward-compatible export/API field.
+    df["action"] = df["scheduled_action"]
     df["target_month"] = target_month
     df["business_date"] = business_date
     df["ngay_gan_tem"] = df["promo_from"].apply(_parse_date).dt.normalize()
-    # CTKM con hieu luc het ngay promo_to; thao tem tu dau ngay ke tiep.
     df["ngay_thao_tem"] = df["promo_to"].apply(_parse_date).dt.normalize() + pd.Timedelta(days=1)
 
     def _scope(row):
@@ -394,33 +386,9 @@ def build_fefo_action_frame(
     df["in_report_scope"] = [value[0] for value in scope]
     df["report_scope_reason"] = [value[1] for value in scope]
 
-    if overlap_warnings is None:
-        overlap_warnings = detect_campaign_time_overlaps(df)
-    conflicts: dict[str, list[str]] = {}
-    for warning in overlap_warnings or []:
-        if not getattr(warning, "is_blocking", True):
-            continue
-        detail = (
-            f"{warning.campaign_a} [{warning.channel_a}] ↔ "
-            f"{warning.campaign_b} [{warning.channel_b}]"
-        )
-        for row_id in (warning.source_row_id_a, warning.source_row_id_b):
-            if row_id:
-                conflicts.setdefault(row_id, []).append(detail)
-    for idx, row in df.iterrows():
-        lineage_ids = {
-            value.strip() for value in str(row["source_row_ids"]).split("|") if value.strip()
-        }
-        details = list(dict.fromkeys(
-            detail for row_id in lineage_ids for detail in conflicts.get(row_id, [])
-        ))
-        if details and row["reason"] not in {
-            "thieu_ma_san_pham", "thieu_ten_chuong_trinh",
-            "thieu_thong_tin_ngay", "ngay_bat_dau_sau_ngay_ket_thuc",
-        }:
-            df.at[idx, "scheduled_action"] = "review"
-            df.at[idx, "action"] = "review"
-            df.at[idx, "reason"] = "xung_dot_thoi_gian: " + " | ".join(details)
+    # ``overlap_warnings`` is intentionally not allowed to alter action. The
+    # public reconciler facade attaches review metadata independently.
+    _ = overlap_warnings
 
     out_cols = [c for c in base_cols if c in df.columns] + [
         "source_row_id", "source_row_ids", "source_row_count", "duplicate_status",
@@ -521,7 +489,6 @@ def build_fefo_action_frame(
     actions["pog_month_status"] = [state[1] for state in states]
     actions["has_multiple_pog_positions"] = [state[2] for state in states]
     actions["location_needs_review"] = [state[3] for state in states]
-    # Legacy status remains descriptive for older integrations; completeness is the metric.
     actions["location_status"] = actions.apply(
         lambda row: (
             "POG lệch tháng" if row["pog_month_status"] == "POG lệch tháng"
