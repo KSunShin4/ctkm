@@ -62,7 +62,8 @@ def test_missing_item_and_campaign_are_preserved_with_priority_review_reasons():
 
     assert len(result) == 2
     assert result["scheduled_action"].tolist() == ["review", "review"]
-    assert result["reason"].tolist() == ["thieu_ma_san_pham", "thieu_ten_chuong_trinh"]
+    assert result["reason"].tolist() == ["thieu_ma_san_pham", "thieu_thong_tin_ngay"]
+    assert result["review_blocks_action"].astype(bool).tolist() == [True, True]
 
 
 def test_normalizer_keeps_missing_item_and_creates_nonmatching_item_key():
@@ -129,7 +130,7 @@ def test_same_program_different_channel_is_not_a_blocking_conflict():
     assert set(result["scheduled_action"]) == {"gắn tem"}
 
 
-def test_same_channel_different_offer_is_blocking_and_only_affected_rows_review():
+def test_same_channel_different_offer_keeps_action_and_marks_review_warning():
     frame = pd.DataFrame([
         _promo("P1", campaign_name="A", promo_price=90_000),
         _promo("P1", campaign_name="B", promo_price=80_000),
@@ -142,11 +143,17 @@ def test_same_channel_different_offer_is_blocking_and_only_affected_rows_review(
     assert len(warnings) == 1
     assert warnings[0].conflict_type == "blocking_conflict"
     assert warnings[0].is_blocking is True
-    actions = result.set_index("campaign_name")["scheduled_action"].to_dict()
-    assert actions == {"A": "review", "B": "review", "Later": "chờ gắn tem", "Other": "gắn tem"}
+    by_campaign = result.set_index("campaign_name")
+    assert by_campaign["scheduled_action"].to_dict() == {
+        "A": "gắn tem", "B": "gắn tem", "Later": "chờ gắn tem", "Other": "gắn tem"
+    }
+    assert bool(by_campaign.loc["A", "review_required"]) is True
+    assert bool(by_campaign.loc["B", "review_required"]) is True
+    assert bool(by_campaign.loc["A", "review_blocks_action"]) is False
+    assert bool(by_campaign.loc["B", "review_blocks_action"]) is False
 
 
-def test_same_channel_same_offer_overlapping_different_periods_are_blocking_only_for_pair():
+def test_same_channel_same_offer_overlapping_different_periods_keep_actions():
     frame = pd.DataFrame([
         _promo("P1", promo_from=pd.Timestamp("2026-08-01"), promo_to=pd.Timestamp("2026-08-20")),
         _promo("P1", promo_from=pd.Timestamp("2026-08-10"), promo_to=pd.Timestamp("2026-08-31")),
@@ -160,10 +167,12 @@ def test_same_channel_same_offer_overlapping_different_periods_are_blocking_only
     assert len(warnings) == 1
     assert warnings[0].conflict_type == "blocking_conflict"
     assert warnings[0].is_blocking is True
-    assert result["scheduled_action"].tolist() == ["review", "review", "chờ gắn tem", "gắn tem"]
+    assert result["scheduled_action"].tolist() == ["gắn tem", "gắn tem", "chờ gắn tem", "gắn tem"]
+    assert result["review_required"].astype(bool).tolist() == [True, True, False, False]
+    assert not result.loc[:1, "review_blocks_action"].astype(bool).any()
 
 
-def test_ctkm_clearance_overlap_blocks_even_when_channels_differ():
+def test_ctkm_clearance_overlap_requires_review_without_suppressing_action():
     frame = main._build_promo_action_source(
         pd.DataFrame([_promo(channel="OFFLINE")]),
         pd.DataFrame([_promo(campaign_name="Clearance", channel="WEBAPP")]),
@@ -174,7 +183,9 @@ def test_ctkm_clearance_overlap_blocks_even_when_channels_differ():
     assert len(warnings) == 1
     assert warnings[0].is_blocking is True
     assert warnings[0].conflict_type == "blocking_conflict"
-    assert set(result["scheduled_action"]) == {"review"}
+    assert set(result["scheduled_action"]) == {"gắn tem"}
+    assert result["review_required"].astype(bool).all()
+    assert not result["review_blocks_action"].astype(bool).any()
 
 
 def test_promotion_and_task_ids_are_deterministic_under_input_reordering():
