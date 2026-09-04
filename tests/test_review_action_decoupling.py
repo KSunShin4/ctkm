@@ -88,6 +88,18 @@ def test_ctkm_clearance_overlap_keeps_action_but_requires_review():
     assert not actions["review_blocks_action"].astype(bool).any()
 
 
+def test_missing_campaign_name_keeps_date_action_and_adds_nonblocking_review():
+    actions = _actions([_promo(None)])
+
+    assert actions.loc[0, "scheduled_action"] == "gắn tem"
+    assert actions.loc[0, "action"] == "gắn tem"
+    assert actions.loc[0, "reason"] == "trong_thoi_gian_ap_dung"
+    assert bool(actions.loc[0, "review_required"]) is True
+    assert actions.loc[0, "review_severity"] == "warning"
+    assert bool(actions.loc[0, "review_blocks_action"]) is False
+    assert actions.loc[0, "review_reason"] == "thieu_ten_chuong_trinh"
+
+
 @pytest.mark.parametrize(
     ("overrides", "expected_reason"),
     [
@@ -171,3 +183,29 @@ def test_review_warning_is_present_in_action_and_review_sheets(tmp_path):
     review_values = [cell.value for row in workbook["Cần review"] for cell in row]
     assert "gắn tem" in review_values
     assert any(isinstance(value, str) and "xung_dot_chuong_trinh" in value for value in review_values)
+
+
+def test_raw_channel_variants_keep_distinct_tasks_on_action_sheet(tmp_path):
+    frame = pd.DataFrame([
+        _promo("Same offer", channel="OFFLINE"),
+        _promo("Same offer", channel="OFFLINE "),
+    ])
+    actions = _actions(frame.to_dict("records"))
+
+    assert actions["task_id"].nunique() == 2
+    assert actions["channel"].tolist() == ["OFFLINE", "OFFLINE "]
+
+    output = tmp_path / "raw-channel-tasks.xlsx"
+    main.EX.export_final_report(
+        output,
+        pd.DataFrame(), pd.DataFrame(), pd.DataFrame(),
+        [], [],
+        {"Thang bao cao": "2026-09", "Ngay nghiep vu": BUSINESS_DATE},
+        df_fefo_actions=actions,
+    )
+
+    workbook = load_workbook(output, data_only=False)
+    sheet = workbook["Gắn tem"]
+    assert sheet.max_row == 3
+    channel_values = [sheet.cell(row=row, column=2).value for row in range(2, sheet.max_row + 1)]
+    assert channel_values == ["OFFLINE", "OFFLINE "]
