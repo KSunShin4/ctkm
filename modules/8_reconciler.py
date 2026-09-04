@@ -42,9 +42,6 @@ if isinstance(_business_columns, list):
             _index = _business_columns.index("item_name") if "item_name" in _business_columns else len(_business_columns)
             _business_columns.insert(_index, _field)
 
-# This facade is also loaded directly by some tests/tools under a second module
-# name. Capture the pristine core implementation once so repeated executions
-# replace the facade wrapper instead of wrapping the previous facade wrapper.
 _baseline = getattr(_core, "_ctkm_reconciler_facade_baseline", None)
 if not isinstance(_baseline, dict):
     _baseline = {"build_fefo_action_frame": _core.build_fefo_action_frame}
@@ -67,14 +64,7 @@ def _scope_display(row) -> str:
 
 
 def detect_campaign_time_overlaps(df_ctkm):
-    """Detect product overlaps without turning warnings into task decisions.
-
-    A same-SKU/date overlap is only a same-scope conflict when BOTH derived
-    KEY Channel and Channel identities match. The raw source values remain
-    untouched. Different Channel values therefore stay non-blocking even when
-    KEY Channel is the same. CTKM-vs-Clearance overlap remains a review signal
-    regardless of channel, but review no longer replaces the scheduled action.
-    """
+    """Detect product overlaps without turning warnings into task decisions."""
     warnings = []
     if not {"item_id", "promo_from", "promo_to"}.issubset(df_ctkm.columns):
         return warnings
@@ -109,7 +99,6 @@ def detect_campaign_time_overlaps(df_ctkm):
             op_a = operational_promotion_key(a, _core._PROMOTION_ID_COLUMNS)
             op_b = operational_promotion_key(b, _core._PROMOTION_ID_COLUMNS)
             if op_a == op_b:
-                # Only channel formatting differs; this is one operational offer.
                 continue
 
             scope_a = scope_identity_key(a.get("key_channel"), a.get("channel"))
@@ -138,7 +127,6 @@ def detect_campaign_time_overlaps(df_ctkm):
                 _core._display_value(b.get("source_row_id"), ""),
                 conflict_type, is_blocking,
             )
-            # Dataclass is not slotted; retain richer diagnostics for API/tests.
             warning.scope_relation = relation
             warning.key_channel_a = a.get("key_channel")
             warning.key_channel_b = b.get("key_channel")
@@ -299,7 +287,6 @@ def _attach_position_promotion_diagnostics(result):
 
 
 def _review_warning_details(overlap_warnings) -> dict[str, list[str]]:
-    """Map only review-worthy overlap warnings back to source lineage."""
     details_by_row: dict[str, list[str]] = {}
     for warning in overlap_warnings or []:
         if not getattr(warning, "is_blocking", False):
@@ -314,8 +301,19 @@ def _review_warning_details(overlap_warnings) -> dict[str, list[str]]:
     return details_by_row
 
 
+def _blank(value) -> bool:
+    if value is None:
+        return True
+    try:
+        if pd.isna(value):
+            return True
+    except (TypeError, ValueError):
+        pass
+    return isinstance(value, str) and not value.strip()
+
+
 def _attach_review_metadata(result: pd.DataFrame, overlap_warnings) -> pd.DataFrame:
-    """Keep review as metadata; only intrinsic data errors block an action."""
+    """Keep review as metadata; only action-indeterminable errors block action."""
     result = result.copy()
     if "scheduled_action" not in result.columns:
         result["review_required"] = False
@@ -332,6 +330,15 @@ def _attach_review_metadata(result: pd.DataFrame, overlap_warnings) -> pd.DataFr
     result["review_severity"] = ""
     result.loc[base_review, "review_severity"] = "blocking"
     result["review_blocks_action"] = base_review
+
+    # Missing campaign name is a source-quality warning, not a reason to suppress
+    # a date-derived attach/remove/wait action.
+    if "campaign_name" in result.columns:
+        missing_campaign = result["campaign_name"].map(_blank) & ~base_review
+        result.loc[missing_campaign, "review_required"] = True
+        result.loc[missing_campaign, "review_severity"] = "warning"
+        result.loc[missing_campaign, "review_blocks_action"] = False
+        result.loc[missing_campaign, "review_reason"] = "thieu_ten_chuong_trinh"
 
     details_by_row = _review_warning_details(overlap_warnings)
     if not details_by_row:
@@ -372,12 +379,9 @@ def build_fefo_action_frame(df_ctkm, target_month, df_pog=None, *, business_date
         if overlap_warnings is None else list(overlap_warnings)
     )
 
-    # The legacy core converts blocking overlap warnings into scheduled_action=review.
-    # Pass an empty warning list so date-based action classification remains intact;
-    # review metadata is attached independently below.
     result = _original_build_fefo_action_frame(
         fact_frame, target_month, remapped_pog,
-        business_date=business_date, overlap_warnings=[],
+        business_date=business_date, overlap_warnings=effective_warnings,
     )
     if result is None or result.empty:
         return result
