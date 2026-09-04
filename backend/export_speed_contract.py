@@ -46,11 +46,6 @@ _COLOR_MAP = {
     "Mapping log": "5B5EA6",
     "Tom tat": "6F42C1",
 }
-_DATE_HEADERS = {"promo_from", "promo_to", "ngay_gan_tem", "ngay_thao_tem"}
-_REVIEW_FIELDS = (
-    "location_completeness", "pog_month_status",
-    "location_status", "location_needs_review",
-)
 _COLLISION_FIELDS = (
     "promotion_count_at_position", "has_multiple_promotions_at_position",
 )
@@ -62,7 +57,7 @@ def _column_widths(headers: list[str], df: pd.DataFrame | None) -> list[int]:
     if df is None or getattr(df, "empty", True):
         return widths
     sample = df.head(_SAMPLE_ROWS_FOR_WIDTH)
-    for index, header in enumerate(headers):
+    for index, _header in enumerate(headers):
         if index >= len(sample.columns):
             break
         try:
@@ -126,7 +121,6 @@ def _optimized_professional_style(ws, sheet_name: str, df: pd.DataFrame | None =
     last_col = get_column_letter(max_col)
     full_range = f"A2:{last_col}{max_row}"
 
-    # Action colours are visual only; range rules avoid Python cell-by-cell fills.
     if sheet_name in _ACTION_SHEETS and "action" in headers:
         action_letter = get_column_letter(headers.index("action") + 1)
         _add_formula_rule(
@@ -136,17 +130,23 @@ def _optimized_professional_style(ws, sheet_name: str, df: pd.DataFrame | None =
             ws, full_range, f'ISNUMBER(SEARCH("tháo",${action_letter}2))', fill="FFF3E0"
         )
 
-    # Diagnostic emphasis remains visible, but only as a handful of CF rules.
     completeness_header = (
         "location_completeness" if "location_completeness" in headers
         else "location_status" if "location_status" in headers else None
     )
     if completeness_header:
-        index = headers.index(completeness_header) + 1
-        letter = get_column_letter(index)
+        letter = get_column_letter(headers.index(completeness_header) + 1)
         _add_formula_rule(
             ws, f"{letter}2:{letter}{max_row}",
-            f'AND({letter}2<>"",{letter}2<>"Đủ vị trí")',
+            f'AND({letter}2<>"",{letter}2<>"Đủ vị trí",{letter}2<>"Không áp dụng POG")',
+            fill="FFC7CE", font="9C0006",
+        )
+
+    if "pog_month_status" in headers:
+        letter = get_column_letter(headers.index("pog_month_status") + 1)
+        _add_formula_rule(
+            ws, f"{letter}2:{letter}{max_row}",
+            f'AND({letter}2<>"",{letter}2<>"POG đúng tháng",{letter}2<>"Không áp dụng POG")',
             fill="FFC7CE", font="9C0006",
         )
 
@@ -167,13 +167,8 @@ def _optimized_professional_style(ws, sheet_name: str, df: pd.DataFrame | None =
             fill="FFF2CC", font="7F6000",
         )
 
-    # Formatting date cells is intentionally omitted here. Pandas/OpenPyXL keeps
-    # actual datetime values as dates; forcing number_format per cell was a large
-    # Python loop and is presentation-only. Source/date semantics are unchanged.
-
 
 def _shelf_pass_already_applied(_ws, _df) -> None:
-    """Skip the historical full-row shelf colouring pass on constrained CPU."""
     return None
 
 
@@ -201,15 +196,9 @@ def _optimized_action_inputs(ws) -> None:
         status_letter = get_column_letter(status_col)
         validation.add(f"{status_letter}2:{status_letter}{ws.max_row}")
         full_range = f"A2:{get_column_letter(ws.max_column)}{ws.max_row}"
-        _add_formula_rule(
-            ws, full_range, f'${status_letter}2="Đã xong"', fill="E2F0D9"
-        )
-        _add_formula_rule(
-            ws, full_range, f'${status_letter}2="Không tìm thấy"', fill="FFC7CE"
-        )
+        _add_formula_rule(ws, full_range, f'${status_letter}2="Đã xong"', fill="E2F0D9")
+        _add_formula_rule(ws, full_range, f'${status_letter}2="Không tìm thấy"', fill="FFC7CE")
 
-    # These cells must really be unlocked for protected-sheet editing, so this
-    # small O(rows * 4) loop is retained; it is tiny beside the removed O(all cells).
     editable_indexes = [(name, headers.index(name) + 1) for name in editable]
     for row_idx in range(2, ws.max_row + 1):
         for name, col_idx in editable_indexes:
