@@ -144,6 +144,31 @@ const rewriteTextNodes = root => {
   }
 }
 
+const ensureTagAuditNav = root => {
+  const nav = root?.querySelector?.('.module-nav')
+  if (!nav) return
+
+  const existing = nav.querySelector('[data-ctkm-tag-audit-link="v1"]')
+  const isAdmin = Array.from(root.querySelectorAll?.('.auth-actions span') || [])
+    .some(node => node.textContent?.trim() === 'ADMIN')
+
+  if (!isAdmin) {
+    existing?.remove()
+    return
+  }
+  if (existing) return
+
+  const button = document.createElement('button')
+  button.type = 'button'
+  button.dataset.ctkmTagAuditLink = 'v1'
+  button.textContent = 'Kiểm tem CTKM'
+  button.title = 'Mở công cụ quét và đối chiếu một tem khuyến mãi mỗi lần'
+  button.addEventListener('click', () => {
+    window.location.assign('/scan-tem')
+  })
+  nav.appendChild(button)
+}
+
 const rewriteLegacyUiText = root => {
   root?.querySelectorAll?.('.stat-label').forEach(node => {
     const replacement = SUMMARY_LABEL_REWRITES.get(node.textContent?.trim())
@@ -169,6 +194,7 @@ const rewriteLegacyUiText = root => {
     const match = text.match(/^tong_hop_ctkm_(\d{4}-\d{2})\.xlsx$/i)
     if (match) node.textContent = `Workbook CTKM tháng ${match[1]}`
   })
+  ensureTagAuditNav(root)
   rewriteTextNodes(root)
 }
 
