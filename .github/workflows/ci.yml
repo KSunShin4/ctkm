@@ -58,10 +58,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     needs: [python-tests, frontend-build]
-    # Python currently has a documented stale red baseline. Keep that failure
-    # visible, but still validate the production image independently when the
-    # frontend build completed successfully.
-    if: ${{ always() && needs.frontend-build.result == 'success' }}
     steps:
       - uses: actions/checkout@v4
       - name: Build production image
