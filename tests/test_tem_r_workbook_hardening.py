@@ -47,8 +47,9 @@ def test_tem_r_always_disables_external_link_parsing(tmp_path, monkeypatch):
     tem_r.create_tem_r_workbook(source, output, stock_column="ton")
 
     assert inspected["sheet_name"] == "Export"
-    assert len(calls) == 3
+    assert len(calls) == 2
     assert all(call.get("keep_links") is False for call in calls)
+    assert all(call.get("data_only") is True for call in calls)
 
 
 def test_selected_sheet_finds_header_only_inside_that_sheet(tmp_path):
@@ -101,10 +102,6 @@ def test_formula_stock_is_frozen_to_cached_value_in_output(tmp_path):
     sheet.append(["S1", "G1", "1/1", 2, "P2", "Two", 0])
     workbook.save(source)
 
-    # openpyxl does not calculate formulas. Inject the cached value that a real
-    # Pharmacity export already contains so data_only=True sees the value 2.
-    # Depending on openpyxl version, an empty cached value may be serialized as
-    # either <v></v> or the equivalent self-closing <v/> form.
     with zipfile.ZipFile(source, "r") as zin:
         members = {name: zin.read(name) for name in zin.namelist()}
     patched, replacements = re.subn(
@@ -141,8 +138,6 @@ def test_header_scan_ignores_inflated_used_range(tmp_path):
     sheet.title = "Export"
     sheet.append(["STOREID", "POGCODE", "FIXELID", "LOCATIONID", "ITEMID", "ITEMNAME", "ton"])
     sheet.append(["S1", "G1", "1/1", 1, "P1", "One", 2])
-    # Formatting the last Excel column makes max_column = 16384 even though the
-    # actual Tem R table has only seven columns.
     sheet["XFD1"].fill = PatternFill(fill_type="solid", fgColor="FFFFFF")
     workbook.save(source)
 
