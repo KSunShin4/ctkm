@@ -16,6 +16,7 @@ def test_main_api_installs_hardening_only_through_contract_suite():
         "install_input_contract",
         "install_mapping_result_contract",
         "install_gemini_availability_contract",
+        "install_gemini_suggestion_only_contract",
         "install_tem_r_resource_contract",
         "install_auxiliary_workflows_contract",
         "install_expiration_api_contract",
