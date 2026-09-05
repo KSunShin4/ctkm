@@ -11,19 +11,24 @@ def _route(path: str, method: str):
     return matches[0]
 
 
-def test_tag_audit_routes_are_installed_once_and_before_static_frontend():
+def test_tag_audit_routes_are_installed_once_and_precede_static_frontend_when_present():
     get_context = _route("/api/tag-audit/context", "GET")
     post_context = _route("/api/tag-audit/context", "POST")
     check = _route("/api/tag-audit/check", "POST")
 
     routes = list(main_api.app.routes)
-    frontend_mount_index = next(
+    frontend_mount_indexes = [
         index for index, route in enumerate(routes)
         if getattr(route, "path", None) == "/" and route.__class__.__name__ == "Mount"
-    )
-    assert routes.index(get_context) < frontend_mount_index
-    assert routes.index(post_context) < frontend_mount_index
-    assert routes.index(check) < frontend_mount_index
+    ]
+    # Python CI intentionally runs without a built frontend/dist, so no static
+    # mount is expected there. In a production Docker image the mount exists and
+    # API routes must remain before it.
+    if frontend_mount_indexes:
+        frontend_mount_index = frontend_mount_indexes[0]
+        assert routes.index(get_context) < frontend_mount_index
+        assert routes.index(post_context) < frontend_mount_index
+        assert routes.index(check) < frontend_mount_index
 
 
 def test_all_tag_audit_routes_require_admin():
