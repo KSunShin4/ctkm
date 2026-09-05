@@ -37,7 +37,7 @@ def _exercise(path: str, tmp_path, monkeypatch):
     response = asyncio.run(main_api._scan_tem_spa_entry(_request(path), _fallback))
     assert response.status_code == 200
     assert response.media_type == "text/html"
-    assert response.path == str(dist / "index.html")
+    assert response.path == dist / "index.html"
 
 
 def test_scan_tem_returns_frontend_index_when_built(tmp_path, monkeypatch):
