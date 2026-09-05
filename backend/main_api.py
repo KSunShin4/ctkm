@@ -20,6 +20,7 @@ import threading
 from backend.contract_suite import install_contract_suite
 from backend import tag_audit_contract as _tag_audit_contract
 from backend.tag_audit_contract import install_tag_audit_contract
+from backend.tag_audit_itemid_contract import install_tag_audit_itemid_contract
 
 _CORE_NAME = "backend.main_api_core"
 _CORE_PATH = Path(__file__).with_name("main_api_core.py")
@@ -185,6 +186,11 @@ _tag_audit_contract._DISPLAY_TO_KEY.update({
     "Kênh chương trình (Channel)": "channel",
 })
 _tag_audit_contract._CANONICAL_KEYS.update({"key_channel", "channel"})
+
+# Company shelf labels visibly print Pxxxxx. Harden OCR observations before route
+# functions capture the extractor/comparator so ITEMID is the primary identity
+# signal. Barcode remains supporting-only.
+install_tag_audit_itemid_contract(_tag_audit_contract)
 
 # In the production Docker image frontend/dist exists before this module imports,
 # so main_api_core has already mounted StaticFiles at "/". Starlette normalizes a
