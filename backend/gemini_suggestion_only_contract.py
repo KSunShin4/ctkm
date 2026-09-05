@@ -1,11 +1,10 @@
 # -*- coding: utf-8 -*-
 """Restrict Gemini to explicit mapping suggestions only.
 
-Production execution may use only explicit/manual mappings, saved presets, or
-recognized deterministic company mappings. Gemini may be called only by the
-mapping-preview surface to propose a mapping for human review. Suggestions are
-never written to the legacy mapping cache and are never executable until the
-user saves/confirms them as a preset or sends them explicitly.
+Production execution may use only saved/confirmed mappings or recognized
+company-standard mappings. Gemini may be called only by the mapping-preview
+surface to propose a mapping for human review. Suggestions are never written to
+the legacy mapping cache and are never executable until they are confirmed.
 """
 from __future__ import annotations
 
@@ -29,36 +28,48 @@ def install_gemini_suggestion_only_contract(core_module) -> None:
     from backend import input_contract
     validate_mapping = input_contract.validate_manual_mapping
 
-    # Availability/cooldown gate installed earlier. Keep a private reference for
-    # preview-only AI suggestions, then replace the public gate so production
-    # enqueue cannot call Gemini implicitly.
     gemini_available = core_module._enforce_gemini_cooldown
     preview_state = threading.local()
 
-    def deterministic_mapping_or_none(main_module, df, schema_section, explicit, preset, *, kind: str):
-        """Resolve executable mapping without Gemini or legacy AI cache."""
-        if explicit is not None:
-            checked = validate_mapping(explicit, df, schema_section)
-            return checked, "manual-confirmed"
-
-        if preset:
-            try:
-                checked = validate_mapping(preset, df, schema_section)
-                return checked, "saved-preset"
-            except ValueError:
-                # A stale preset is not executable. Deterministic recognition may
-                # still recover a standard Pharmacity file below.
-                pass
-
+    def _deterministic(main_module, df, schema_section, *, kind: str):
         infer = (
             main_module._infer_standard_fact_mapping
             if kind == "fact" else main_module._infer_standard_pog_mapping
         )
         inferred = infer(df)
-        if inferred:
-            checked = validate_mapping(inferred, df, schema_section)
-            return checked, f"standard-{kind}"
+        if not inferred:
+            return None
+        return validate_mapping(inferred, df, schema_section)
 
+    def deterministic_mapping_or_none(main_module, df, schema_section, explicit, preset, *, kind: str):
+        """Resolve executable mapping without Gemini or legacy AI cache.
+
+        An explicit mapping is executable only when it matches either a validated
+        saved preset (human-confirmed) or the deterministic standard mapping.
+        This prevents a client from taking an unapproved Gemini suggestion and
+        passing it straight back as a so-called manual override.
+        """
+        deterministic = _deterministic(main_module, df, schema_section, kind=kind)
+
+        confirmed_preset = None
+        if preset:
+            try:
+                confirmed_preset = validate_mapping(preset, df, schema_section)
+            except ValueError:
+                confirmed_preset = None
+
+        if explicit is not None:
+            checked = validate_mapping(explicit, df, schema_section)
+            if confirmed_preset is not None and checked == confirmed_preset:
+                return checked, "saved-preset-confirmed"
+            if deterministic is not None and checked == deterministic:
+                return checked, f"standard-{kind}"
+            return None, "approval-required"
+
+        if confirmed_preset is not None:
+            return confirmed_preset, "saved-preset"
+        if deterministic is not None:
+            return deterministic, f"standard-{kind}"
         return None, "approval-required"
 
     input_contract._mapping_or_none = deterministic_mapping_or_none
@@ -76,33 +87,30 @@ def install_gemini_suggestion_only_contract(core_module) -> None:
             and "campaign_name" not in schema_section
         )
         if is_fact:
-            inferred = main_mod._infer_standard_fact_mapping(df)
+            inferred = _deterministic(main_mod, df, schema_section, kind="fact")
             source = "standard-fact"
         elif is_pog:
-            inferred = main_mod._infer_standard_pog_mapping(df)
+            inferred = _deterministic(main_mod, df, schema_section, kind="pog")
             source = "standard-pog"
         else:
-            inferred = {}
+            inferred = None
             source = "deterministic"
 
         if inferred:
-            checked = validate_mapping(inferred, df, schema_section)
             mapping_logs.append({
                 "sheet_name": sheet_name,
-                "mapping": checked,
-                "confidence": {column: 1.0 for column in checked},
-                "unmapped": [str(column) for column in df.columns if column not in checked],
+                "mapping": inferred,
+                "confidence": {column: 1.0 for column in inferred},
+                "unmapped": [str(column) for column in df.columns if column not in inferred],
                 "source": source,
             })
-            return checked
+            return inferred
 
         raise ValueError(
             f"Mapping cho sheet '{sheet_name}' chưa được xác nhận. "
             "Hãy xem gợi ý mapping, kiểm tra và lưu mapping đã xác nhận trước khi chạy."
         )
 
-    # Keep compatibility with the existing contract-suite verification marker,
-    # while making the final execution policy explicit.
     deterministic_get_or_map._ctkm_mapping_result_contract_v1 = True
     deterministic_get_or_map._ctkm_gemini_suggestion_only_v1 = True
 
@@ -144,9 +152,6 @@ def install_gemini_suggestion_only_contract(core_module) -> None:
 
     core_module._enforce_gemini_cooldown = block_implicit_gemini
 
-    # The input contract's preview endpoint calls _enforce_gemini_cooldown before
-    # invoking main.preview_mapping. Wrap only that endpoint in a thread-local
-    # permission so production enqueue remains blocked.
     original_preview = core_module.preview_mapping_job
 
     async def preview_mapping_job(*args, **kwargs):
