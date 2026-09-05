@@ -18,6 +18,7 @@ import tempfile
 import threading
 
 from backend.contract_suite import install_contract_suite
+from backend import tag_audit_contract as _tag_audit_contract
 from backend.tag_audit_contract import install_tag_audit_contract
 
 _CORE_NAME = "backend.main_api_core"
@@ -174,6 +175,17 @@ for _name, _value in {
 # All compatibility/hardening layers are installed and verified by one ordered
 # suite. The suite also binds the shared mapping validator before routes capture it.
 install_contract_suite(_core)
+
+# Production slim workbooks use explicit business-facing channel labels. Accept
+# those exact headers in addition to the earlier short aliases while keeping the
+# source cell values untouched. These fields are backend disambiguation context;
+# they are not OCR targets and are never inferred from one another.
+_tag_audit_contract._DISPLAY_TO_KEY.update({
+    "Phạm vi áp dụng (KEY Channel)": "key_channel",
+    "Kênh chương trình (Channel)": "channel",
+})
+_tag_audit_contract._CANONICAL_KEYS.update({"key_channel", "channel"})
+
 # The tag-audit feature is additive and deliberately installed after the verified
 # legacy suite so it cannot mutate existing CTKM/Tem-R route contracts.
 install_tag_audit_contract(_core)
