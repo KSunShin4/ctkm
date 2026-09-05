@@ -16,7 +16,7 @@ from backend.workbook_semantics import (
 )
 
 
-_REQUIRED_CTKM_SHEETS = {
+_FULL_REQUIRED_CTKM_SHEETS = {
     "HƯỚNG DẪN",
     "Gắn tem",
     "Tháo tem",
@@ -33,6 +33,20 @@ _REQUIRED_CTKM_SHEETS = {
     "Tom tat",
     "Mapping log",
 }
+
+_SLIM_REQUIRED_CTKM_SHEETS = {
+    "HƯỚNG DẪN",
+    "TỔNG HỢP - TEM",
+    "Gắn tem",
+    "Tháo tem",
+    "Chờ gắn",
+    "Cần review",
+    "CTKM thieu vi tri ke",
+    "POG cần kiểm tra",
+    "Audit hành động",
+}
+
+_REQUIRED_CTKM_SHEETS = _FULL_REQUIRED_CTKM_SHEETS
 
 _SUMMARY_KEYS_TO_VERIFY = (
     "Thang bao cao",
@@ -62,7 +76,7 @@ _SUMMARY_SHEET_COUNT_PAIRS = (
     ("So dong can review", "Cần review"),
 )
 
-_GUIDE_TARGETS = {
+_FULL_GUIDE_TARGETS = {
     "Gắn tem": "Gắn tem",
     "Tháo tem": "Tháo tem",
     "Chờ gắn": "Chờ gắn",
@@ -73,6 +87,15 @@ _GUIDE_TARGETS = {
     "POG cần review": "POG cần review",
     "Xác nhận CTKM / Clearance": "Xác nhận CTKM Clearance",
 }
+
+_SLIM_GUIDE_TARGETS = {
+    key: value for key, value in _FULL_GUIDE_TARGETS.items()
+    if value in {
+        "Gắn tem", "Tháo tem", "Chờ gắn", "Cần review",
+        "CTKM thieu vi tri ke", "POG cần kiểm tra",
+    }
+}
+_GUIDE_TARGETS = _FULL_GUIDE_TARGETS
 
 _LEGACY_HIDDEN_SUMMARY_KEYS = {
     "So dong CTKM thieu vi tri ke",
@@ -111,8 +134,21 @@ def _same_value(expected, actual) -> bool:
     return str(expected) == str(actual)
 
 
+def _workbook_profile(workbook) -> str:
+    names = set(workbook.sheetnames)
+    if _FULL_REQUIRED_CTKM_SHEETS.issubset(names):
+        return "full"
+    if _SLIM_REQUIRED_CTKM_SHEETS.issubset(names):
+        return "production-slim"
+    missing_slim = sorted(_SLIM_REQUIRED_CTKM_SHEETS - names)
+    raise RuntimeError(
+        "Workbook kết quả thiếu sheet bắt buộc cho profile vận hành: "
+        + ", ".join(missing_slim)
+    )
+
+
 def validate_ctkm_workbook(path: str | Path, summary: dict | None) -> None:
-    """Reject a final artifact that is unreadable or internally inconsistent."""
+    """Reject an unreadable/inconsistent full or production-slim workbook."""
     artifact = Path(path)
     if not artifact.is_file():
         raise RuntimeError("Pipeline không tạo được file Excel kết quả.")
@@ -120,32 +156,38 @@ def validate_ctkm_workbook(path: str | Path, summary: dict | None) -> None:
     workbook = None
     try:
         workbook = openpyxl.load_workbook(artifact, data_only=True, read_only=False)
-        missing = sorted(_REQUIRED_CTKM_SHEETS - set(workbook.sheetnames))
-        if missing:
-            raise RuntimeError(
-                "Workbook kết quả thiếu sheet bắt buộc: " + ", ".join(missing)
-            )
+        profile = _workbook_profile(workbook)
         if not workbook.sheetnames or workbook.sheetnames[0] != "HƯỚNG DẪN":
             raise RuntimeError("Workbook kết quả không đặt HƯỚNG DẪN ở sheet đầu tiên.")
-        if workbook["Mapping log"].sheet_state != "hidden":
+
+        if profile == "full" and workbook["Mapping log"].sheet_state != "hidden":
             raise RuntimeError("Mapping log phải được ẩn trong workbook kết quả.")
         for metadata_name in ("POG metadata", "KM metadata"):
             if metadata_name in workbook.sheetnames and workbook[metadata_name].sheet_state != "hidden":
                 raise RuntimeError(f"{metadata_name} phải được ẩn trong workbook kết quả.")
 
         summary_dict = summary if isinstance(summary, dict) else {}
-        summary_ws = workbook["Tom tat"]
-        workbook_summary = _summary_from_sheet(summary_ws)
-        for key in _SUMMARY_KEYS_TO_VERIFY:
-            if key not in summary_dict:
-                continue
-            if key not in workbook_summary:
-                raise RuntimeError(f"Tom tat thiếu chỉ số '{key}'.")
-            if not _same_value(summary_dict[key], workbook_summary[key]):
-                raise RuntimeError(
-                    f"Tom tat không khớp summary cho '{key}': "
-                    f"API={summary_dict[key]!r}, Excel={workbook_summary[key]!r}"
-                )
+        if profile == "full":
+            summary_ws = workbook["Tom tat"]
+            workbook_summary = _summary_from_sheet(summary_ws)
+            for key in _SUMMARY_KEYS_TO_VERIFY:
+                if key not in summary_dict:
+                    continue
+                if key not in workbook_summary:
+                    raise RuntimeError(f"Tom tat thiếu chỉ số '{key}'.")
+                if not _same_value(summary_dict[key], workbook_summary[key]):
+                    raise RuntimeError(
+                        f"Tom tat không khớp summary cho '{key}': "
+                        f"API={summary_dict[key]!r}, Excel={workbook_summary[key]!r}"
+                    )
+
+            summary_rows = _summary_row_indexes(summary_ws)
+            for legacy_key in _LEGACY_HIDDEN_SUMMARY_KEYS:
+                row = summary_rows.get(legacy_key)
+                if row is not None and not bool(summary_ws.row_dimensions[row].hidden):
+                    raise RuntimeError(
+                        f"Tom tat phải ẩn legacy metric '{legacy_key}' để tránh nhãn sai nghĩa."
+                    )
 
         for legacy_key, canonical_key in _LEGACY_CANONICAL_PAIRS:
             if legacy_key in summary_dict and canonical_key in summary_dict:
@@ -153,14 +195,6 @@ def validate_ctkm_workbook(path: str | Path, summary: dict | None) -> None:
                     raise RuntimeError(
                         f"Summary legacy '{legacy_key}' lệch canonical '{canonical_key}'."
                     )
-
-        summary_rows = _summary_row_indexes(summary_ws)
-        for legacy_key in _LEGACY_HIDDEN_SUMMARY_KEYS:
-            row = summary_rows.get(legacy_key)
-            if row is not None and not bool(summary_ws.row_dimensions[row].hidden):
-                raise RuntimeError(
-                    f"Tom tat phải ẩn legacy metric '{legacy_key}' để tránh nhãn sai nghĩa."
-                )
 
         for summary_key, sheet_name in _SUMMARY_SHEET_COUNT_PAIRS:
             if summary_key not in summary_dict:
@@ -172,13 +206,14 @@ def validate_ctkm_workbook(path: str | Path, summary: dict | None) -> None:
                     f"API={summary_dict[summary_key]!r}, rows={sheet_count}"
                 )
 
+        guide_targets = _FULL_GUIDE_TARGETS if profile == "full" else _SLIM_GUIDE_TARGETS
         guide = workbook["HƯỚNG DẪN"]
         seen_targets: set[str] = set()
         for row in range(1, (guide.max_row or 0) + 1):
             label = guide.cell(row=row, column=1).value
-            if label not in _GUIDE_TARGETS:
+            if label not in guide_targets:
                 continue
-            target = _GUIDE_TARGETS[label]
+            target = guide_targets[label]
             expected_count = visible_data_row_count(workbook[target])
             actual_count = guide.cell(row=row, column=2).value
             if not _same_value(expected_count, actual_count):
@@ -188,8 +223,7 @@ def validate_ctkm_workbook(path: str | Path, summary: dict | None) -> None:
                 )
             seen_targets.add(target)
 
-        required_guide_targets = set(_GUIDE_TARGETS.values())
-        missing_cards = sorted(required_guide_targets - seen_targets)
+        missing_cards = sorted(set(guide_targets.values()) - seen_targets)
         if missing_cards:
             raise RuntimeError(
                 "HƯỚNG DẪN thiếu card cho sheet: " + ", ".join(missing_cards)
@@ -216,8 +250,6 @@ def install_final_output_contract(core_module) -> None:
 
     core_module.run_pipeline = validated_run_pipeline
 
-    # Preview and artifact validation must count rows with exactly the same
-    # placeholder/visibility rules.
     from backend import preview_contract
 
     preview_contract._visible_column_indexes = visible_column_indexes
