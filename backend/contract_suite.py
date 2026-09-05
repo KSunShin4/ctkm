@@ -10,6 +10,10 @@ from modules.mapping_validation import validate_manual_mapping
 
 from backend import input_contract
 from backend.runtime_contract import install_runtime_contract
+from backend.render_resource_contract import (
+    current_rss_mb,
+    install_render_resource_contract,
+)
 from backend.input_contract import install_input_contract
 from backend.mapping_result_contract import install_mapping_result_contract
 from backend.gemini_availability_contract import install_gemini_availability_contract
@@ -24,6 +28,7 @@ from backend.preview_contract import install_preview_contract
 CONTRACT_ORDER = (
     "runtime",
     "input",
+    "render-resource",
     "mapping-result",
     "gemini-availability",
     "tem-r-resource",
@@ -37,6 +42,7 @@ CONTRACT_ORDER = (
 _STATE_FLAGS = {
     "runtime": "runtime_contract_v1",
     "input": "input_contract_v1",
+    "render-resource": "render_resource_contract_v1",
     "mapping-result": "mapping_result_contract_v1",
     "gemini-availability": "gemini_availability_contract_v1",
     "tem-r-resource": "tem_r_resource_contract_v1",
@@ -94,6 +100,8 @@ def _install_health_contract(core_module) -> None:
             "ctkm_output_profile": getattr(
                 core_module.app.state, "ctkm_output_profile", "full"
             ),
+            "rss_mb": current_rss_mb(),
+            "heavy_queue": core_module._heavy_queue.snapshot(),
         })
         return result
 
@@ -168,13 +176,11 @@ def verify_contract_suite(core_module) -> None:
 
 def install_contract_suite(core_module) -> None:
     """Install contracts in their only supported order, then verify the surface."""
-    # The input module still contains its historical validator for compatibility.
-    # Make the production suite explicitly bind the shared validator before any
-    # route captures it; do not depend on import side effects in main_api.py.
     input_contract.validate_manual_mapping = validate_manual_mapping
 
     install_runtime_contract(core_module)
     install_input_contract(core_module)
+    install_render_resource_contract(core_module)
     install_mapping_result_contract(core_module, validate_manual_mapping)
     install_gemini_availability_contract(core_module)
     install_tem_r_resource_contract(core_module)
