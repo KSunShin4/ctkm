@@ -2,6 +2,7 @@ from io import BytesIO
 
 from openpyxl import Workbook
 
+from backend import main_api  # installs production tag-audit header compatibility
 from backend.tag_audit_contract import _parse_action_workbook, compare_observation
 
 
@@ -94,21 +95,21 @@ def test_manual_item_id_can_confirm_identity_when_ocr_misses_code():
     assert result["identity_source"] == "manual_item_id"
 
 
-def test_production_slim_workbook_is_valid_tag_context():
+def test_production_slim_workbook_is_valid_tag_context_and_keeps_raw_channels():
     workbook = Workbook()
     workbook.remove(workbook.active)
     headers = [
-        "KEY Channel", "Channel", "Mã sản phẩm", "Tên sản phẩm",
-        "Đơn vị sản phẩm (Promo UoM)", "POG", "Vị trí", "Facing",
-        "Công việc", "Ngày gắn", "Ngày tháo", "Campaign", "Scheme detail",
-        "From", "To", "Giá thường", "Giá KM", "Nguồn", "Lý do / Cảnh báo",
-        "Product type", "Cửa hàng",
+        "Phạm vi áp dụng (KEY Channel)", "Kênh chương trình (Channel)",
+        "Mã sản phẩm", "Tên sản phẩm", "Đơn vị sản phẩm (Promo UoM)",
+        "POG", "Vị trí", "Facing", "Công việc", "Ngày gắn", "Ngày tháo",
+        "Campaign", "Scheme detail", "From", "To", "Giá thường", "Giá KM",
+        "Nguồn", "Lý do / Cảnh báo", "Product type", "Cửa hàng",
     ]
     for name in ("Gắn tem", "Tháo tem", "Chờ gắn"):
         ws = workbook.create_sheet(name)
         ws.append(headers)
     workbook["Gắn tem"].append([
-        "All channel", "ALL CHANNEL", "P30766", "Sản phẩm thử nghiệm", "Hộp",
+        "All channel ", "Online ", "P30766", "Sản phẩm thử nghiệm", "Hộp",
         "POG-A", "1", 1, "Gắn tem", "2026-09-01", "2026-10-01",
         "FULL MONTH", "GIẢM 25%", "2026-09-01", "2026-09-30",
         225000, 168750, "CTKM", "", "NORMAL", "S1",
@@ -122,3 +123,5 @@ def test_production_slim_workbook_is_valid_tag_context():
     assert rows[0]["item_id"] == "P30766"
     assert rows[0]["expected_action"] == "gan_tem"
     assert rows[0]["promo_price"] == 168750
+    assert rows[0]["key_channel"] == "All channel "
+    assert rows[0]["channel"] == "Online "
