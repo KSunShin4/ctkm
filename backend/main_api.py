@@ -19,7 +19,6 @@ import threading
 
 from backend.contract_suite import install_contract_suite
 from backend.tag_audit_contract import install_tag_audit_contract
-from backend.tag_audit_frontend_contract import install_tag_audit_frontend_contract
 
 _CORE_NAME = "backend.main_api_core"
 _CORE_PATH = Path(__file__).with_name("main_api_core.py")
@@ -178,9 +177,24 @@ install_contract_suite(_core)
 # The tag-audit feature is additive and deliberately installed after the verified
 # legacy suite so it cannot mutate existing CTKM/Tem-R route contracts.
 install_tag_audit_contract(_core)
-# StaticFiles(html=True) is not a generic SPA fallback. Register the browser route
-# explicitly before the root static mount so /scan-tem serves Vite's index.html.
-install_tag_audit_frontend_contract(_core)
+
+# The root StaticFiles mount in main_api_core is intentionally last among core
+# routes, but Starlette StaticFiles(html=True) does not provide a generic SPA
+# fallback. Intercept only the scanner browser entrypoint before routing. This is
+# independent of route-list ordering and therefore remains reliable in the
+# production Docker image where the root static mount already exists at import.
+async def _scan_tem_spa_entry(request, call_next):
+    if request.method == "GET" and request.url.path.rstrip("/") == "/scan-tem":
+        index_path = _core._FRONTEND_DIST / "index.html"
+        if index_path.is_file():
+            return _core.FileResponse(index_path)
+    return await call_next(request)
+
+
+setattr(_core, "_scan_tem_spa_entry", _scan_tem_spa_entry)
+if not getattr(_core.app.state, "scan_tem_spa_middleware_v1", False):
+    _core.app.middleware("http")(_scan_tem_spa_entry)
+    _core.app.state.scan_tem_spa_middleware_v1 = True
 
 # Make imports receive the actual core module. This preserves attribute mutation
 # semantics used by tests and by runtime monkeypatch/configuration code.
