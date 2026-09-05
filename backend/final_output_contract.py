@@ -46,7 +46,6 @@ _SLIM_REQUIRED_CTKM_SHEETS = {
     "Audit hành động",
 }
 
-# Backward-compatible name for tests/importers that only need the legacy set.
 _REQUIRED_CTKM_SHEETS = _FULL_REQUIRED_CTKM_SHEETS
 
 _SUMMARY_KEYS_TO_VERIFY = (
@@ -143,7 +142,8 @@ def _workbook_profile(workbook) -> str:
         return "production-slim"
     missing_slim = sorted(_SLIM_REQUIRED_CTKM_SHEETS - names)
     raise RuntimeError(
-        "Workbook kết quả thiếu sheet vận hành bắt buộc: " + ", ".join(missing_slim)
+        "Workbook kết quả thiếu sheet bắt buộc cho profile vận hành: "
+        + ", ".join(missing_slim)
     )
 
 
@@ -160,9 +160,8 @@ def validate_ctkm_workbook(path: str | Path, summary: dict | None) -> None:
         if not workbook.sheetnames or workbook.sheetnames[0] != "HƯỚNG DẪN":
             raise RuntimeError("Workbook kết quả không đặt HƯỚNG DẪN ở sheet đầu tiên.")
 
-        if profile == "full":
-            if workbook["Mapping log"].sheet_state != "hidden":
-                raise RuntimeError("Mapping log phải được ẩn trong workbook kết quả.")
+        if profile == "full" and workbook["Mapping log"].sheet_state != "hidden":
+            raise RuntimeError("Mapping log phải được ẩn trong workbook kết quả.")
         for metadata_name in ("POG metadata", "KM metadata"):
             if metadata_name in workbook.sheetnames and workbook[metadata_name].sheet_state != "hidden":
                 raise RuntimeError(f"{metadata_name} phải được ẩn trong workbook kết quả.")
@@ -224,8 +223,7 @@ def validate_ctkm_workbook(path: str | Path, summary: dict | None) -> None:
                 )
             seen_targets.add(target)
 
-        required_guide_targets = set(guide_targets.values())
-        missing_cards = sorted(required_guide_targets - seen_targets)
+        missing_cards = sorted(set(guide_targets.values()) - seen_targets)
         if missing_cards:
             raise RuntimeError(
                 "HƯỚNG DẪN thiếu card cho sheet: " + ", ".join(missing_cards)
@@ -252,8 +250,6 @@ def install_final_output_contract(core_module) -> None:
 
     core_module.run_pipeline = validated_run_pipeline
 
-    # Preview and artifact validation must count rows with exactly the same
-    # placeholder/visibility rules.
     from backend import preview_contract
 
     preview_contract._visible_column_indexes = visible_column_indexes
