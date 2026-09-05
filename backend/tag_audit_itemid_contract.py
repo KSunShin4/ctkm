@@ -10,8 +10,6 @@ from __future__ import annotations
 
 import re
 
-from backend.tag_audit_local_ocr_contract import install_tag_audit_local_ocr_contract
-
 _ITEMID_PATTERN = re.compile(r"(?<![A-Z0-9])P\s*[-_.:]?\s*(\d{3,8})(?!\d)", re.IGNORECASE)
 
 
@@ -34,10 +32,6 @@ def extract_itemid_candidates(*values) -> list[str]:
 def install_tag_audit_itemid_contract(tag_audit_module) -> None:
     if getattr(tag_audit_module, "_itemid_primary_contract_v1", False):
         return
-
-    # Local RapidOCR becomes the primary extractor. It may call Gemini only as an
-    # optional fallback. ITEMID hardening wraps that hybrid extractor afterwards.
-    install_tag_audit_local_ocr_contract(tag_audit_module)
 
     original_extract = tag_audit_module._extract_tag_with_gemini
     original_compare = tag_audit_module.compare_observation
