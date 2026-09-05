@@ -4,6 +4,7 @@ services:
     runtime: docker
     plan: free
     dockerfilePath: ./Dockerfile
+    autoDeployTrigger: checksPass
     envVars:
       - key: GEMINI_API_KEY
         sync: false

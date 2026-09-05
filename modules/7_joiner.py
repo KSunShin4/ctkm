@@ -2,7 +2,12 @@
 """Module 7: Joiner — outer join CTKM x POG theo item_id, ap dieu kien DIMENSION."""
 from __future__ import annotations
 from dataclasses import dataclass
+import re
 import pandas as pd
+
+from modules.item_code_identity import build_transition_identity
+
+_SKU_KEY_PAT = re.compile(r"^P\d+$")
 
 @dataclass
 class JoinResult:
@@ -19,12 +24,38 @@ def _item_key(value):
     return key or None
 
 
+def _is_sku_key(value) -> bool:
+    key = _item_key(value)
+    return bool(key and _SKU_KEY_PAT.fullmatch(key))
+
+
 def _with_item_key(frame: pd.DataFrame) -> pd.DataFrame:
     result = frame.copy()
     if "item_key" not in result.columns:
         result["item_key"] = result["item_id"].apply(_item_key)
     else:
         result["item_key"] = result["item_key"].apply(_item_key)
+    return result
+
+
+def _replacement_key_map(frame: pd.DataFrame) -> tuple[dict[str, str], set[str], set[str]]:
+    """Return the shared fail-safe POG alias contract for replacement codes."""
+    identity = build_transition_identity(
+        frame, key_func=_item_key, is_sku=_is_sku_key,
+    )
+    ambiguous_new = set(identity.ambiguous_keys) | set(identity.shadowed_new_keys)
+    ambiguous_source = set(identity.ambiguous_keys)
+    return dict(identity.pog_alias_map), ambiguous_new, ambiguous_source
+
+
+def _remap_pog_replacement_keys(source_ctkm: pd.DataFrame, source_pog: pd.DataFrame) -> pd.DataFrame:
+    result = source_pog.copy()
+    mapping, _ambiguous_new, _ambiguous_source = _replacement_key_map(source_ctkm)
+    if not mapping or "item_key" not in result.columns:
+        return result
+    result["item_key"] = result["item_key"].map(
+        lambda value: mapping.get(_item_key(value), _item_key(value))
+    )
     return result
 
 
@@ -38,6 +69,30 @@ def _add_display_item_id(frame: pd.DataFrame, *, prefer_ctkm: bool) -> pd.DataFr
             result["item_id"] = result["item_id"].combine_first(result[secondary])
     return result
 
+
+def _pog_control_row_kind(row: pd.Series) -> str | None:
+    """Recognize export control rows without touching ordinary bad POG rows."""
+    texts = []
+    for value in row.tolist():
+        if value is None or pd.isna(value):
+            continue
+        text = str(value).strip()
+        if text:
+            texts.append(text)
+    lowered = [text.lower() for text in texts]
+
+    if any("applied filters" in text or "applied filter" in text or "dateid" in text
+           for text in lowered):
+        return "snapshot_metadata"
+
+    item = _item_key(row.get("item_key")) or _item_key(row.get("item_id"))
+    if item == "TOTAL":
+        return "summary_total"
+    if item is None and any(text in {"total", "grand total", "tổng", "tong"} for text in lowered):
+        return "summary_total"
+    return None
+
+
 def join_ctkm_pog(df_ctkm, df_pog) -> JoinResult:
     if "item_id" not in df_ctkm.columns:
         raise ValueError("df_ctkm thieu cot 'item_id'.")
@@ -45,13 +100,24 @@ def join_ctkm_pog(df_ctkm, df_pog) -> JoinResult:
         raise ValueError("df_pog thieu cot 'item_id'.")
     source_ctkm = _with_item_key(df_ctkm)
     source_pog = _with_item_key(df_pog)
-    pog_review = source_pog[source_pog["item_key"].isna()].copy()
+    source_pog = _remap_pog_replacement_keys(source_ctkm, source_pog)
+
+    control_kind = source_pog.apply(_pog_control_row_kind, axis=1)
+    control_mask = control_kind.notna()
+    pog_metadata = source_pog[control_mask].copy()
+    if not pog_metadata.empty:
+        pog_metadata["pog_control_kind"] = control_kind[control_mask].to_numpy()
+    source_pog_business = source_pog[~control_mask].copy()
+
+    pog_review = source_pog_business[source_pog_business["item_key"].isna()].copy()
     if not pog_review.empty:
         pog_review["reason"] = "thieu_ma_san_pham_pog"
+    pog_review = pog_review.reset_index(drop=True)
+    pog_review.attrs["pog_metadata"] = pog_metadata.reset_index(drop=True)
 
-    overlap = (set(source_ctkm.columns) & set(source_pog.columns)) - {"item_key"}
+    overlap = (set(source_ctkm.columns) & set(source_pog_business.columns)) - {"item_key"}
     df_c = source_ctkm.rename(columns={c: f"{c}__ctkm" for c in overlap})
-    df_p = source_pog.rename(columns={c: f"{c}__pog" for c in overlap})
+    df_p = source_pog_business.rename(columns={c: f"{c}__pog" for c in overlap})
     valid_c = df_c[df_c["item_key"].notna()].copy()
     invalid_c = df_c[df_c["item_key"].isna()].copy()
     valid_p = df_p[df_p["item_key"].notna()].copy()
@@ -73,20 +139,22 @@ def join_ctkm_pog(df_ctkm, df_pog) -> JoinResult:
     pog_only = _add_display_item_id(
         merged[merged["_merge"] == "right_only"].drop(columns=["_merge"]), prefer_ctkm=False,
     ).reset_index(drop=True)
-    return JoinResult(matched, ctkm_only, pog_only, pog_review.reset_index(drop=True))
+    return JoinResult(matched, ctkm_only, pog_only, pog_review)
+
 
 def apply_dimension_conditions(join_result: JoinResult, dimension_frames: dict) -> JoinResult:
-    """
-    Hien chi gan co 'dimension_check_flag' cho item KHONG xuat hien trong bat ky
-    dimension sheet nao (neu co). KHONG tu dong loc bo - tranh mat du lieu do ap
-    sai dieu kien (chua co co che biet dimension nao rang buoc cho campaign nao).
-    """
-    if not dimension_frames: return join_result
+    """Flag unmatched dimension items without silently filtering rows."""
+    if not dimension_frames:
+        return join_result
     df = join_result.df_matched.copy()
-    if df.empty: return join_result
-    item_dims = {n: _with_item_key(d) for n, d in dimension_frames.items()
-                 if "item_id" in d.columns and d["item_id"].notna().any()}
-    if not item_dims: return join_result
+    if df.empty:
+        return join_result
+    item_dims = {
+        n: _with_item_key(d) for n, d in dimension_frames.items()
+        if "item_id" in d.columns and d["item_id"].notna().any()
+    }
+    if not item_dims:
+        return join_result
     all_dim_items = set()
     for d in item_dims.values():
         all_dim_items |= set(d["item_key"].dropna())

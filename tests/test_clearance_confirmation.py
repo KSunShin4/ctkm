@@ -71,7 +71,7 @@ def test_fefo_actions_keep_clearance_only_items_and_source():
     assert clearance_row["ngay_thao_tem"] == pd.Timestamp("2026-09-01")
 
 
-def test_action_source_keeps_clearance_when_sku_also_exists_in_ctkm():
+def test_action_source_keeps_clearance_when_sku_also_exists_in_ctkm_and_preserves_blank_campaign():
     ctkm = pd.DataFrame([_fact("P1", "Monthly"), _fact("P2", "Monthly")])
     clearance = pd.DataFrame([
         _fact("P2", None),
@@ -81,9 +81,9 @@ def test_action_source_keeps_clearance_when_sku_also_exists_in_ctkm():
     result = main._build_promo_action_source(ctkm, clearance)
 
     assert list(result["item_id"]) == ["P1", "P2", "P2", "p3"]
-    added = result.loc[result["item_id"] == "p3"].iloc[0]
-    assert added["program_source"] == "CLEARANCE"
-    assert added["campaign_name"] == "CLEARANCE"
+    clearance_rows = result[result["program_source"].eq("CLEARANCE")]
+    assert clearance_rows["campaign_name"].isna().all()
+    assert clearance_rows["item_id"].tolist() == ["P2", "p3"]
 
 
 def test_invalid_promotion_period_is_never_put_in_attach_or_remove_list():

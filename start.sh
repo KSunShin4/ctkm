@@ -16,7 +16,8 @@ error() { echo -e "${RED}[✗]${NC} $1"; exit 1; }
 if [ ! -f "$ROOT/.env" ]; then
   cp "$ROOT/.env.example" "$ROOT/.env"
   warn ".env chưa tồn tại — đã tạo từ .env.example"
-  warn "Hãy mở file .env và điền GEMINI_API_KEY trước khi chạy pipeline!"
+  warn "Hãy đổi ADMIN_PASSWORD và ADMIN_SESSION_SECRET trước khi dùng công cụ quản trị."
+  warn "GEMINI_API_KEY chỉ cần khi file không nhận diện được bằng mapping chuẩn/đã lưu."
 fi
 
 # ── Setup (chạy lần đầu) ──────────────────────────────────────────────────────

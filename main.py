@@ -1,584 +1,514 @@
 # -*- coding: utf-8 -*-
-"""
-main.py — Orchestrator pipeline tong hop CTKM + POG.
-
-CACH DUNG (CLI):
-    python main.py --ctkm file_ctkm.xlsx --pog file_pog.xlsx --month 2026-05
-
-CACH DUNG (tu code / frontend):
-    from main import run_pipeline
-    result = run_pipeline(ctkm_filepath=..., pog_filepath=..., target_month="2026-05",
-                          output_path=..., fail_on_month_mismatch=False)
-    print(result.output_filepath, result.warnings, result.summary)
-"""
+"""Public CTKM orchestrator entrypoint with fidelity contract installed eagerly."""
 from __future__ import annotations
-import argparse, importlib.util, sys, types, unicodedata
-from dataclasses import dataclass, field as dc_field
+
+import importlib
+import importlib.util
 from pathlib import Path
+import sys
+
 import pandas as pd
+from openpyxl import load_workbook
 
-_ROOT = Path(__file__).resolve().parent
-_MDIR = _ROOT / "modules"
+from modules.facade_contracts import run_post_facade_hooks
+from modules.item_code_identity import build_transition_identity, canonical_series
 
-try:
-    from dotenv import load_dotenv; load_dotenv(_ROOT / ".env")
-except ImportError: pass
+_CORE_NAME = "_ctkm_main_core"
+_CORE_PATH = Path(__file__).with_name("main_core.py")
 
-def _boot():
-    if "modules" not in sys.modules:
-        pkg = types.ModuleType("modules")
-        pkg.__path__ = [str(_MDIR)]
-        sys.modules["modules"] = pkg
+if _CORE_NAME in sys.modules:
+    _core = sys.modules[_CORE_NAME]
+else:
+    _spec = importlib.util.spec_from_file_location(_CORE_NAME, _CORE_PATH)
+    if _spec is None or _spec.loader is None:
+        raise ImportError(f"Không nạp được CTKM core: {_CORE_PATH}")
+    _core = importlib.util.module_from_spec(_spec)
+    sys.modules[_CORE_NAME] = _core
+    _spec.loader.exec_module(_core)
 
-def _imp(filename, alias):
-    full = f"modules.{alias}"
-    spec = importlib.util.spec_from_file_location(full, _MDIR / filename)
-    mod  = importlib.util.module_from_spec(spec)
-    sys.modules[full] = mod
-    setattr(sys.modules["modules"], alias, mod)
-    spec.loader.exec_module(mod)
-    return mod
+_performance = importlib.import_module("modules.ctkm_performance")
+_performance.install_performance_patches(_core)
 
-_boot()
-cfg  = _imp("config_loader.py",       "config_loader")
-L    = _imp("1_loader.py",            "loader")
-SC   = _imp("2_sheet_classifier.py",  "classifier")
-CM   = _imp("3_column_mapper.py",     "column_mapper")
-MC   = _imp("4_mapping_cache.py",     "mapping_cache")
-NM   = _imp("5_normalizer.py",        "normalizer")
-TF   = _imp("6_time_filter.py",       "time_filter")
-JN   = _imp("7_joiner.py",            "joiner")
-RC   = _imp("8_reconciler.py",        "reconciler")
-EX   = _imp("9_exporter.py",          "exporter")
-
-SCHEMA = cfg.CANONICAL_SCHEMA
-
-@dataclass
-class PipelineResult:
-    output_filepath: str
-    warnings: list = dc_field(default_factory=list)
-    summary:  dict = dc_field(default_factory=dict)
-
-def list_ctkm_sheet_names(wb_ctkm):
-    return [name for name, sheet in wb_ctkm.sheets.items() if not sheet.df.empty]
-
-def _select_primary_ctkm_sheet(wb_ctkm, selected_sheet_name: str | None = None):
-    """
-    CTKM workbook thuong co 1 sheet tong hop chinh va nhieu sheet phu.
-    Neu nguoi dung da chon sheet cu the thi dung dung sheet do.
-    Neu khong co chon va chi co 1 sheet co du lieu, tu dong lay sheet do.
-    Neu co nhieu sheet, bat nguoi dung chon ro rang thay vi ngam lay ngau nhien.
-    """
-    preferred_names = [
-        "tổng hợp ctkm update",
-        "tong hop ctkm update",
-        "tổng hợp ctkm",
-        "tong hop ctkm",
-        "sheet1",
-    ]
-
-    non_empty = [(name, sheet) for name, sheet in wb_ctkm.sheets.items() if not sheet.df.empty]
-    if not non_empty:
-        raise ValueError("Khong tim thay sheet CTKM nao co du lieu trong file CTKM.")
-
-    if selected_sheet_name:
-        wanted = selected_sheet_name.strip().lower()
-        for name, sheet in non_empty:
-            if name.strip().lower() == wanted:
-                return name, sheet
-        available = ", ".join(name for name, _ in non_empty)
-        raise ValueError(
-            f"Khong tim thay sheet CTKM '{selected_sheet_name}'. Sheet co san: {available}"
-        )
-
-    if len(non_empty) == 1:
-        return non_empty[0]
-
-    for preferred in preferred_names:
-        for name, sheet in non_empty:
-            if preferred in name.strip().lower():
-                return name, sheet
-
-    available = ", ".join(name for name, _ in non_empty)
-    raise ValueError(
-        "Workbook CTKM co nhieu sheet co du lieu. Hay chon 1 sheet tong hop de tiep tuc: "
-        f"{available}"
-    )
-
-def _get_or_map(sheet_name, df, schema_section, mapping_logs):
-    cols = list(df.columns)
-    prompt_version = cfg.GEMINI_CONFIG.get("prompt_version", "column-mapping-v2")
-    cached = MC.get_cached_mapping(cols, schema_section, prompt_version)
-    if cached:
-        cached["source"] = "cache"
-        entry = {**cached, "sheet_name": sheet_name}
-        mapping_logs.append(entry)
-        return cached["mapping"]
-    result = CM.map_columns_with_gemini(sheet_name, df, schema_section)
-    rdict  = MC.mapping_result_to_dict_safe(result)
-    rdict["source"] = "gemini"
-    MC.save_mapping(cols, MC.mapping_result_to_dict_safe(result), schema_section, prompt_version)
-    mapping_logs.append({**rdict, "sheet_name": sheet_name})
-    return result.mapping
-
-def _validate_manual_mapping(mapping, df, schema_section):
-    if not isinstance(mapping, dict):
-        raise ValueError("Mapping thu cong phai la JSON object.")
-    source_columns = {str(col) for col in df.columns}
-    allowed_fields = {
-        name for name, meta in schema_section.items() if not meta.get("auto_filled", False)
+# ``main.py`` is loaded as ``ctkm_main`` by the API and may also be imported as
+# ``main`` by tests/CLI tooling in the same process. Keep one immutable baseline
+# after the performance contract so repeated facade execution replaces wrappers
+# instead of wrapping wrappers from a previous module name/import order.
+_baseline = getattr(_core, "_ctkm_main_facade_baseline", None)
+if not isinstance(_baseline, dict):
+    _baseline = {
+        "infer_standard_fact_mapping": _core._infer_standard_fact_mapping,
+        "get_or_map": _core._get_or_map,
+        "process": _core._process,
+        "build_confirmation": _core._build_ctkm_clearance_confirmation,
+        "export_final_report": _core.EX.export_final_report,
     }
-    unknown_sources = sorted(set(mapping) - source_columns)
-    invalid_targets = sorted({target for target in mapping.values() if target not in allowed_fields})
-    if unknown_sources:
-        raise ValueError(f"Mapping co cot nguon khong ton tai: {unknown_sources}")
-    if invalid_targets:
-        raise ValueError(f"Mapping co canonical field khong hop le: {invalid_targets}")
-    return dict(mapping)
+    _core._ctkm_main_facade_baseline = _baseline
 
-def _build_manual_mapping_result(sheet_name, mapping, df, schema_section):
-    mapping = _validate_manual_mapping(mapping, df, schema_section)
-    cols = list(df.columns)
-    confidence = {col: 1.0 for col in mapping.keys()}
-    unmapped = [col for col in cols if col not in mapping]
-    return CM.ColumnMappingResult(
-        sheet_name=sheet_name,
-        mapping=mapping,
-        confidence=confidence,
-        unmapped=unmapped,
-        low_confidence_fields=[],
-        raw_response="manual-override",
-        source="manual",
+_original_infer_standard_fact_mapping = _baseline["infer_standard_fact_mapping"]
+_original_get_or_map = _baseline["get_or_map"]
+_original_process = _baseline["process"]
+_original_build_confirmation = _baseline["build_confirmation"]
+
+
+def _infer_standard_fact_mapping(df):
+    mapping = _original_infer_standard_fact_mapping(df)
+
+    if not mapping:
+        normalized_columns = {
+            _core._normalized_header(column): column for column in df.columns
+        }
+        campaign_detail_source = normalized_columns.get("campaign detail")
+        if "campaign" not in normalized_columns and campaign_detail_source is not None:
+            inference_frame = df.rename(columns={campaign_detail_source: "Campaign"})
+            mapping = _original_infer_standard_fact_mapping(inference_frame)
+            if "Campaign" in mapping:
+                campaign_target = mapping.pop("Campaign")
+                mapping[campaign_detail_source] = campaign_target
+
+    if not mapping:
+        return mapping
+    return _performance.preserve_both_channel_mappings(
+        mapping, df, normalize_header=_core._normalized_header,
     )
 
-def preview_mapping(sheet_name, df, schema_section, mapping_logs=None):
-    local_logs = [] if mapping_logs is None else mapping_logs
-    result_mapping = _get_or_map(sheet_name, df, schema_section, local_logs)
-    return result_mapping, local_logs
 
-def _normalized_header(value) -> str:
-    text = unicodedata.normalize("NFD", str(value).strip().lower())
-    return " ".join("".join(ch for ch in text if not unicodedata.combining(ch)).split())
+def _infer_standard_pog_mapping(df):
+    """Map the stable Pharmacity POG export headers without Gemini."""
+    normalized_columns = {}
+    for column in df.columns:
+        normalized_columns.setdefault(_core._normalized_header(column), column)
 
-def _ensure_channel_mapping(mapping: dict, df: pd.DataFrame) -> dict:
-    """Nhận diện chắc chắn cột kênh khi mapping tay/Gemini bỏ sót."""
-    mapping = dict(mapping)
-    # File CTKM công ty có thể có đồng thời ``KEY Channel`` và
-    # ``Channel``. KEY Channel mới là phạm vi áp dụng (ALL/OFFLINE/ONLINE),
-    # còn Channel có thể chứa nhóm chương trình như COMBO ĐI SINH.
-    # Vì vậy cột có nghĩa “áp dụng” phải được ưu tiên; tên
-    # ``Channel`` trần chỉ là phương án cuối cùng.
-    aliases = ("kenh ap dung", "key channel", "sales channel", "kenh ban", "channel")
-    normalized_columns = {_normalized_header(column): column for column in df.columns}
-    for alias in aliases:
-        if alias in normalized_columns:
-            preferred_source = normalized_columns[alias]
-            # Ưu tiên Kênh áp dụng/Channel thay cho Sub channel nếu AI map nhầm.
-            mapping = {source: target for source, target in mapping.items() if target != "channel"}
-            mapping[preferred_source] = "channel"
-            break
-    return mapping
-
-def _ensure_promo_uom_mapping(mapping: dict, df: pd.DataFrame) -> dict:
-    """Luôn lấy đơn vị thuốc từ cột Promo UoM của file CTKM công ty."""
-    mapping = dict(mapping)
-    aliases = ("promo uom", "promotion uom", "promo unit", "don vi ctkm", "dvt ctkm")
-    normalized_columns = {_normalized_header(column): column for column in df.columns}
-    for alias in aliases:
-        if alias in normalized_columns:
-            preferred_source = normalized_columns[alias]
-            mapping = {source: target for source, target in mapping.items() if target != "promo_uom"}
-            mapping[preferred_source] = "promo_uom"
-            break
-    return mapping
-
-def _infer_standard_fact_mapping(df: pd.DataFrame) -> dict:
-    """Map cac cot CTKM/Clearance chuan cua cong ty ma khong can goi AI."""
     aliases = {
-        "item code": "item_id", "item code 2": "item_id", "itemid": "item_id",
-        "product name": "item_name", "itemname": "item_name",
-        "promo uom": "promo_uom", "campaign": "campaign_name",
-        "scheme detail for customer": "campaign_detail",
-        "from": "promo_from", "to": "promo_to",
-        "kenh ap dung": "channel", "key channel": "channel", "channel": "channel",
-        "normal": "normal_price", "promo": "promo_price",
-        "product type": "product_type",
+        "item_id": ("itemid", "item id", "item code"),
+        "item_name": ("itemname", "item name", "product name"),
+        "store_id": ("storeid", "store id"),
+        "pog_code": ("pogcode", "pog code"),
+        "location_id": ("locationid", "location id"),
+        "facing": ("totalfacing", "total facing", "facing"),
     }
     mapping = {}
-    claimed_targets = set()
-    for column in df.columns:
-        target = aliases.get(_normalized_header(column))
-        if target and target not in claimed_targets:
-            mapping[column] = target
-            claimed_targets.add(target)
-    required = {"item_id", "campaign_name", "promo_from", "promo_to"}
-    return mapping if required.issubset(claimed_targets) else {}
+    for target, target_aliases in aliases.items():
+        for alias in target_aliases:
+            source = normalized_columns.get(alias)
+            if source is not None:
+                mapping[source] = target
+                break
 
-def _build_ctkm_clearance_confirmation(df_ctkm: pd.DataFrame,
-                                       df_clearance: pd.DataFrame | None) -> pd.DataFrame:
-    """Tao danh sach de nguoi dung xac nhan CTKM va Clearance trong cung mot sheet."""
-    columns = [
-        "item_id", "item_key", "item_name", "promo_uom", "campaign_name", "campaign_detail",
-        "promo_from", "promo_to", "channel", "normal_price", "promo_price",
-        "product_type", "source_sheet",
-    ]
+    if not {"item_id", "store_id"}.issubset(set(mapping.values())):
+        return {}
+    return mapping
 
-    def tagged(frame: pd.DataFrame, source: str) -> pd.DataFrame:
-        result = frame.copy()
-        existing_row_ids = (
-            result["source_row_id"].copy()
-            if "source_row_id" in result.columns
-            else pd.Series(pd.NA, index=result.index)
-        )
-        for column in columns:
-            if column not in result.columns:
-                result[column] = pd.NA
-        result["item_key"] = result["item_id"].apply(NM.make_item_key)
-        result = result.loc[:, columns]
-        result.insert(0, "nguon_chuong_trinh", source)
-        row_ids = []
-        for position, (sheet, existing) in enumerate(
-            zip(result["source_sheet"], existing_row_ids), start=2,
-        ):
-            fallback = f"{'Sheet1' if pd.isna(sheet) or not str(sheet).strip() else str(sheet)}:{position}"
-            raw = fallback if pd.isna(existing) or not str(existing).strip() else str(existing).strip()
-            row_ids.append(raw if raw.startswith(f"{source}:") else f"{source}:{raw}")
-        result["source_row_id"] = row_ids
+
+def _mapping_result(sheet_name, mapping, df, schema_section, source):
+    result = _core._build_manual_mapping_result(
+        sheet_name, mapping, df, schema_section
+    )
+    entry = _core.MC.mapping_result_to_dict_safe(result)
+    entry["source"] = source
+    return result, {**entry, "sheet_name": sheet_name}
+
+
+def _get_or_map(sheet_name, df, schema_section, mapping_logs):
+    is_fact_schema = (
+        "campaign_name" in schema_section
+        and "promo_from" in schema_section
+        and "promo_to" in schema_section
+    )
+    if is_fact_schema:
+        mapping = _infer_standard_fact_mapping(df)
+        if mapping:
+            result, log_entry = _mapping_result(
+                sheet_name, mapping, df, schema_section, "standard-fact"
+            )
+            mapping_logs.append(log_entry)
+            return result.mapping
+
+    is_pog_schema = (
+        "store_id" in schema_section
+        and "pog_code" in schema_section
+        and "campaign_name" not in schema_section
+    )
+    if is_pog_schema:
+        mapping = _infer_standard_pog_mapping(df)
+        if mapping:
+            result, log_entry = _mapping_result(
+                sheet_name, mapping, df, schema_section, "standard-pog"
+            )
+            mapping_logs.append(log_entry)
+            return result.mapping
+
+    return _original_get_or_map(sheet_name, df, schema_section, mapping_logs)
+
+
+def _blank_fact_value(value):
+    if value is None:
+        return True
+    try:
+        if pd.isna(value):
+            return True
+    except (TypeError, ValueError):
+        pass
+    return isinstance(value, str) and not value.strip()
+
+
+def _fact_control_kind(row) -> str | None:
+    """Recognize only unmistakable subtotal/footer rows from optional fact tabs."""
+    if not _blank_fact_value(row.get("item_key")) or not _blank_fact_value(row.get("item_id")):
+        return None
+
+    business_anchors = (
+        "item_name", "promo_uom", "promo_from", "promo_to",
+        "key_channel", "channel", "campaign_detail", "product_type",
+    )
+    if any(not _blank_fact_value(row.get(column)) for column in business_anchors):
+        return None
+
+    markers = []
+    for value in row.values:
+        if not isinstance(value, str):
+            continue
+        text = " ".join(value.strip().lower().split())
+        if text:
+            markers.append(text)
+    if any(text in {"grand total", "total", "tổng", "tổng cộng"} for text in markers):
+        return "grand_total"
+    if any(text.endswith(" total") for text in markers):
+        return "subtotal"
+    return None
+
+
+def _separate_fact_control_rows(df):
+    if df is None or df.empty:
+        return df, pd.DataFrame(columns=[] if df is None else df.columns)
+    kinds = df.apply(_fact_control_kind, axis=1)
+    control_mask = kinds.notna()
+    business = df.loc[~control_mask].copy().reset_index(drop=True)
+    metadata = df.loc[control_mask].copy().reset_index(drop=True)
+    if not metadata.empty:
+        metadata["fact_control_kind"] = kinds.loc[control_mask].to_list()
+    return business, metadata
+
+
+def _process(*args, **kwargs):
+    """Process mapped facts while keeping subtotal rows outside business logic."""
+    result = _original_process(*args, **kwargs)
+    is_fact = kwargs.get("is_fact")
+    if is_fact is None and len(args) > 4:
+        is_fact = args[4]
+    if not is_fact or result is None or result.empty:
         return result
 
-    ctkm = tagged(df_ctkm, "CTKM")
-    if df_clearance is None or df_clearance.empty:
-        result = ctkm
-        result.insert(1, "trang_thai_doi_chieu", "Chỉ CTKM")
-    else:
-        clearance = tagged(df_clearance, "CLEARANCE")
-        ctkm_items = set(ctkm["item_key"].dropna())
-        clearance_items = set(clearance["item_key"].dropna())
-        both = ctkm_items & clearance_items
-        result = pd.concat([ctkm, clearance], ignore_index=True)
-        item_keys = result["item_key"]
-        result.insert(1, "trang_thai_doi_chieu", [
-            "Có cả CTKM và Clearance" if item in both
-            else ("Chỉ CTKM" if source == "CTKM" else "Chỉ Clearance")
-            for item, source in zip(item_keys, result["nguon_chuong_trinh"])
-        ])
+    business, metadata = _separate_fact_control_rows(result)
+    if metadata.empty:
+        return business
 
-    def time_relation(row):
-        both_items = both if df_clearance is not None and not df_clearance.empty else set()
-        item = row.get("item_key")
-        if not item or item not in both_items:
-            return "Không có nguồn còn lại để đối chiếu"
-        other_source = "CLEARANCE" if row["nguon_chuong_trinh"] == "CTKM" else "CTKM"
-        candidates = result[
-            result["item_key"].eq(item)
-            & result["nguon_chuong_trinh"].eq(other_source)
-        ]
-        row_from = pd.to_datetime(row.get("promo_from"), errors="coerce")
-        row_to = pd.to_datetime(row.get("promo_to"), errors="coerce")
-        if pd.isna(row_from) or pd.isna(row_to):
-            return "Thiếu ngày - cần xác nhận"
-        relation = "Khác thời gian"
-        for _, candidate in candidates.iterrows():
-            other_from = pd.to_datetime(candidate.get("promo_from"), errors="coerce")
-            other_to = pd.to_datetime(candidate.get("promo_to"), errors="coerce")
-            if pd.isna(other_from) or pd.isna(other_to):
-                continue
-            if row_from == other_from and row_to == other_to:
-                return "Trùng thời gian - cần xác nhận"
-            if row_from <= other_to and other_from <= row_to:
-                relation = "Chồng lấn thời gian - cần xác nhận"
-        return relation
+    source_prefix = kwargs.get("source_prefix")
+    if source_prefix is None and len(args) > 9:
+        source_prefix = args[9]
+    if source_prefix:
+        metadata["program_source"] = str(source_prefix).upper()
 
-    result["quan_he_thoi_gian"] = result.apply(time_relation, axis=1)
-
-    result.insert(2, "xac_nhan_ap_dung", "Chưa xác nhận")
-    result.insert(3, "ghi_chu_xac_nhan", "")
-    return result.sort_values(
-        ["trang_thai_doi_chieu", "item_id", "nguon_chuong_trinh", "promo_from"],
-        kind="stable", na_position="last",
-    ).reset_index(drop=True)
-
-
-def _build_promo_action_source(df_ctkm: pd.DataFrame,
-                               df_clearance: pd.DataFrame | None) -> pd.DataFrame:
-    """Giữ đầy đủ CTKM và Clearance; không loại dữ liệu chỉ vì trùng SKU."""
-    ctkm = df_ctkm.copy()
-    ctkm["program_source"] = "CTKM"
-    if "source_row_id" in ctkm.columns:
-        ctkm["source_row_id"] = ctkm["source_row_id"].map(
-            lambda value: str(value) if str(value).startswith("CTKM:") else f"CTKM:{value}"
-        )
-    if df_clearance is None or df_clearance.empty:
-        return ctkm
-
-    clearance = df_clearance.copy()
-    clearance["program_source"] = "CLEARANCE"
-    if "source_row_id" in clearance.columns:
-        clearance["source_row_id"] = clearance["source_row_id"].map(
-            lambda value: str(value) if str(value).startswith("CLEARANCE:") else f"CLEARANCE:{value}"
-        )
-    if "campaign_name" not in clearance.columns:
-        clearance["campaign_name"] = "CLEARANCE"
-    else:
-        blank_campaign = (
-            clearance["campaign_name"].isna()
-            | clearance["campaign_name"].astype(str).str.strip().eq("")
-        )
-        clearance.loc[blank_campaign, "campaign_name"] = "CLEARANCE"
-    return pd.concat([ctkm, clearance], ignore_index=True)
-
-def _process(sheet_name, df, schema_section, mapping_logs, is_fact, all_warnings,
-             mapping_override=None, source_excel_rows=None, source_prefix=None):
-    df = df.copy()
-    excel_rows = list(source_excel_rows or range(2, len(df) + 2))
-    if len(excel_rows) != len(df):
-        raise ValueError(f"Không khớp lineage dòng Excel cho sheet '{sheet_name}'.")
-    if mapping_override:
-        result = _build_manual_mapping_result(sheet_name, mapping_override, df, schema_section)
-        mapping_logs.append({**MC.mapping_result_to_dict_safe(result), "sheet_name": sheet_name})
-        mapping = result.mapping
-    else:
-        mapping = _get_or_map(sheet_name, df, schema_section, mapping_logs)
-    if is_fact:
-        mapping = _ensure_channel_mapping(mapping, df)
-        mapping = _ensure_promo_uom_mapping(mapping, df)
-    df = NM.apply_mapping(df, mapping)
-    df["source_excel_row"] = excel_rows
-    source_label = f"{source_prefix}:" if source_prefix else ""
-    df["source_row_id"] = [f"{source_label}{sheet_name}:{row}" for row in excel_rows]
-    df = NM.clean_values(df)
-    if is_fact:
-        df, unpivot_warns = NM.unpivot_multi_promo(df)
-        for w in unpivot_warns:
-            all_warnings.append(f"[Sheet '{sheet_name}'] {w}")
-    df = NM.attach_source_sheet(df, sheet_name)
-    return df
-
-def run_pipeline(ctkm_filepath, pog_filepath, target_month, output_path,
-                 fail_on_month_mismatch=False, ctkm_sheet_name=None,
-                 ctkm_mapping_override=None, pog_mapping_override=None,
-                 selected_output_columns=None, pog_sheet_name=None,
-                 clearance_filepath=None, clearance_sheet_name=None,
-                 clearance_mapping_override=None,
-                 business_date=None) -> PipelineResult:
-    warnings, mapping_logs = [], []
-
-    # --- Buoc 1: Load ---
-    wb_ctkm = L.load_workbook_raw(
-        ctkm_filepath, is_pog_file=False,
-        selected_sheet_names=[ctkm_sheet_name] if ctkm_sheet_name else None,
-    )
-    wb_pog  = L.load_workbook_raw(
-        pog_filepath, is_pog_file=True,
-        selected_sheet_names=[pog_sheet_name] if pog_sheet_name else None,
-    )
-    if not wb_pog.sheets:
-        raise ValueError(f"File POG '{pog_filepath}' khong co sheet nao co du lieu.")
-    pog_snapshot_month = wb_pog.pog_snapshot_month
-
-    # --- Buoc 2-4: Chi xu ly 1 sheet CTKM tong hop chinh ---
-    primary_ctkm_name, primary_ctkm_sheet = _select_primary_ctkm_sheet(wb_ctkm, ctkm_sheet_name)
-    if len(list_ctkm_sheet_names(wb_ctkm)) > 1:
+    business.attrs["fact_metadata"] = metadata
+    warnings = kwargs.get("all_warnings")
+    if warnings is None and len(args) > 5:
+        warnings = args[5]
+    sheet_name = kwargs.get("sheet_name")
+    if sheet_name is None and args:
+        sheet_name = args[0]
+    if isinstance(warnings, list):
         warnings.append(
-            f"Chi xu ly sheet CTKM tong hop chinh '{primary_ctkm_name}', bo qua cac sheet phu con lai."
+            f"[Sheet '{sheet_name}'] Tách {len(metadata)} dòng subtotal/control khỏi xử lý nghiệp vụ; "
+            "giữ nguyên trong sheet ẩn 'KM metadata'."
         )
-    df_ctkm_all = _process(
-        primary_ctkm_name,
-        primary_ctkm_sheet.df,
-        SCHEMA["fact_fields"],
-        mapping_logs,
-        True,
-        warnings,
-        mapping_override=ctkm_mapping_override,
-        source_excel_rows=primary_ctkm_sheet.source_excel_rows,
-        source_prefix="CTKM",
-    )
-    df_ctkm_all["program_source"] = "CTKM"
+    return business
 
-    df_clearance_all = None
-    if clearance_filepath:
-        wb_clearance = L.load_workbook_raw(
-            clearance_filepath, is_pog_file=False,
-            selected_sheet_names=[clearance_sheet_name] if clearance_sheet_name else None,
-        )
-        clearance_name, clearance_sheet = _select_primary_ctkm_sheet(
-            wb_clearance, clearance_sheet_name
-        )
-        clearance_override = clearance_mapping_override or _infer_standard_fact_mapping(
-            clearance_sheet.df
-        )
-        df_clearance_all = _process(
-            clearance_name,
-            clearance_sheet.df,
-            SCHEMA["fact_fields"],
-            mapping_logs,
-            True,
-            warnings,
-            mapping_override=clearance_override or None,
-            source_excel_rows=clearance_sheet.source_excel_rows,
-            source_prefix="CLEARANCE",
-        )
-        df_clearance_all["program_source"] = "CLEARANCE"
 
-    dim_frames = {}
+def _build_ctkm_clearance_confirmation(df_ctkm, df_clearance):
+    metadata_frames = []
+    for frame in (df_ctkm, df_clearance):
+        if frame is None:
+            continue
+        metadata = getattr(frame, "attrs", {}).get("fact_metadata")
+        if metadata is not None and not metadata.empty:
+            metadata_frames.append(metadata.copy())
 
-    # --- Chuan hoa POG ---
-    pog_sn  = pog_sheet_name or next(iter(wb_pog.sheets))
-    df_pog  = _process(
-        pog_sn,
-        wb_pog.sheets[pog_sn].df,
-        SCHEMA["pog_fields"],
-        mapping_logs,
-        False,
-        warnings,
-        mapping_override=pog_mapping_override,
-        source_excel_rows=wb_pog.sheets[pog_sn].source_excel_rows,
-        source_prefix="POG",
-    )
-    df_pog  = NM.attach_pog_snapshot_month(df_pog, pog_snapshot_month)
+    result = _original_build_confirmation(df_ctkm, df_clearance)
+    if metadata_frames:
+        result.attrs["fact_metadata"] = pd.concat(metadata_frames, ignore_index=True, sort=False)
+    return result
 
-    # Danh sach thao tac tem phai gom ca Clearance, ke ca cac ma P khong co
-    # trong file CTKM Monthly. Giu program_source de nguoi dung biet nguon.
-    df_promo_for_actions = _build_promo_action_source(
-        df_ctkm_all, df_clearance_all
+
+def _comparison_identity(frame):
+    return build_transition_identity(
+        frame,
+        key_func=_core.NM.make_item_key,
+        is_sku=_core.RC.is_sku,
     )
 
-    # --- Buoc 8a: Quet overlap va tao thao tac tem tren CTKM + Clearance ---
-    overlap_warns = RC.detect_campaign_time_overlaps(df_promo_for_actions)
-    df_fefo_actions = RC.build_fefo_action_frame(
-        df_promo_for_actions, target_month, df_pog,
-        business_date=business_date, overlap_warnings=overlap_warns,
+
+def _comparison_item_series(frame, identity):
+    return canonical_series(
+        frame, identity, key_func=_core.NM.make_item_key,
     )
 
-    # --- Buoc 6: Kiem tra lech thang + loc ---
-    alignment = TF.check_snapshot_alignment(target_month, pog_snapshot_month)
-    if not alignment.is_aligned:
-        if fail_on_month_mismatch:
-            raise ValueError(alignment.warning_message)
-        warnings.append(alignment.warning_message)
-    _df_ctkm_relevant, df_ctkm_strict = TF.filter_ctkm_by_month(df_ctkm_all, target_month)
-    if df_clearance_all is not None:
-        _df_clearance_relevant, df_clearance_strict = TF.filter_ctkm_by_month(
-            df_clearance_all, target_month
-        )
-    else:
-        df_clearance_strict = None
-    df_confirmation = _build_ctkm_clearance_confirmation(
-        df_ctkm_all, df_clearance_all
-    )
 
-    # --- Buoc 7: Join ---
-    join_result = JN.join_ctkm_pog(df_ctkm_strict, df_pog)
-    if dim_frames:
-        join_result = JN.apply_dimension_conditions(join_result, dim_frames)
+def _frame_item_keys(frame, identity=None):
+    """Return comparison product keys without changing source item values."""
+    if frame is None or frame.empty:
+        return set()
+    identity = identity or _comparison_identity(frame)
+    series = _comparison_item_series(frame, identity)
+    return {value for value in series.dropna() if str(value).strip()}
 
-    # --- Buoc 8b: Tong hop so lieu ---
-    report = RC.build_reconciliation_report(
-        join_result.df_matched, join_result.df_ctkm_only, join_result.df_pog_only, overlap_warns)
 
-    if "in_report_scope" in df_fefo_actions.columns:
-        actions_in_scope = df_fefo_actions[df_fefo_actions["in_report_scope"].fillna(False)].copy()
-    else:
-        actions_in_scope = df_fefo_actions
-    location_issue_mask = ~actions_in_scope.get(
+def _location_issue_rows(df_fefo_actions):
+    if df_fefo_actions is None:
+        return pd.DataFrame()
+    actions = df_fefo_actions.copy()
+    if "in_report_scope" in actions.columns:
+        actions = actions[actions["in_report_scope"].fillna(False).astype(bool)].copy()
+    if actions.empty:
+        return actions
+    completeness = actions.get(
         "location_completeness",
-        actions_in_scope.get("location_status", pd.Series("Đủ vị trí", index=actions_in_scope.index)),
-    ).eq("Đủ vị trí")
-    location_issues = actions_in_scope[location_issue_mask]
-    location_review_mask = actions_in_scope.get(
-        "location_needs_review", location_issue_mask,
-    ).fillna(False).astype(bool)
-    location_reviews = actions_in_scope[location_review_mask]
-    effective_business_date = (
-        df_fefo_actions["business_date"].dropna().iloc[0]
-        if "business_date" in df_fefo_actions.columns and not df_fefo_actions["business_date"].dropna().empty
-        else pd.to_datetime(business_date).normalize()
-        if business_date is not None
-        else pd.Timestamp.now(tz="Asia/Ho_Chi_Minh").tz_localize(None).normalize()
+        actions.get("location_status", pd.Series("Đủ vị trí", index=actions.index)),
     )
-    unique_location_key = "item_key" if "item_key" in location_issues.columns else "item_id"
-
-    summary = {
-        "Thang bao cao":                    target_month,
-        "Ngay nghiep vu":                   effective_business_date,
-        "Thang snapshot POG":               pog_snapshot_month or "(khong xac dinh duoc)",
-        "So dong khop (Matched)":           report.matched_count,
-        "So item duy nhat khop":            report.matched_unique_items,
-        "So dong CTKM thieu vi tri ke":     len(location_issues),
-        "So item CTKM thieu vi tri ke":     location_issues[unique_location_key].nunique() if unique_location_key in location_issues else 0,
-        "  Trong do CTKM theo hoa don":     report.non_sku_ctkm_count,
-        "So dong CTKM thieu ma san pham":   report.missing_item_ctkm_count,
-        "So dong CTKM sai dinh dang ma":    report.invalid_item_ctkm_count,
-        "So dong POG khong co CTKM phu hop": report.pog_only_count,
-        "So item POG khong co CTKM phu hop": report.pog_only_unique_items,
-        "So canh bao trung thoi gian":      len({warning.item_id for warning in overlap_warns}),
-        "So dong Clearance":                0 if df_clearance_strict is None else len(df_clearance_strict),
-        "So item trung CTKM va Clearance":  0 if df_clearance_strict is None else len(
-            set(df_ctkm_strict["item_key"].dropna())
-            & set(df_clearance_strict["item_key"].dropna())
-        ),
-        "So dong tem tu Clearance":         int(
-            (actions_in_scope.get("program_source", pd.Series(dtype=str)) == "CLEARANCE").sum()
-        ),
-        "So dong cho gan":                  int((actions_in_scope.get("scheduled_action", pd.Series(dtype=str)) == "chờ gắn tem").sum()),
-        "So dong can review":               int((actions_in_scope.get("scheduled_action", pd.Series(dtype=str)) == "review").sum()),
-        "So dong can kiem tra vi tri":       len(location_reviews),
-    }
-
-    # --- Buoc 9: Export ---
-    final = EX.export_final_report(
-        output_path=output_path,
-        df_matched=join_result.df_matched,
-        df_ctkm_only=join_result.df_ctkm_only,
-        df_pog_only=join_result.df_pog_only,
-        overlap_warnings=overlap_warns,
-        mapping_logs=mapping_logs,
-        reconciliation_summary=summary,
-        snapshot_alignment_warning=alignment.warning_message,
-        selected_output_columns=selected_output_columns,
-        df_fefo_actions=df_fefo_actions,
-        df_ctkm_clearance_confirmation=df_confirmation,
-        df_pog_review=join_result.df_pog_review,
-    )
-    return PipelineResult(final, warnings, summary)
+    return actions[~completeness.eq("Đủ vị trí")].copy()
 
 
-def _cli():
-    p = argparse.ArgumentParser(description="Tong hop CTKM + POG theo thang.")
-    p.add_argument("--ctkm",         required=True)
-    p.add_argument("--pog",          required=True)
-    p.add_argument("--month",        required=True, help="YYYY-MM, vd 2026-05")
-    p.add_argument("--ctkm-sheet",    default=None, help="Ten sheet CTKM tong hop can xu ly")
-    p.add_argument("--clearance",      default=None, help="File Clearance tuy chon")
-    p.add_argument("--clearance-sheet", default=None, help="Ten sheet Clearance can xu ly")
-    p.add_argument("--output",       default=None)
-    p.add_argument("--strict-month", action="store_true",
-                   help="Dung pipeline ngay neu lech thang POG/CTKM (mac dinh: chi canh bao)")
-    p.add_argument("--business-date", default=None,
-                   help="Ngay nghiep vu YYYY-MM-DD (mac dinh: ngay hien tai theo gio VN)")
-    args = p.parse_args()
-    if not args.ctkm_sheet:
-        wb_ctkm = L.load_workbook_raw(args.ctkm, is_pog_file=False)
-        sheet_names = list_ctkm_sheet_names(wb_ctkm)
-        if len(sheet_names) > 1:
-            print("CTKM workbook co nhieu sheet co du lieu:")
-            for idx, name in enumerate(sheet_names, start=1):
-                print(f"  {idx}. {name}")
-            choice = input("Chon sheet can tong hop (nhap so thu tu hoac ten sheet): ").strip()
-            if choice.isdigit() and 1 <= int(choice) <= len(sheet_names):
-                args.ctkm_sheet = sheet_names[int(choice) - 1]
+def _align_location_summary_with_program_sources(summary, df_fefo_actions):
+    """Align location issue counts with product-transition comparison identity."""
+    if not isinstance(summary, dict) or df_fefo_actions is None:
+        return summary
+
+    identity = _comparison_identity(df_fefo_actions)
+    issues = _location_issue_rows(df_fefo_actions)
+    issue_keys = _comparison_item_series(issues, identity)
+    sources = issues.get("program_source", pd.Series(index=issues.index, dtype=object))
+    ctkm_mask = sources.eq("CTKM")
+    clearance_mask = sources.eq("CLEARANCE")
+
+    total_rows = len(issues)
+    total_items = issue_keys.nunique(dropna=True)
+    ctkm_items = issue_keys[ctkm_mask].nunique(dropna=True)
+    clearance_items = issue_keys[clearance_mask].nunique(dropna=True)
+
+    summary["So dong KM thieu vi tri POG"] = total_rows
+    summary["So item KM thieu vi tri POG"] = total_items
+    summary["So dong CTKM Monthly thieu vi tri POG"] = int(ctkm_mask.sum())
+    summary["So item CTKM Monthly thieu vi tri POG"] = ctkm_items
+    summary["So dong Clearance thieu vi tri POG"] = int(clearance_mask.sum())
+    summary["So item Clearance thieu vi tri POG"] = clearance_items
+
+    if "So dong CTKM thieu vi tri ke" in summary:
+        summary["So dong CTKM thieu vi tri ke"] = total_rows
+    if "So item CTKM thieu vi tri ke" in summary:
+        summary["So item CTKM thieu vi tri ke"] = total_items
+    return summary
+
+
+def _align_cross_source_summary(summary, df_fefo_actions):
+    """Count CTKM/Clearance shared products across safe source/new-code pairs."""
+    if not isinstance(summary, dict) or df_fefo_actions is None:
+        return summary
+    actions = df_fefo_actions.copy()
+    if "in_report_scope" in actions.columns:
+        actions = actions[actions["in_report_scope"].fillna(False).astype(bool)].copy()
+    if actions.empty:
+        if "So item trung CTKM va Clearance" in summary:
+            summary["So item trung CTKM va Clearance"] = 0
+        return summary
+
+    identity = _comparison_identity(actions)
+    keys = _comparison_item_series(actions, identity)
+    sources = actions.get("program_source", pd.Series(index=actions.index, dtype=object))
+    ctkm_keys = set(keys[sources.eq("CTKM")].dropna())
+    clearance_keys = set(keys[sources.eq("CLEARANCE")].dropna())
+    if "So item trung CTKM va Clearance" in summary:
+        summary["So item trung CTKM va Clearance"] = len(ctkm_keys & clearance_keys)
+    return summary
+
+
+def _align_matched_unique_summary(summary, df_matched, df_fefo_actions):
+    if not isinstance(summary, dict) or "So item duy nhat khop" not in summary:
+        return summary
+    identity = _comparison_identity(df_fefo_actions)
+    summary["So item duy nhat khop"] = len(_frame_item_keys(df_matched, identity))
+    return summary
+
+
+def _align_pog_promotion_coverage_summary(
+    summary, df_matched, df_pog_only, df_fefo_actions
+):
+    """Separate Monthly reconciliation from all-promotion POG coverage.
+
+    Product sets are compared through safe source/new-code identity so a POG row
+    already migrated to New P code is not reported as promotion-less merely
+    because the operational action intentionally retains the source item_id.
+    """
+    if not isinstance(summary, dict):
+        return summary
+
+    identity = _comparison_identity(df_fefo_actions)
+    matched_keys = _frame_item_keys(df_matched, identity)
+    monthly_pog_only_keys = _frame_item_keys(df_pog_only, identity)
+    all_pog_keys = matched_keys | monthly_pog_only_keys
+
+    actions = df_fefo_actions.copy() if df_fefo_actions is not None else pd.DataFrame()
+    if not actions.empty and "in_report_scope" in actions.columns:
+        actions = actions[actions["in_report_scope"].fillna(False).astype(bool)].copy()
+    km_keys = _frame_item_keys(actions, identity)
+
+    missing_km_keys = all_pog_keys - km_keys
+    covered_km_keys = all_pog_keys & km_keys
+
+    missing_rows = 0
+    if df_pog_only is not None and not df_pog_only.empty:
+        row_keys = _comparison_item_series(df_pog_only, identity)
+        missing_rows = int(row_keys.isin(missing_km_keys).sum())
+
+    monthly_row_fallback = len(df_pog_only) if df_pog_only is not None else 0
+    monthly_rows = int(summary.get(
+        "So dong POG khong co CTKM Monthly phu hop",
+        summary.get("So dong POG khong co CTKM phu hop", monthly_row_fallback),
+    ))
+    monthly_items = int(summary.get(
+        "So item POG khong co CTKM Monthly phu hop",
+        len(monthly_pog_only_keys),
+    ))
+    summary["So dong POG khong co CTKM Monthly phu hop"] = monthly_rows
+    summary["So item POG khong co CTKM Monthly phu hop"] = monthly_items
+
+    summary["So dong POG khong co KM phu hop"] = missing_rows
+    summary["So item POG khong co KM phu hop"] = len(missing_km_keys)
+    summary["So item POG co KM phu hop"] = len(covered_km_keys)
+    summary["So item POG tong hop de doi chieu KM"] = len(all_pog_keys)
+
+    if "So dong POG khong co CTKM phu hop" in summary:
+        summary["So dong POG khong co CTKM phu hop"] = missing_rows
+    if "So item POG khong co CTKM phu hop" in summary:
+        summary["So item POG khong co CTKM phu hop"] = len(missing_km_keys)
+    return summary
+
+
+def _append_fact_metadata_audit(output_path, metadata):
+    if metadata is None or metadata.empty:
+        return
+    path = Path(output_path)
+    if not path.is_file():
+        return
+    workbook = load_workbook(path)
+    sheet_name = "KM metadata"
+    if sheet_name in workbook.sheetnames:
+        del workbook[sheet_name]
+    ws = workbook.create_sheet(sheet_name)
+    columns = list(metadata.columns)
+    ws.append(columns)
+    for _, row in metadata.iterrows():
+        values = []
+        for column in columns:
+            value = row[column]
+            try:
+                missing = bool(pd.isna(value))
+            except (TypeError, ValueError):
+                missing = False
+            if missing:
+                values.append(None)
+            elif isinstance(value, pd.Timestamp):
+                values.append(value.to_pydatetime())
             else:
-                args.ctkm_sheet = choice
-    out = args.output or str(_ROOT/"output"/f"tong_hop_ctkm_{args.month}.xlsx")
-    result = run_pipeline(
-        args.ctkm, args.pog, args.month, out, args.strict_month, args.ctkm_sheet,
-        pog_sheet_name=None, clearance_filepath=args.clearance,
-        clearance_sheet_name=args.clearance_sheet, business_date=args.business_date,
+                values.append(value)
+        ws.append(values)
+    ws.freeze_panes = "A2"
+    if ws.max_row >= 1 and ws.max_column >= 1:
+        ws.auto_filter.ref = ws.dimensions
+    ws.sheet_state = "hidden"
+    workbook.save(path)
+
+
+def _clarify_location_workbook(output_path):
+    """Hide misleading legacy summary aliases while preserving workbook schema."""
+    path = Path(output_path)
+    if not path.is_file():
+        return
+    workbook = load_workbook(path)
+    changed = False
+
+    if "Tom tat" in workbook.sheetnames:
+        ws = workbook["Tom tat"]
+        legacy = {
+            "So dong CTKM thieu vi tri ke",
+            "So item CTKM thieu vi tri ke",
+            "So dong POG khong co CTKM phu hop",
+            "So item POG khong co CTKM phu hop",
+        }
+        for row in range(2, ws.max_row + 1):
+            if ws.cell(row=row, column=1).value in legacy:
+                ws.row_dimensions[row].hidden = True
+                changed = True
+
+    if "HƯỚNG DẪN" in workbook.sheetnames:
+        ws = workbook["HƯỚNG DẪN"]
+        for row in ws.iter_rows():
+            for cell in row:
+                if cell.value == "Thiếu vị trí":
+                    cell.value = "Thiếu vị trí KM"
+                    changed = True
+
+    if changed:
+        workbook.save(path)
+
+
+_core._infer_standard_fact_mapping = _infer_standard_fact_mapping
+_core._infer_standard_pog_mapping = _infer_standard_pog_mapping
+_core._get_or_map = _get_or_map
+_core._process = _process
+_core._build_ctkm_clearance_confirmation = _build_ctkm_clearance_confirmation
+
+_task_aligned_export = _baseline["export_final_report"]
+
+
+def _export_with_location_summary(*args, **kwargs):
+    summary = kwargs.get("reconciliation_summary")
+    if summary is None and len(args) > 6:
+        summary = args[6]
+    actions = kwargs.get("df_fefo_actions")
+    if actions is None and len(args) > 9:
+        actions = args[9]
+    confirmation = kwargs.get("df_ctkm_clearance_confirmation")
+    if confirmation is None and len(args) > 10:
+        confirmation = args[10]
+    df_matched = kwargs.get("df_matched")
+    if df_matched is None and len(args) > 1:
+        df_matched = args[1]
+    df_pog_only = kwargs.get("df_pog_only")
+    if df_pog_only is None and len(args) > 3:
+        df_pog_only = args[3]
+
+    _align_location_summary_with_program_sources(summary, actions)
+    _align_cross_source_summary(summary, actions)
+    _align_matched_unique_summary(summary, df_matched, actions)
+    _align_pog_promotion_coverage_summary(summary, df_matched, df_pog_only, actions)
+    output_path = _task_aligned_export(*args, **kwargs)
+    _clarify_location_workbook(output_path)
+    metadata = (
+        getattr(confirmation, "attrs", {}).get("fact_metadata")
+        if confirmation is not None else None
     )
-    print(f"Da xuat: {result.output_filepath}")
-    for w in result.warnings: print(f"CANH BAO: {w}")
-    print("Tom tat:")
-    for k, v in result.summary.items(): print(f"  {k}: {v}")
+    _append_fact_metadata_audit(output_path, metadata)
+    return output_path
+
+
+_core.EX.export_final_report = _export_with_location_summary
+
+# Backend/runtime contracts can register hooks that must survive a second facade
+# execution under another module name. Reapply them only after this facade has
+# rebuilt its raw wrappers, then export the hardened core surface below.
+_post_facade_hooks = run_post_facade_hooks(_core, sys.modules.get(__name__))
+
+for _name in dir(_core):
+    if not _name.startswith("__"):
+        globals()[_name] = getattr(_core, _name)
 
 if __name__ == "__main__":
-    _cli()
+    _core._cli()

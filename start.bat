@@ -7,7 +7,9 @@ echo === Khoi dong CTKM Pipeline ===
 
 if not exist ".env" (
   copy ".env.example" ".env" >nul
-  echo [!] Da tao .env tu .env.example - hay dien GEMINI_API_KEY truoc khi chay pipeline!
+  echo [!] Da tao .env tu .env.example.
+  echo [!] Hay doi ADMIN_PASSWORD va ADMIN_SESSION_SECRET truoc khi dung cong cu quan tri.
+  echo [!] GEMINI_API_KEY chi can khi file khong nhan dien duoc bang mapping chuan/da luu.
 )
 
 if not exist "frontend\node_modules" (

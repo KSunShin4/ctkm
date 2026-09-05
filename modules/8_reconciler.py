@@ -1,404 +1,295 @@
 # -*- coding: utf-8 -*-
-"""Module 8: Reconciler — dem so lieu, phat hien campaign trung thoi gian cung item."""
+"""Reconciler facade with source-safe product, scope and task semantics."""
 from __future__ import annotations
-import calendar
-import hashlib
-import json
-import re
-import unicodedata
-from datetime import datetime
-from zoneinfo import ZoneInfo
-from dataclasses import dataclass, field as dc_field
-from itertools import combinations
+
+import importlib.util
+from pathlib import Path
+import sys
+
 import pandas as pd
 
-_SKU_PAT = re.compile(r"^[Pp]\d+$")
+from modules.channel_scope import (
+    operational_promotion_key,
+    operational_task_key,
+    scope_identity_key,
+    scope_overlap_relation,
+)
+from modules.item_code_identity import build_transition_identity
 
-def is_sku(item_id) -> bool:
-    """Return whether a scalar item code follows the current P-number convention."""
-    if item_id is None:
-        return False
-    try:
-        if bool(pd.isna(item_id)):
-            return False
-    except (TypeError, ValueError):
-        return False
-    text = str(item_id).strip()
-    return bool(text and _SKU_PAT.fullmatch(text))
+_CORE_NAME = "_ctkm_reconciler_core"
+_CORE_PATH = Path(__file__).with_name("reconciler_core.py")
 
+if _CORE_NAME in sys.modules:
+    _core = sys.modules[_CORE_NAME]
+else:
+    _spec = importlib.util.spec_from_file_location(_CORE_NAME, _CORE_PATH)
+    if _spec is None or _spec.loader is None:
+        raise ImportError(f"Không nạp được reconciler core: {_CORE_PATH}")
+    _core = importlib.util.module_from_spec(_spec)
+    sys.modules[_CORE_NAME] = _core
+    _spec.loader.exec_module(_core)
 
-def is_bill_program(item_id) -> bool:
-    """Recognize only the explicit invoice-level convention; do not infer it."""
-    return _item_key(item_id) == "BILL"
+for _constant in ("_BUSINESS_COLUMNS", "_PROMOTION_ID_COLUMNS"):
+    _columns = getattr(_core, _constant, None)
+    if isinstance(_columns, list) and "key_channel" not in _columns:
+        _index = _columns.index("channel") if "channel" in _columns else len(_columns)
+        _columns.insert(_index, "key_channel")
 
-@dataclass
-class OverlapWarning:
-    item_id: str
-    campaign_a: str
-    campaign_b: str
-    period_a: str
-    period_b: str
-    channel_a: str = "(không rõ)"
-    channel_b: str = "(không rõ)"
-    source_row_id_a: str = ""
-    source_row_id_b: str = ""
-    conflict_type: str = "blocking_conflict"
-    is_blocking: bool = True
+_business_columns = getattr(_core, "_BUSINESS_COLUMNS", None)
+if isinstance(_business_columns, list):
+    for _field in ("new_item_id", "item_code_transition_status"):
+        if _field not in _business_columns:
+            _index = _business_columns.index("item_name") if "item_name" in _business_columns else len(_business_columns)
+            _business_columns.insert(_index, _field)
 
-@dataclass
-class ReconciliationReport:
-    matched_count: int
-    ctkm_only_count: int
-    pog_only_count: int
-    matched_unique_items: int
-    ctkm_only_unique_items: int
-    pog_only_unique_items: int
-    non_sku_ctkm_count: int = 0
-    overlap_warnings: list = dc_field(default_factory=list)
-    missing_item_ctkm_count: int = 0
-    invalid_item_ctkm_count: int = 0
-
-_BUSINESS_COLUMNS = [
-    "item_id", "item_key", "item_name", "promo_uom", "campaign_name", "campaign_detail",
-    "promo_from", "promo_to", "normal_price", "promo_price", "channel",
-    "product_type", "program_source", "source_sheet",
-]
-
-_PROMOTION_ID_COLUMNS = [
-    "program_source", "item_key", "campaign_name", "campaign_detail",
-    "promo_from", "promo_to", "normal_price", "promo_price", "promo_uom", "channel",
-]
-
-_POG_POSITION_ID_COLUMNS = [
-    "item_key", "store_id", "pog_code", "location_id", "facing", "pog_snapshot_month",
-]
+_baseline = getattr(_core, "_ctkm_reconciler_facade_baseline", None)
+if not isinstance(_baseline, dict):
+    _baseline = {"build_fefo_action_frame": _core.build_fefo_action_frame}
+    _core._ctkm_reconciler_facade_baseline = _baseline
 
 
-def _item_key(value):
-    if value is None or pd.isna(value):
-        return None
-    key = str(value).strip().upper()
-    return key or None
+def _same_promotion_identity(a: dict, b: dict) -> bool:
+    columns = [column for column in _core._PROMOTION_ID_COLUMNS if column in a or column in b]
+    return all(
+        _core._fingerprint_value(a.get(column)) == _core._fingerprint_value(b.get(column))
+        for column in columns
+    )
 
 
-def _ensure_item_key(frame: pd.DataFrame) -> pd.DataFrame:
-    df = frame.copy()
-    if "item_key" in df.columns:
-        df["item_key"] = df["item_key"].apply(_item_key)
+def _scope_display(row) -> str:
+    return (
+        f"KEY={_core._display_value(row.get('key_channel'))} | "
+        f"Channel={_core._display_value(row.get('channel'))}"
+    )
+
+
+def detect_campaign_time_overlaps(df_ctkm):
+    """Detect product overlaps without turning warnings into task decisions."""
+    warnings = []
+    if not {"item_id", "promo_from", "promo_to"}.issubset(df_ctkm.columns):
+        return warnings
+
+    df = _core._ensure_item_key(df_ctkm)
+    transition = build_transition_identity(df, key_func=_core._item_key, is_sku=_core.is_sku)
+    df["_comparison_item_key"] = df["item_key"].map(
+        lambda value: transition.canonical(value, key_func=_core._item_key)
+    )
+    df["_overlap_from"] = df["promo_from"].apply(_core._parse_date)
+    df["_overlap_to"] = df["promo_to"].apply(_core._parse_date)
+    df = df[df["_overlap_from"].notna() & df["_overlap_to"].notna()].copy()
+    if df.empty:
+        return warnings
+    df = df[df["_comparison_item_key"].apply(_core.is_sku)]
+    df = _core._ensure_source_lineage(df)
+
+    from itertools import combinations
+
+    for comparison_item_key, grp in df.groupby("_comparison_item_key"):
+        if len(grp) < 2:
+            continue
+        rows = grp.to_dict("records")
+        for a, b in combinations(rows, 2):
+            af, at = a["_overlap_from"], a["_overlap_to"]
+            bf, bt = b["_overlap_from"], b["_overlap_to"]
+            if not (af <= bt and bf <= at):
+                continue
+            if _same_promotion_identity(a, b):
+                continue
+
+            op_a = operational_promotion_key(a, _core._PROMOTION_ID_COLUMNS)
+            op_b = operational_promotion_key(b, _core._PROMOTION_ID_COLUMNS)
+            if op_a == op_b:
+                continue
+
+            scope_a = scope_identity_key(a.get("key_channel"), a.get("channel"))
+            scope_b = scope_identity_key(b.get("key_channel"), b.get("channel"))
+            relation = scope_overlap_relation(
+                a.get("key_channel"), a.get("channel"),
+                b.get("key_channel"), b.get("channel"),
+            )
+            source_a = _core._normalize_text(a.get("program_source"))
+            source_b = _core._normalize_text(b.get("program_source"))
+            cross_source_clearance = (
+                source_a != source_b and {source_a, source_b} == {"ctkm", "clearance"}
+            )
+            same_exact_scope = scope_a == scope_b
+            is_blocking = cross_source_clearance or same_exact_scope
+            conflict_type = "blocking_conflict" if is_blocking else "potential_cross_channel_overlap"
+
+            warning = _core.OverlapWarning(
+                str(comparison_item_key),
+                _core._display_value(a.get("campaign_name"), "(không rõ)"),
+                _core._display_value(b.get("campaign_name"), "(không rõ)"),
+                f"{af.date()} -> {at.date()}",
+                f"{bf.date()} -> {bt.date()}",
+                _scope_display(a), _scope_display(b),
+                _core._display_value(a.get("source_row_id"), ""),
+                _core._display_value(b.get("source_row_id"), ""),
+                conflict_type, is_blocking,
+            )
+            warning.scope_relation = relation
+            warning.key_channel_a = a.get("key_channel")
+            warning.key_channel_b = b.get("key_channel")
+            warning.scope_identity_a = scope_a
+            warning.scope_identity_b = scope_b
+            warnings.append(warning)
+    return warnings
+
+
+def _replacement_key_map(frame: pd.DataFrame) -> tuple[dict[str, str], set[str], set[str]]:
+    identity = build_transition_identity(frame, key_func=_core._item_key, is_sku=_core.is_sku)
+    ambiguous_new = set(identity.ambiguous_keys) | set(identity.shadowed_new_keys)
+    ambiguous_source = set(identity.ambiguous_keys)
+    return dict(identity.pog_alias_map), ambiguous_new, ambiguous_source
+
+
+def _prepare_fact_transition_status(frame: pd.DataFrame):
+    result = frame.copy()
+    mapping, ambiguous_new, ambiguous_source = _replacement_key_map(result)
+    if "new_item_id" not in result.columns:
+        return result, mapping
+
+    source_values = result.get(
+        "item_key", result.get("item_id", pd.Series(index=result.index, dtype=object))
+    )
+    new_values = result.get("new_item_key", result["new_item_id"].map(_core._item_key))
+    statuses = []
+    for source_value, new_value in zip(source_values, new_values):
+        source = _core._item_key(source_value)
+        new = _core._item_key(new_value)
+        if not new:
+            statuses.append("")
+        elif not source:
+            statuses.append("Có mã mới - mã nguồn trống")
+        elif source == new:
+            statuses.append("Mã mới trùng mã nguồn")
+        elif new in ambiguous_new or source in ambiguous_source:
+            statuses.append("Mơ hồ - không tự remap")
+        elif mapping.get(new) == source:
+            statuses.append("Có mã mới - đối chiếu song song")
+        else:
+            statuses.append("Mơ hồ - không tự remap")
+    result["item_code_transition_status"] = statuses
+    return result, mapping
+
+
+def _remap_pog_replacement_keys(df_pog: pd.DataFrame | None, mapping: dict[str, str]):
+    if df_pog is None or df_pog.empty or not mapping:
+        return df_pog
+    result = df_pog.copy()
+    if "item_key" in result.columns:
+        keys = result["item_key"].map(_core._item_key)
+    elif "item_id" in result.columns:
+        keys = result["item_id"].map(_core._item_key)
     else:
-        df["item_key"] = df.get("item_id", pd.Series(index=df.index, dtype=object)).apply(_item_key)
-    return df
+        return result
+    result["item_key"] = keys.map(lambda value: mapping.get(value, value))
+    return result
 
 
-def _canonical_value(value):
-    """Serialize business values consistently for deterministic identifiers."""
-    if value is None or pd.isna(value):
-        return None
-    if isinstance(value, (pd.Timestamp, datetime)):
-        return pd.Timestamp(value).isoformat()
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, int):
-        return str(value)
-    if isinstance(value, float):
-        if value.is_integer():
-            return str(int(value))
-        return format(value, ".15g")
-    return str(value)
+def _pog_source_item_lookup(df_pog: pd.DataFrame | None) -> dict[str, object]:
+    if df_pog is None or df_pog.empty or "item_id" not in df_pog.columns:
+        return {}
+    lookup = {}
+    has_lineage = "source_row_id" in df_pog.columns
+    for position, (_, row) in enumerate(df_pog.iterrows(), start=2):
+        if has_lineage:
+            value = row.get("source_row_id")
+            if value is None or pd.isna(value) or not str(value).strip():
+                row_id = f"POG:Sheet1:{position}"
+            else:
+                raw = str(value).strip()
+                row_id = raw if raw.startswith("POG:") else f"POG:{raw}"
+        else:
+            row_id = f"POG:Sheet1:{position}"
+        lookup[row_id] = row.get("item_id")
+    return lookup
 
 
-def _stable_id(prefix: str, values: list) -> str:
-    payload = json.dumps(
-        [_canonical_value(value) for value in values],
-        ensure_ascii=False,
-        separators=(",", ":"),
+def _attach_pog_match_code_diagnostics(result: pd.DataFrame, df_pog: pd.DataFrame | None):
+    lookup = _pog_source_item_lookup(df_pog)
+    if "pog_source_row_id" in result.columns:
+        result["matched_pog_item_id"] = result["pog_source_row_id"].map(lookup)
+    else:
+        result["matched_pog_item_id"] = pd.NA
+
+    labels = []
+    for _, row in result.iterrows():
+        applicable = row.get("pog_applicable", True)
+        if applicable is False or str(applicable).strip().lower() == "false":
+            labels.append("Không áp dụng POG")
+            continue
+        matched = _core._item_key(row.get("matched_pog_item_id"))
+        if not matched:
+            labels.append("")
+            continue
+        source = _core._item_key(row.get("item_key")) or _core._item_key(row.get("item_id"))
+        new = _core._item_key(row.get("new_item_id"))
+        if new and new != source and matched == new:
+            labels.append("Khớp mã mới")
+        elif source and matched == source:
+            labels.append("Khớp mã nguồn")
+        else:
+            labels.append("Khớp alias chuyển mã")
+    result["pog_match_code_type"] = labels
+    return result
+
+
+def _attach_operational_scope_identity(result: pd.DataFrame) -> pd.DataFrame:
+    result = result.copy()
+    result["scope_identity_key"] = result.apply(
+        lambda row: scope_identity_key(row.get("key_channel"), row.get("channel")), axis=1
     )
-    return f"{prefix}-{hashlib.sha256(payload.encode('utf-8')).hexdigest()[:24].upper()}"
-
-
-def _attach_task_ids(actions: pd.DataFrame) -> pd.DataFrame:
-    result = actions.copy()
-    result["pog_position_id"] = result.apply(
-        lambda row: _stable_id(
-            "POGPOS", [row.get(column) for column in _POG_POSITION_ID_COLUMNS],
+    result["operational_promotion_key"] = result.apply(
+        lambda row: operational_promotion_key(row, _core._PROMOTION_ID_COLUMNS), axis=1
+    )
+    result["operational_task_key"] = result.apply(
+        lambda row: operational_task_key(
+            row.get("operational_promotion_key"),
+            row.get("scheduled_action"),
+            row.get("pog_position_id"),
         ),
-        axis=1,
-    )
-    result["task_id"] = result.apply(
-        lambda row: _stable_id("TASK", [
-            row.get("promotion_id"), row.get("scheduled_action"), row.get("pog_position_id"),
-        ]),
         axis=1,
     )
     return result
 
 
-def _ensure_source_lineage(frame: pd.DataFrame) -> pd.DataFrame:
-    """Attach stable, human-readable row references without removing source rows."""
-    df = frame.copy()
-    if "source_row_id" not in df.columns:
-        ids = []
-        for position, (_, row) in enumerate(df.iterrows(), start=2):
-            raw_source, raw_sheet = row.get("program_source"), row.get("source_sheet")
-            source = "CTKM" if pd.isna(raw_source) or not str(raw_source).strip() else str(raw_source).strip()
-            sheet = "Sheet1" if pd.isna(raw_sheet) or not str(raw_sheet).strip() else str(raw_sheet).strip()
-            ids.append(f"{source}:{sheet}:{position}")
-        df["source_row_id"] = ids
-    else:
-        values = []
-        for position, (_, row) in enumerate(df.iterrows(), start=2):
-            value = row.get("source_row_id")
-            if pd.isna(value) or not str(value).strip():
-                raw_source, raw_sheet = row.get("program_source"), row.get("source_sheet")
-                source = "CTKM" if pd.isna(raw_source) or not str(raw_source).strip() else str(raw_source).strip()
-                sheet = "Sheet1" if pd.isna(raw_sheet) or not str(raw_sheet).strip() else str(raw_sheet).strip()
-                value = f"{source}:{sheet}:{position}"
-            values.append(str(value))
-        df["source_row_id"] = values
-    if "source_row_ids" not in df.columns:
-        df["source_row_ids"] = df["source_row_id"]
-    if "source_row_count" not in df.columns:
-        df["source_row_count"] = 1
-    if "duplicate_status" not in df.columns:
-        df["duplicate_status"] = "Dòng duy nhất"
-    return df
-
-
-def _fingerprint_value(value):
-    if pd.isna(value):
-        return ("missing", "")
-    if isinstance(value, (pd.Timestamp, datetime)):
-        return ("datetime", pd.Timestamp(value).isoformat())
-    return (type(value).__name__, str(value))
-
-
-def _display_value(value, fallback="(không rõ)") -> str:
-    return fallback if pd.isna(value) or not str(value).strip() else str(value)
-
-
-def _collapse_exact_duplicates(frame: pd.DataFrame) -> pd.DataFrame:
-    """Consolidate only byte-for-byte business duplicates and retain full lineage."""
-    df = _ensure_source_lineage(frame)
-    lineage = {
-        "source_row_id", "source_row_ids", "source_row_count", "duplicate_status",
-        "source_excel_row", "logical_row_id", "promo_slot_id",
+def _attach_position_promotion_diagnostics(result):
+    result["promotion_count_at_position"] = 0
+    result["has_multiple_promotions_at_position"] = False
+    promotion_key = (
+        "operational_promotion_key"
+        if "operational_promotion_key" in result.columns else "promotion_id"
+    )
+    required = {
+        "pog_position_id", promotion_key, "scheduled_action",
+        "location_completeness", "pog_applicable",
     }
-    identity_columns = [column for column in df.columns if column not in lineage]
-    groups: dict[tuple, list[int]] = {}
-    for idx, row in df.iterrows():
-        key = tuple((column, _fingerprint_value(row[column])) for column in identity_columns)
-        groups.setdefault(key, []).append(idx)
+    if not required.issubset(result.columns):
+        return result
 
-    rows = []
-    for indices in groups.values():
-        first = df.loc[indices[0]].copy()
-        row_ids: list[str] = []
-        source_count = 0
-        for idx in indices:
-            row_ids.extend(
-                part.strip() for part in str(df.at[idx, "source_row_ids"]).split("|") if part.strip()
-            )
-            count = df.at[idx, "source_row_count"]
-            source_count += 1 if pd.isna(count) else int(count)
-        row_ids = list(dict.fromkeys(row_ids))
-        first["source_row_id"] = row_ids[0]
-        first["source_row_ids"] = " | ".join(row_ids)
-        first["source_row_count"] = source_count
-        first["duplicate_status"] = (
-            "Đã gom dòng trùng hoàn toàn" if source_count > 1 else "Dòng duy nhất"
-        )
-        rows.append(first.to_dict())
-    return pd.DataFrame(rows, columns=df.columns).reset_index(drop=True)
+    eligible = (
+        result["pog_applicable"].fillna(True).astype(bool)
+        & result["location_completeness"].eq("Đủ vị trí")
+    )
+    if "pog_position_count" in result.columns:
+        eligible &= result["pog_position_count"].fillna(0).astype(int).gt(0)
+    if not eligible.any():
+        return result
+
+    working = result.loc[eligible, ["pog_position_id", "scheduled_action", promotion_key]].copy()
+    counts = working.groupby(
+        ["pog_position_id", "scheduled_action"], dropna=False
+    )[promotion_key].transform("nunique")
+    result.loc[eligible, "promotion_count_at_position"] = counts.astype(int).to_numpy()
+    result.loc[eligible, "has_multiple_promotions_at_position"] = counts.gt(1).to_numpy()
+    return result
 
 
-def _same_campaign_row(a: dict, b: dict) -> bool:
-    columns = [column for column in _BUSINESS_COLUMNS if column in a or column in b]
-    return all(_fingerprint_value(a.get(column)) == _fingerprint_value(b.get(column)) for column in columns)
-
-
-def detect_campaign_time_overlaps(df_ctkm) -> list:
-    """
-    Quet tung item_id co >= 2 dong CTKM, kiem tra cap nao co khoang thoi gian chong nhau.
-    CHI xet item_id dung dinh dang SKU (P#####). Cac CTKM theo hoa don (item_id="Bill"...)
-    bi bo qua de tranh false positive (nhieu chuong trinh hoa don chay song song la hop le).
-    Goi ham nay TRUOC khi join voi POG (de tranh nhieu dong do 1-nhieu lam nhieu ket qua).
-    """
-    warnings = []
-    if not {"item_id","promo_from","promo_to"}.issubset(df_ctkm.columns):
-        return warnings
-    df = _ensure_item_key(df_ctkm)
-    df["_overlap_from"] = df["promo_from"].apply(_parse_date)
-    df["_overlap_to"] = df["promo_to"].apply(_parse_date)
-    df = df[df["_overlap_from"].notna() & df["_overlap_to"].notna()].copy()
-    if df.empty:
-        return warnings
-    df = df[df["item_key"].apply(is_sku)]
-    df = _ensure_source_lineage(df)
-
-    for item_key, grp in df.groupby("item_key"):
-        if len(grp) < 2: continue
-        rows = grp.to_dict("records")
-        for a, b in combinations(rows, 2):
-            af, at = a["_overlap_from"], a["_overlap_to"]
-            bf, bt = b["_overlap_from"], b["_overlap_to"]
-            if af <= bt and bf <= at:
-                ca = _display_value(a.get("campaign_name"), "(không rõ)")
-                cb = _display_value(b.get("campaign_name"), "(không rõ)")
-                # Dòng giống hệt nhau là duplicate có lineage, không phải hai campaign xung đột.
-                if _same_campaign_row(a, b):
-                    continue
-                channel_a = a.get("channel")
-                channel_b = b.get("channel")
-                raw_channels_differ = _fingerprint_value(channel_a) != _fingerprint_value(channel_b)
-                source_a = _normalize_text(a.get("program_source"))
-                source_b = _normalize_text(b.get("program_source"))
-                cross_source_clearance = (
-                    source_a != source_b and {source_a, source_b} == {"ctkm", "clearance"}
-                )
-                # Any overlapping, non-identical rows in the exact same raw channel
-                # are ambiguous, including when only their date ranges differ.
-                is_blocking = cross_source_clearance or not raw_channels_differ
-                conflict_type = (
-                    "blocking_conflict" if is_blocking
-                    else "potential_cross_channel_overlap" if raw_channels_differ
-                    else "potential_overlap"
-                )
-                warnings.append(OverlapWarning(
-                    str(item_key), ca, cb,
-                    f"{af.date()} -> {at.date()}",
-                    f"{bf.date()} -> {bt.date()}",
-                    _display_value(a.get("channel")),
-                    _display_value(b.get("channel")),
-                    _display_value(a.get("source_row_id"), ""),
-                    _display_value(b.get("source_row_id"), ""),
-                    conflict_type,
-                    is_blocking,
-                ))
-    return warnings
-
-def _get_month_bounds(target_month):
-    try:
-        y, m = map(int, target_month.split("-"))
-    except Exception as exc:
-        raise ValueError(f"target_month phai dang 'YYYY-MM', nhan duoc: {target_month!r}") from exc
-    start = pd.Timestamp(year=y, month=m, day=1)
-    end = pd.Timestamp(year=y, month=m, day=calendar.monthrange(y, m)[1], hour=23, minute=59, second=59)
-    return start, end
-
-
-def _normalize_text(value) -> str:
-    if pd.isna(value):
-        return ""
-    text = str(value).strip().lower()
-    text = unicodedata.normalize("NFKD", text)
-    return "".join(ch for ch in text if not unicodedata.combining(ch))
-
-
-def _parse_date(value):
-    if pd.isna(value):
-        return pd.NaT
-    if isinstance(value, pd.Timestamp):
-        return value
-    try:
-        return pd.to_datetime(value, errors="coerce")
-    except Exception:
-        return pd.NaT
-
-
-def build_fefo_action_frame(
-    df_ctkm,
-    target_month,
-    df_pog=None,
-    *,
-    business_date=None,
-    overlap_warnings=None,
-) -> pd.DataFrame:
-    """
-    Phân loại hành động theo lịch rồi mới bổ sung vị trí POG. POG không bao giờ
-    được dùng để suy luận trạng thái tem hoặc thay đổi ``scheduled_action``.
-    """
-    if df_ctkm is None or df_ctkm.empty:
-        return pd.DataFrame(columns=[*_BUSINESS_COLUMNS, "scheduled_action", "action", "reason",
-                                     "target_month", "business_date", "store_id", "pog_code",
-                                     "location_id", "facing", "pog_snapshot_month", "location_status"])
-
-    df = _collapse_exact_duplicates(_ensure_item_key(df_ctkm))
-    base_cols = _BUSINESS_COLUMNS.copy()
-    for col in base_cols:
-        if col not in df.columns:
-            df[col] = pd.NA
-
-    if "promo_from" not in df.columns or "promo_to" not in df.columns:
-        return pd.DataFrame(columns=[*base_cols, "action", "reason", "target_month"])
-
-    # Ngày nghiệp vụ có thể inject để test và chạy lại báo cáo ổn định.
-    if business_date is None:
-        business_date = pd.Timestamp(datetime.now(ZoneInfo("Asia/Ho_Chi_Minh")).date())
-    else:
-        business_date = _parse_date(business_date)
-        if pd.isna(business_date):
-            raise ValueError("business_date không hợp lệ")
-        business_date = business_date.normalize()
-    month_start, month_end = _get_month_bounds(target_month)
-
-    def _classify(row):
-        if _item_key(row.get("item_key")) is None:
-            return "review", "thieu_ma_san_pham"
-        if not is_sku(row.get("item_key")) and not is_bill_program(row.get("item_key")):
-            return "review", "ma_san_pham_khong_hop_le"
-        campaign_name = row.get("campaign_name")
-        if pd.isna(campaign_name) or not str(campaign_name).strip():
-            return "review", "thieu_ten_chuong_trinh"
-        promo_from = _parse_date(row.get("promo_from"))
-        promo_to = _parse_date(row.get("promo_to"))
-        if pd.isna(promo_from) or pd.isna(promo_to):
-            return "review", "thieu_thong_tin_ngay"
-        promo_from = promo_from.normalize()
-        promo_to = promo_to.normalize()
-        if promo_from > promo_to:
-            return "review", "ngay_bat_dau_sau_ngay_ket_thuc"
-        attach_date = promo_from
-        remove_date = promo_to + pd.Timedelta(days=1)
-        if business_date < attach_date:
-            return "chờ gắn tem", "chua_den_ngay_gan"
-        if attach_date <= business_date <= promo_to:
-            return "gắn tem", "trong_thoi_gian_ap_dung"
-        if business_date >= remove_date:
-            return "tháo tem", "den_ngay_thao"
-        return "review", "khong_xac_dinh_duoc"
-
-    df["scheduled_action"], df["reason"] = zip(*df.apply(_classify, axis=1))
-    df["action"] = df["scheduled_action"]  # Backward-compatible export/API field.
-    df["target_month"] = target_month
-    df["business_date"] = business_date
-    df["ngay_gan_tem"] = df["promo_from"].apply(_parse_date).dt.normalize()
-    # CTKM con hieu luc het ngay promo_to; thao tem tu dau ngay ke tiep.
-    df["ngay_thao_tem"] = df["promo_to"].apply(_parse_date).dt.normalize() + pd.Timedelta(days=1)
-
-    def _scope(row):
-        promo_from = _parse_date(row.get("promo_from"))
-        promo_to = _parse_date(row.get("promo_to"))
-        if pd.isna(promo_from) or pd.isna(promo_to):
-            return True, "thieu_ngay_giu_de_review"
-        promo_from, promo_to = promo_from.normalize(), promo_to.normalize()
-        if promo_from > promo_to:
-            return True, "ngay_khong_hop_le_giu_de_review"
-        remove_date = promo_to + pd.Timedelta(days=1)
-        if promo_from <= month_end and promo_to >= month_start:
-            return True, "ctkm_ap_dung_trong_thang"
-        if month_start <= remove_date <= month_end:
-            return True, "ngay_thao_trong_thang"
-        return False, "ngoai_pham_vi_thang_bao_cao"
-
-    scope = df.apply(_scope, axis=1)
-    df["in_report_scope"] = [value[0] for value in scope]
-    df["report_scope_reason"] = [value[1] for value in scope]
-
-    if overlap_warnings is None:
-        overlap_warnings = detect_campaign_time_overlaps(df)
-    conflicts: dict[str, list[str]] = {}
+def _review_warning_details(overlap_warnings) -> dict[str, list[str]]:
+    details_by_row: dict[str, list[str]] = {}
     for warning in overlap_warnings or []:
-        if not getattr(warning, "is_blocking", True):
+        if not getattr(warning, "is_blocking", False):
             continue
         detail = (
             f"{warning.campaign_a} [{warning.channel_a}] ↔ "
@@ -406,170 +297,145 @@ def build_fefo_action_frame(
         )
         for row_id in (warning.source_row_id_a, warning.source_row_id_b):
             if row_id:
-                conflicts.setdefault(row_id, []).append(detail)
-    for idx, row in df.iterrows():
+                details_by_row.setdefault(str(row_id), []).append(detail)
+    return details_by_row
+
+
+def _blank(value) -> bool:
+    if value is None:
+        return True
+    try:
+        if pd.isna(value):
+            return True
+    except (TypeError, ValueError):
+        pass
+    return isinstance(value, str) and not value.strip()
+
+
+def _attach_review_metadata(result: pd.DataFrame, overlap_warnings) -> pd.DataFrame:
+    """Keep review as metadata; only action-indeterminable errors block action."""
+    result = result.copy()
+    if "scheduled_action" not in result.columns:
+        result["review_required"] = False
+        result["review_reason"] = ""
+        result["review_severity"] = ""
+        result["review_blocks_action"] = False
+        return result
+
+    base_review = result["scheduled_action"].astype(str).str.strip().str.lower().eq("review")
+    result["review_required"] = base_review
+    result["review_reason"] = result.get(
+        "reason", pd.Series("", index=result.index, dtype=object)
+    ).where(base_review, "")
+    result["review_severity"] = ""
+    result.loc[base_review, "review_severity"] = "blocking"
+    result["review_blocks_action"] = base_review
+
+    # Missing campaign name is a source-quality warning, not a reason to suppress
+    # a date-derived attach/remove/wait action.
+    if "campaign_name" in result.columns:
+        missing_campaign = result["campaign_name"].map(_blank) & ~base_review
+        result.loc[missing_campaign, "review_required"] = True
+        result.loc[missing_campaign, "review_severity"] = "warning"
+        result.loc[missing_campaign, "review_blocks_action"] = False
+        result.loc[missing_campaign, "review_reason"] = "thieu_ten_chuong_trinh"
+
+    details_by_row = _review_warning_details(overlap_warnings)
+    if not details_by_row:
+        return result
+
+    for idx, row in result.iterrows():
+        lineage_value = row.get("source_row_ids", row.get("source_row_id", ""))
         lineage_ids = {
-            value.strip() for value in str(row["source_row_ids"]).split("|") if value.strip()
+            value.strip() for value in str(lineage_value).split("|") if value.strip()
         }
         details = list(dict.fromkeys(
-            detail for row_id in lineage_ids for detail in conflicts.get(row_id, [])
+            detail for row_id in lineage_ids for detail in details_by_row.get(row_id, [])
         ))
-        if details and row["reason"] not in {
-            "thieu_ma_san_pham", "thieu_ten_chuong_trinh",
-            "thieu_thong_tin_ngay", "ngay_bat_dau_sau_ngay_ket_thuc",
-        }:
-            df.at[idx, "scheduled_action"] = "review"
-            df.at[idx, "action"] = "review"
-            df.at[idx, "reason"] = "xung_dot_thoi_gian: " + " | ".join(details)
+        if not details:
+            continue
+        existing = str(result.at[idx, "review_reason"] or "").strip()
+        warning_reason = "xung_dot_chuong_trinh: " + " | ".join(details)
+        result.at[idx, "review_required"] = True
+        result.at[idx, "review_reason"] = (
+            f"{existing} | {warning_reason}" if existing else warning_reason
+        )
+        if not bool(result.at[idx, "review_blocks_action"]):
+            result.at[idx, "review_severity"] = "warning"
+            result.at[idx, "review_blocks_action"] = False
+    return result
 
-    out_cols = [c for c in base_cols if c in df.columns] + [
-        "source_row_id", "source_row_ids", "source_row_count", "duplicate_status",
-        "ngay_gan_tem", "ngay_thao_tem", "scheduled_action", "action", "reason",
-        "target_month", "business_date", "in_report_scope", "report_scope_reason",
-    ]
-    for technical_column in ("source_excel_row", "logical_row_id", "promo_slot_id"):
-        if technical_column in df.columns:
-            out_cols.append(technical_column)
-    actions = df.loc[:, out_cols].reset_index(drop=True)
-    actions["promotion_id"] = actions.apply(
-        lambda row: _stable_id("PROMO", [row.get(column) for column in _PROMOTION_ID_COLUMNS]),
-        axis=1,
+
+_original_build_fefo_action_frame = _baseline["build_fefo_action_frame"]
+
+
+def build_fefo_action_frame(df_ctkm, target_month, df_pog=None, *, business_date=None,
+                            overlap_warnings=None):
+    """Derive actions first; attach review warnings without overriding actions."""
+    fact_frame, replacement_map = _prepare_fact_transition_status(df_ctkm)
+    remapped_pog = _remap_pog_replacement_keys(df_pog, replacement_map)
+    effective_warnings = (
+        detect_campaign_time_overlaps(fact_frame)
+        if overlap_warnings is None else list(overlap_warnings)
     )
 
-    location_cols = ["store_id", "pog_code", "location_id", "facing", "pog_snapshot_month"]
-    if df_pog is None or df_pog.empty or "item_id" not in df_pog.columns:
-        for col in location_cols:
-            actions[col] = pd.NA
-        actions["pog_source_row_id"] = pd.NA
-        actions["pog_source_row_ids"] = pd.NA
-        actions["pog_source_row_count"] = 0
-        actions["pog_duplicate_status"] = "Không có dòng POG"
-        actions["pog_position_count"] = 0
-        actions["pog_month_status"] = "Không có snapshot POG"
-        actions["location_completeness"] = "Không tìm thấy SKU trong POG"
-        actions["has_multiple_pog_positions"] = False
-        actions["location_needs_review"] = True
-        actions["location_status"] = actions["location_completeness"]
-        return _attach_task_ids(actions)
+    result = _original_build_fefo_action_frame(
+        fact_frame, target_month, remapped_pog,
+        business_date=business_date, overlap_warnings=effective_warnings,
+    )
+    if result is None or result.empty:
+        return result
 
-    pog = _ensure_item_key(df_pog)
-    pog = pog[pog["item_key"].notna()].copy().reset_index(drop=True)
-    for col in location_cols:
-        if col not in pog.columns:
-            pog[col] = pd.NA
-    if "source_row_id" in pog.columns:
-        pog["pog_source_row_id"] = pog["source_row_id"].map(
-            lambda value: str(value) if str(value).startswith("POG:") else f"POG:{value}"
-        )
+    result = _attach_review_metadata(result, effective_warnings)
+    required = {
+        "location_completeness", "pog_month_status",
+        "location_needs_review", "location_status",
+    }
+    if not required.issubset(result.columns):
+        return result
+
+    unknown_month = (
+        result["location_completeness"].eq("Đủ vị trí")
+        & result["pog_month_status"].eq("Không rõ tháng POG")
+        & result["location_needs_review"].fillna(False).astype(bool)
+    )
+    result.loc[unknown_month, "location_status"] = "Không rõ tháng POG"
+
+    item_keys = result.get("item_key", result.get("item_id"))
+    if item_keys is None:
+        result["pog_applicable"] = True
     else:
-        pog["pog_source_row_id"] = [f"POG:Sheet1:{idx}" for idx in range(2, len(pog) + 2)]
+        bill_mask = item_keys.apply(_core.is_bill_program)
+        result["pog_applicable"] = ~bill_mask
+        if bill_mask.any():
+            result.loc[bill_mask, "location_completeness"] = "Đủ vị trí"
+            result.loc[bill_mask, "pog_month_status"] = "Không áp dụng POG"
+            result.loc[bill_mask, "location_needs_review"] = False
+            result.loc[bill_mask, "location_status"] = "Không áp dụng POG"
+            if "has_multiple_pog_positions" in result.columns:
+                result.loc[bill_mask, "has_multiple_pog_positions"] = False
+            if "pog_position_count" in result.columns:
+                result.loc[bill_mask, "pog_position_count"] = 0
+            if "pog_source_row_count" in result.columns:
+                result.loc[bill_mask, "pog_source_row_count"] = 0
+            if "pog_duplicate_status" in result.columns:
+                result.loc[bill_mask, "pog_duplicate_status"] = "Không áp dụng POG"
 
-    position_key = ["item_key", *location_cols]
-    location_rows = []
-    for _, group in pog.groupby(position_key, dropna=False, sort=False):
-        first = group.iloc[0].copy()
-        row_ids = list(dict.fromkeys(group["pog_source_row_id"].astype(str).tolist()))
-        first["pog_source_row_id"] = row_ids[0]
-        first["pog_source_row_ids"] = " | ".join(row_ids)
-        first["pog_source_row_count"] = len(group)
-        first["pog_duplicate_status"] = (
-            "Đã gom dòng POG trùng hoàn toàn" if len(group) > 1 else "Dòng POG duy nhất"
-        )
-        location_rows.append(first)
-    locations = pd.DataFrame(location_rows)
-    if locations.empty:
-        return build_fefo_action_frame(
-            df_ctkm, target_month, None, business_date=business_date,
-            overlap_warnings=overlap_warnings,
-        )
-    locations["pog_position_count"] = locations.groupby("item_key")["item_key"].transform("size")
-    keep_location_cols = [
-        "item_key", *location_cols, "pog_source_row_id", "pog_source_row_ids",
-        "pog_source_row_count", "pog_duplicate_status", "pog_position_count",
-    ]
-    actions = actions.merge(locations.loc[:, keep_location_cols], on="item_key", how="left", indicator="_pog_match")
-    for col in location_cols:
-        if col not in actions.columns:
-            actions[col] = pd.NA
-
-    required_location = ["store_id", "pog_code", "location_id"]
-    for column in required_location:
-        if column not in actions.columns:
-            actions[column] = pd.NA
-
-    def _location_state(row):
-        if row["_pog_match"] != "both":
-            return "Không tìm thấy SKU trong POG", "Không có snapshot POG", False, True
-        snapshot = row.get("pog_snapshot_month")
-        month_status = (
-            "POG lệch tháng"
-            if pd.notna(snapshot) and str(snapshot).strip() and str(snapshot).strip() != target_month
-            else "POG đúng tháng" if pd.notna(snapshot) and str(snapshot).strip()
-            else "Không rõ tháng POG"
-        )
-        complete = all(pd.notna(row[col]) and str(row[col]).strip() for col in required_location)
-        if not complete:
-            completeness = "Thiếu một phần thông tin vị trí"
-        else:
-            completeness = "Đủ vị trí"
-        multiple = int(row.get("pog_position_count") or 0) > 1
-        needs_review = completeness != "Đủ vị trí" or month_status in {"POG lệch tháng", "Không rõ tháng POG"}
-        return completeness, month_status, multiple, needs_review
-
-    states = actions.apply(_location_state, axis=1)
-    actions["location_completeness"] = [state[0] for state in states]
-    actions["pog_month_status"] = [state[1] for state in states]
-    actions["has_multiple_pog_positions"] = [state[2] for state in states]
-    actions["location_needs_review"] = [state[3] for state in states]
-    # Legacy status remains descriptive for older integrations; completeness is the metric.
-    actions["location_status"] = actions.apply(
-        lambda row: (
-            "POG lệch tháng" if row["pog_month_status"] == "POG lệch tháng"
-            else "Nhiều vị trí POG" if row["has_multiple_pog_positions"] and row["location_completeness"] == "Đủ vị trí"
-            else row["location_completeness"]
-        ), axis=1,
-    )
-    actions["pog_position_count"] = actions["pog_position_count"].fillna(0).astype(int)
-    actions["pog_source_row_count"] = actions["pog_source_row_count"].fillna(0).astype(int)
-    actions = _attach_task_ids(actions)
-    actions = actions.drop(columns=["_pog_match"])
-    return actions.loc[:, [
-        *out_cols, "promotion_id", *location_cols, "pog_source_row_id", "pog_source_row_ids",
-        "pog_source_row_count", "pog_duplicate_status", "pog_position_count",
-        "location_completeness", "has_multiple_pog_positions", "pog_month_status",
-        "location_needs_review", "location_status", "pog_position_id", "task_id",
-    ]].reset_index(drop=True)
+    result = _attach_pog_match_code_diagnostics(result, df_pog)
+    result = _attach_operational_scope_identity(result)
+    return _attach_position_promotion_diagnostics(result)
 
 
-def build_reconciliation_report(df_matched, df_ctkm_only, df_pog_only, overlap_warnings) -> ReconciliationReport:
-    def _uniq(df):
-        key = "item_key" if "item_key" in df.columns else "item_id"
-        return df[key].nunique() if not df.empty and key in df.columns else 0
-    bill_count = 0
-    missing_count = 0
-    invalid_count = 0
-    if not df_ctkm_only.empty:
-        raw_keys = (
-            df_ctkm_only["item_key"]
-            if "item_key" in df_ctkm_only.columns
-            else df_ctkm_only.get("item_id", pd.Series(index=df_ctkm_only.index, dtype=object))
-        )
-        item_keys = raw_keys.apply(_item_key)
-        missing_mask = item_keys.isna()
-        bill_mask = item_keys.apply(is_bill_program)
-        sku_mask = item_keys.apply(is_sku)
-        bill_count = int(bill_mask.sum())
-        missing_count = int(missing_mask.sum())
-        invalid_count = int((~missing_mask & ~bill_mask & ~sku_mask).sum())
-    return ReconciliationReport(
-        matched_count=len(df_matched),
-        ctkm_only_count=len(df_ctkm_only),
-        pog_only_count=len(df_pog_only),
-        matched_unique_items=_uniq(df_matched),
-        ctkm_only_unique_items=_uniq(df_ctkm_only),
-        pog_only_unique_items=_uniq(df_pog_only),
-        non_sku_ctkm_count=bill_count,
-        overlap_warnings=overlap_warnings,
-        missing_item_ctkm_count=missing_count,
-        invalid_item_ctkm_count=invalid_count,
-    )
+build_fefo_action_frame.__wrapped__ = _original_build_fefo_action_frame
+
+_core._same_campaign_row = _same_promotion_identity
+_core.detect_campaign_time_overlaps = detect_campaign_time_overlaps
+_core.build_fefo_action_frame = build_fefo_action_frame
+
+for _name in dir(_core):
+    if not _name.startswith("__"):
+        globals()[_name] = getattr(_core, _name)
+
+_same_campaign_row = _core._same_campaign_row
+detect_campaign_time_overlaps = _core.detect_campaign_time_overlaps
+build_fefo_action_frame = _core.build_fefo_action_frame

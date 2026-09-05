@@ -39,9 +39,14 @@ def check_snapshot_alignment(target_month, pog_snapshot_month) -> SnapshotAlignm
 
 def filter_ctkm_by_month(df_ctkm, target_month):
     """
-    Tra ve (df_all_relevant, df_strict_match).
-    df_strict_match: CHI dong overlap thuc su -> dung lam input cho join.
-    df_all_relevant: them ca dong thieu thong tin ngay (de khong mat du lieu am tham).
+    Tra ve (df_all_relevant, df_operational).
+
+    ``df_operational`` gom cac campaign overlap thang bao cao VA campaign het
+    ngay cuoi thang truoc can thao tem vao ngay 1 cua thang nay. ``df_all_relevant``
+    them ca dong thieu/sai thong tin ngay de review, khong lam mat source am tham.
+
+    From/To la ngay nghiep vu. Neu workbook vo tinh co them thanh phan gio,
+    chi bien tinh toan duoc normalize ve dau ngay; cot source goc khong bi sua.
     """
     required = {"promo_from", "promo_to"}
     missing_cols = sorted(required - set(df_ctkm.columns))
@@ -55,12 +60,18 @@ def filter_ctkm_by_month(df_ctkm, target_month):
         )
     ms, me = get_month_bounds(target_month)
     df = df_ctkm.copy()
+
+    # Source values are immutable. Parse/normalize only local calculation series
+    # so month scope uses the same date-level semantics as FEFO action logic.
     promo_from = pd.to_datetime(df["promo_from"], errors="coerce")
     promo_to = pd.to_datetime(df["promo_to"], errors="coerce")
     has_dates = promo_from.notna() & promo_to.notna()
-    valid_period = has_dates & (promo_from <= promo_to)
-    overlap = valid_period & (promo_from <= me) & (promo_to >= ms)
-    remove_date = promo_to + pd.Timedelta(days=1)
+    promo_from_calc = promo_from.dt.normalize()
+    promo_to_calc = promo_to.dt.normalize()
+
+    valid_period = has_dates & (promo_from_calc <= promo_to_calc)
+    overlap = valid_period & (promo_from_calc <= me) & (promo_to_calc >= ms)
+    remove_date = promo_to_calc + pd.Timedelta(days=1)
     removal_in_month = valid_period & remove_date.between(ms, me, inclusive="both")
     missing = ~has_dates
     invalid_period = has_dates & ~valid_period

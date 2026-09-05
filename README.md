@@ -1,177 +1,258 @@
 # CTKM Pipeline
 
-Tổng hợp **chương trình khuyến mãi (CTKM)** × **vị trí kệ (POG)** theo tháng,
-dùng **Gemini API** nhận diện tên cột linh hoạt.
+Hệ thống tổng hợp **chương trình khuyến mãi (CTKM Monthly + Clearance)** với
+**vị trí kệ POG**, tạo danh sách thao tác gắn/tháo tem, audit nguồn, phân bổ Tem R
+và kiểm tra hạn dùng.
 
----
+## Mapping cột
 
-## Cấu trúc
+Gemini **không phải nguồn mapping mặc định**. Thứ tự hiện tại là:
 
+1. mapping người dùng xác nhận;
+2. preset đã lưu;
+3. mapping deterministic cho file Pharmacity chuẩn;
+4. mapping cache đã được validate;
+5. Gemini chỉ là fallback khi bốn nguồn trên không đủ.
+
+`mapping_mode=saved_only` là chế độ **zero-Gemini**. Vì vậy `GEMINI_API_KEY`
+có thể để trống nếu chỉ dùng file chuẩn/preset/cache. Nếu một file lạ thực sự cần
+AI nhưng server không có API key, request dừng ở preflight với lỗi rõ ràng trước
+khi tạo job.
+
+Giá trị nghiệp vụ nguồn như ITEMID, tên sản phẩm, ngày, giá, KEY Channel, Channel,
+store/POG fields không bị normalize rồi ghi đè. Các khóa normalize chỉ tồn tại ở
+field kỹ thuật dùng để đối chiếu/identity.
+
+## Cấu trúc chính
+
+```text
+main.py                         Public pipeline facade
+main_core.py                    Pipeline implementation core
+backend/main_api.py             Hardened FastAPI entrypoint
+backend/main_api_core.py        API implementation core; không deploy trực tiếp
+backend/contract_suite.py       Cài + verify runtime/API contracts theo thứ tự cố định
+modules/1_loader.py             Loader facade
+modules/5_normalizer.py         Source-safe mapping/normalization/unpivot
+modules/7_joiner.py             CTKM Monthly ↔ POG reconciliation
+modules/8_reconciler.py         Action, overlap, location, task identity
+modules/9_exporter.py           Excel report facade
+modules/10_tem_r.py             Tem R facade
+modules/11_expiration_checker.py Kiểm tra hạn dùng
+frontend/                       React/Vite UI
 ```
-ctkm_pipeline/
-├── start.sh                        ← Khởi động 1 lệnh (backend + frontend)
-├── main.py                         ← CLI / hàm run_pipeline() cho code khác gọi
-├── .env.example                    ← Copy thành .env, điền GEMINI_API_KEY
-├── requirements.txt                ← Deps cho CLI
-│
-├── backend/
-│   ├── main_api.py                 ← FastAPI: /api/jobs/ctkm, /api/preview, /api/download
-│   └── requirements_backend.txt   ← Deps cho backend (gồm cả pipeline deps)
-│
-├── frontend/
-│   ├── src/App.jsx                 ← React UI toàn bộ (1 file)
-│   ├── vite.config.js              ← Proxy /api → localhost:8000
-│   └── package.json
-│
-├── modules/                        ← 9 module pipeline core (không đổi)
-│   ├── 1_loader.py
-│   ├── 2_sheet_classifier.py
-│   ├── 3_column_mapper.py          ← Gọi Gemini API
-│   ├── 4_mapping_cache.py          ← Cache tránh gọi Gemini lại
-│   ├── 5_normalizer.py             ← Apply mapping, parse, unpivot
-│   ├── 6_time_filter.py            ← Lọc CTKM theo overlap tháng
-│   ├── 7_joiner.py                 ← Outer join CTKM × POG
-│   ├── 8_reconciler.py             ← Phát hiện campaign chồng thời gian
-│   └── 9_exporter.py              ← Xuất Excel 6 sheet
-│
-├── config/                         ← 4 file JSON cấu hình
-└── logs/                           ← mapping_cache.json (tự tạo khi chạy)
-```
 
----
+Các facade/core riêng được giữ để compatibility với code cũ. Deployment luôn dùng
+`backend.main_api:app`; không dùng `backend.main_api_core:app`.
 
-## Cài đặt & chạy
+## Cài đặt local
 
-### Lần đầu
+Yêu cầu khuyến nghị: Python 3.11, Node.js 20+.
 
 ```bash
-cd ctkm_pipeline
 cp .env.example .env
-# Mở .env, điền: GEMINI_API_KEY=your_key_here
+# Bắt buộc đổi ADMIN_PASSWORD và ADMIN_SESSION_SECRET.
+# GEMINI_API_KEY chỉ cần nếu muốn dùng AI fallback.
 
-bash start.sh --setup    # cài Python deps + npm install
-```
-
-> **Yêu cầu:** Python 3.10+, Node.js 18+
-
-### Chạy hàng ngày
-
-```bash
+bash start.sh --setup
 bash start.sh
 ```
 
-Mở trình duyệt: **http://localhost:5173**
+Windows:
 
-## Deploy lên Render
+```bat
+start.bat --setup
+start.bat
+```
 
-Repository đã được cấu hình để build React và phục vụ giao diện cùng FastAPI
-trong một Docker service:
+Frontend: `http://localhost:5173`  
+Backend: `http://localhost:8000`  
+Swagger: `http://localhost:8000/docs`
 
-1. Đẩy source code lên GitHub/GitLab (không commit file `.env`).
-2. Trên Render, tạo Blueprint từ repository; Render sẽ đọc `render.yaml`.
-3. Nhập secret `GEMINI_API_KEY` và `ADMIN_PASSWORD` khi được yêu cầu.
-   `ADMIN_SESSION_SECRET` được Render tự sinh. Tên đăng nhập mặc định là `admin`;
-   có thể đổi bằng biến `ADMIN_USERNAME`.
-4. Sau khi deploy, kiểm tra `/api/health` và mở URL gốc để dùng giao diện.
+## Deploy
 
-Khách không cần đăng nhập và chỉ thấy chức năng kiểm tra hạn dùng. Admin đăng
-nhập ở thanh trên cùng để mở Công cụ CTKM và Phân bổ Tem R. Các API quản trị
-cũng yêu cầu token admin, vì vậy việc phân quyền không chỉ dựa vào ẩn giao diện.
+Docker/Render chạy một Uvicorn worker:
 
-CTKM và Tem R dùng chung một hàng đợi nhẹ trong ứng dụng: mỗi lần chỉ xử lý một
-tác vụ Excel nặng, mặc định nhận tối đa 5 tác vụ gồm cả đang chạy và đang chờ.
-Có thể đổi giới hạn bằng `HEAVY_JOB_QUEUE_SIZE`. Kiểm tra hạn dùng chạy riêng và
-không phải chờ hàng đợi này. Vì hàng đợi nằm trong bộ nhớ, nó sẽ mất khi Render
-restart/redeploy.
+```text
+python -m uvicorn backend.main_api:app --host 0.0.0.0 --port $PORT
+```
 
-Kiểm tra hạn dùng cho phép mặc định 5 lượt dò đồng thời (`EXPIRATION_CONCURRENCY`).
-Nếu nhiều người tải lên cùng một file tồn kho, hệ thống nhận diện theo nội dung và
-chỉ đọc Excel một lần; file gần nhất được giữ trong cache RAM
-(`EXPIRATION_CACHE_SIZE=1`). CTKM/Tem R trả mã tác vụ ngay, sau đó giao diện tự
-theo dõi trạng thái và vị trí hàng đợi của chính người dùng.
+Queue/job state hiện là process-local, vì vậy không tăng `--workers` nếu chưa
+chuyển queue/job store sang shared storage. Render Blueprint dùng `render.yaml` và
+Dockerfile hiện tại. Blueprint đặt `autoDeployTrigger: checksPass`, vì vậy deploy
+tự động chỉ bắt đầu sau khi CI của commit trên branch liên kết đã pass.
 
-Giới hạn mặc định là 20 MB cho file hạn dùng, 25 MB cho Tem R và 50 MB cho mỗi
-file CTKM/POG. Kết quả hết hạn sau 6 giờ và được dọn khi có yêu cầu mới.
+Admin workflows cần `ADMIN_PASSWORD` và `ADMIN_SESSION_SECRET`. `GEMINI_API_KEY`
+chỉ cần nếu muốn hỗ trợ mapping AI fallback. `/api/health` trả thêm:
 
-Lưu ý: gói miễn phí dùng filesystem tạm thời. Kết quả Excel và mapping preset có
-thể mất khi service restart/redeploy; cần persistent disk hoặc object storage nếu
-muốn lưu lâu dài.
+```json
+{
+  "contract_suite": "v1",
+  "contracts_ok": true,
+  "contract_order": ["runtime", "input", "mapping-result", "..."],
+  "main_facade_hooks": ["mapping-result-contract-v1", "backend-contract-suite-verify-v1"]
+}
+```
 
-Kiểm tra trước khi đẩy code:
+Nếu contract bắt buộc bị route khác ghi đè, backend fail ở startup/reload thay vì
+âm thầm chạy implementation legacy.
+
+### Lưu ý persistence trên Render Free
+
+`render.yaml` hiện dùng plan `free`. Workflow preset và mapping cache đang lưu file
+local lần lượt tại `logs/workflow_presets.json` và `logs/mapping_cache.json`.
+Filesystem của Render Free là ephemeral, nên các file này có thể mất khi service
+spin-down, restart hoặc redeploy. Mapping deterministic cho file Pharmacity chuẩn
+không phụ thuộc hai file này; nhưng nếu cần giữ custom preset/cache lâu dài thì phải
+chuyển chúng sang shared durable storage trước khi coi “mapping đã lưu” là dữ liệu
+bền vững qua vòng đời instance.
+
+## CTKM / POG semantics
+
+### Phạm vi tháng
+
+Một promotion được giữ trong operational month khi:
+
+- khoảng ngày promotion giao với tháng mục tiêu; **hoặc**
+- ngày tháo tem (`promo_to + 1 ngày`) nằm trong tháng mục tiêu.
+
+Dòng thiếu/sai ngày không bị xóa; nó được giữ để `Cần review`.
+
+### Mã sản phẩm cũ / mới
+
+Monthly/Clearance có thể chứa mã nguồn và mã mới trong giai đoạn chuyển đổi. Hệ
+thống giữ raw `item_id` làm identity nguồn, nhưng cho phép POG/comparison match
+qua cặp mã cũ↔mới **chỉ khi alias P-code là một-một và không mơ hồ**. One-to-many,
+chain hoặc mã mới đồng thời là direct source code sẽ không được tự remap.
+
+### Channel / scope
+
+`KEY Channel` và `Channel` luôn là hai field riêng. Raw source không đổi. Một
+operational scope key normalize case/spacing chỉ dùng để tránh duplicate thao tác
+như `Offline` vs `OFFLINE`; stable `promotion_id/task_id` nguồn vẫn được giữ.
+
+Overlap cùng scope có thể blocking. All-channel với Online/Offline hoặc các scope
+khác vẫn được báo để audit nhưng không tự động block nếu contract không chứng minh
+hai offer cùng một phạm vi vận hành.
+
+### POG month và vị trí
+
+`scheduled_action` độc lập với chất lượng POG. Một CTKM vẫn có thể là `gắn tem`
+trong khi POG cần review. Các trục chính gồm:
+
+- `location_completeness`;
+- `pog_month_status`;
+- `location_needs_review`;
+- `pog_applicable`.
+
+Explicit `item_id=Bill` được coi là chương trình hóa đơn hợp lệ nhưng
+`pog_applicable=False`; các P-code có mô tả "purchase bill ..." vẫn là SKU và vẫn
+đối chiếu POG bình thường.
+
+## Excel kết quả
+
+Các sheet chính:
+
+| Sheet | Ý nghĩa |
+|---|---|
+| `HƯỚNG DẪN` | Card số lượng theo đúng visible business rows |
+| `Gắn tem` | Unique operational tasks cần gắn tem |
+| `Tháo tem` | Unique operational tasks cần tháo tem |
+| `Chờ gắn` | Task chưa đến ngày gắn |
+| `Cần review` | Task có lỗi dữ liệu hoặc blocking conflict |
+| `Audit hành động` | Toàn bộ action/source lineage, kể cả dòng được gom ở work sheet |
+| `CTKM thieu vi tri ke` | Audit các promotion thiếu/không đủ vị trí POG |
+| `POG cần kiểm tra` | Vị trí cần review, gồm POG lệch/không rõ tháng khi áp dụng |
+| `Tong hop` | Monthly CTKM ↔ POG matched reconciliation |
+| `POG không có CTKM` | **Monthly reconciliation audit**: POG không có CTKM Monthly phù hợp |
+| `POG cần review` | Dòng POG business thiếu mã/khóa cần review |
+| `Canh bao trung thoi gian` | Blocking và non-blocking overlap diagnostics |
+| `Xác nhận CTKM Clearance` | So sánh Monthly và Clearance |
+| `Tom tat` | Canonical summary metrics; alias cũ gây hiểu nhầm được ẩn |
+| `Mapping log` | Nguồn mapping: manual/preset/standard/cache/Gemini; hidden |
+
+Nếu nguồn chứa các control rows POG (`Total`, `Applied filters/DATEID`) hoặc fact
+subtotal/Grand Total đã được chứng minh structurally, chúng không đi vào nghiệp vụ
+nhưng vẫn được giữ nguyên lineage/value trong các sheet hidden `POG metadata` và
+`KM metadata`.
+
+### Monthly reconciliation vs all-KM POG coverage
+
+Không dùng sheet `POG không có CTKM` để suy ra coverage của toàn bộ promotion.
+Sheet này cố ý là **Monthly-only reconciliation**. Các metric canonical cho coverage
+Monthly + Clearance dùng tên `... KM ...`, ví dụ:
+
+- `So dong POG khong co KM phu hop`;
+- `So item POG khong co KM phu hop`;
+- `So item POG co KM phu hop`.
+
+Legacy key `... CTKM ...` còn tồn tại cho frontend compatibility nhưng phải bằng
+canonical alias và bị ẩn trong `Tom tat` khi tên cũ gây hiểu nhầm.
+
+## Preview API
+
+Preview đọc **workbook cuối cùng mà người dùng nhìn thấy**:
+
+- không trả `HƯỚNG DẪN` như DataTable;
+- không trả hidden metadata sheets;
+- không trả hidden technical columns/rows;
+- sheet placeholder `Ghi chu / Không có ...` có `total_rows=0`;
+- `total_rows` là số visible non-empty business rows, không phải `max_row - 1`.
+
+## Tem R
+
+Tem R dùng chung heavy-job queue với CTKM. API preflight kiểm sheet/header/mapping,
+cột tồn kho và resource limit trước khi nhận job. Final workbook được validate lại
+trước khi job thành `completed`.
+
+Tồn kho được quản lý ở cấp `(STOREID, ITEMID)` để không nhân stock khi cùng SKU có
+nhiều vị trí POG. Stock `#N/A`, thiếu hoặc không hợp lệ không được coi là 0 để cấp
+Tem R; chúng đi vào audit/exception theo contract hiện tại.
+
+## Kiểm tra hạn dùng
+
+Endpoint hạn dùng vẫn public. Input entry dùng format:
+
+```text
+MÃ_P;SỐ_LÔ;DD/MM/YYYY
+```
+
+Ngày yêu cầu phải đúng `DD/MM/YYYY`. File Excel phải là XLSX hợp lệ, có ITEMID
+business rows và nằm trong giới hạn resource. Concurrency quá giới hạn fail-fast
+`503` thay vì chiếm threadpool chờ vô hạn.
+
+## API chính
+
+| Method | Endpoint | Mô tả |
+|---|---|---|
+| `GET` | `/api/health` | Health + contract-suite status |
+| `POST` | `/api/jobs/ctkm` | Preflight + queue CTKM/POG/Clearance |
+| `POST` | `/api/run` | Alias compatibility của CTKM queue |
+| `GET` | `/api/job/{job_id}/status` | Trạng thái job |
+| `GET` | `/api/queue/status` | Queue state |
+| `GET` | `/api/preview/{job_id}` | Visible workbook preview |
+| `GET` | `/api/download/{job_id}` | Download chỉ khi job completed + output hợp lệ |
+| `GET` | `/api/jobs` | Public-safe job history fields |
+| `POST` | `/api/inspect-tem-r` | Inspect Tem R, admin |
+| `POST` | `/api/jobs/tem-r` | Queued Tem R, admin |
+| `POST` | `/api/check-expiration` | Kiểm tra hạn dùng, public |
+
+## Kiểm tra trước merge/release
+
+Repository có GitHub Actions tại `.github/workflows/ci.yml`. Release gate tối thiểu:
 
 ```bash
 pip install -r requirements-dev.txt
+python -m compileall -q main.py main_core.py backend modules tests
 pytest -q
 npm --prefix frontend ci
 npm --prefix frontend run build
 docker build -t ctkm-pipeline .
 ```
 
----
+CI không cấu hình Gemini key để chứng minh standard/preset/cache paths không phụ
+thuộc AI ngoài ý muốn. Docker build chỉ chạy sau khi Python tests và frontend build
+đều pass.
 
-## Dùng từ code / tích hợp hệ thống khác
-
-```python
-from main import run_pipeline
-
-result = run_pipeline(
-    ctkm_filepath = "file_ctkm_thang5.xlsx",
-    pog_filepath  = "file_pog_thang5.xlsx",
-    target_month  = "2026-05",          # frontend truyền vào
-    business_date = "2026-05-15",       # tùy chọn; mặc định là ngày hiện tại theo giờ VN
-    output_path   = "output/ket_qua.xlsx",
-    fail_on_month_mismatch = False,     # True = dừng cứng nếu lệch tháng
-)
-
-print(result.output_filepath)   # đường dẫn file Excel xuất ra
-print(result.warnings)          # list cảnh báo (lệch tháng, mapping ngờ vực…)
-print(result.summary)           # dict số liệu tổng quan
-```
-
----
-
-## File kết quả Excel
-
-| Sheet | Nội dung |
-|---|---|
-| `Tong hop` | CTKM phù hợp phạm vi tháng và có vị trí POG để đối chiếu |
-| `CTKM thieu vi tri ke` | Chỉ các công việc không tìm thấy SKU hoặc thiếu một phần thông tin vị trí |
-| `POG cần kiểm tra` | Vị trí cần review riêng, gồm thiếu vị trí hoặc snapshot POG lệch/không rõ tháng |
-| `POG không có CTKM` | SKU có trên POG nhưng không có CTKM phù hợp trong dữ liệu/tháng đang xét — cần kiểm tra |
-| `POG cần review` | Dòng POG thiếu mã sản phẩm hoặc không đủ khóa để đối chiếu |
-| `Canh bao trung thoi gian` | Cặp campaign chồng ngày, có `conflict_type` và `is_blocking`; chỉ xung đột chặn mới vào `Cần review` |
-| `Mapping log` | Gemini map cột nào, confidence bao nhiêu — để audit |
-| `Tom tat` | Số liệu tổng + cảnh báo lệch tháng POG/CTKM |
-| `Gắn tem` | Danh sách CTKM cần gắn tem, kèm vị trí kệ |
-| `Tháo tem` | Danh sách CTKM cần tháo tem, kèm vị trí kệ |
-| `Chờ gắn` | CTKM chưa đến ngày gắn theo ngày nghiệp vụ |
-| `Cần review` | Dòng thiếu mã/tên chương trình, thiếu/sai ngày hoặc có xung đột chặn cần xác nhận |
-| `Audit hành động` | Toàn bộ dữ liệu hành động, kể cả dòng ngoài phạm vi tháng, kèm lineage và ID ổn định |
-
----
-
-## API endpoints (FastAPI)
-
-| Method | Endpoint | Mô tả |
-|---|---|---|
-| `GET` | `/api/health` | Health check |
-| `POST` | `/api/jobs/ctkm` | Luồng chính: upload CTKM, POG, Clearance tùy chọn, ngày nghiệp vụ và đưa vào queue |
-| `POST` | `/api/run` | Alias deprecated, chuyển toàn bộ tham số sang `/api/jobs/ctkm` và trả job queue tương tự |
-| `GET` | `/api/preview/{job_id}` | JSON preview dữ liệu (N dòng đầu mỗi sheet) |
-| `GET` | `/api/download/{job_id}` | Download file Excel kết quả |
-| `GET` | `/api/jobs` | Lịch sử job trong session hiện tại |
-| `GET` | `/docs` | Swagger UI (tự động từ FastAPI) |
-
----
-
-## Nguyên tắc thiết kế quan trọng
-
-- **Gemini chỉ gán nhãn tên cột** — không được sửa/suy đoán giá trị dữ liệu thực tế.
-- **Unpivot whitelist**: chỉ `campaign_detail` và `promo_price` được phép có nhiều slot
-  trên 1 dòng. Field khác bị trùng slot → KHÔNG nhân dòng, ghi cảnh báo trong Mapping log.
-- **Không mất dữ liệu âm thầm**: mọi trường hợp lệch đều được GIU LẠI và cảnh báo.
-- **Overlap filter**: lọc CTKM theo `promo_from <= cuối_tháng AND promo_to >= đầu_tháng`
-  — bắt trọn campaign chạy xuyên nhiều tháng.
-- **Detect overlap TRƯỚC khi join**: tránh false positive do 1-nhiều POG nhân dòng.
-- **Cache mapping** (`logs/mapping_cache.json`): tháng sau dùng cùng template Excel
-  thì Gemini KHÔNG bị gọi lại.
+Không merge chỉ dựa vào việc file Excel được tạo ra: final-output contract còn kiểm
+required sheets, summary ↔ sheet counts, guide cards, hidden metadata và canonical
+vs legacy metric invariants trước khi job được publish.
