@@ -16,6 +16,7 @@ from backend.gemini_availability_contract import install_gemini_availability_con
 from backend.tem_r_resource_contract import install_tem_r_resource_contract
 from backend.auxiliary_workflows_contract import install_auxiliary_workflows_contract
 from backend.expiration_api_contract import install_expiration_api_contract
+from backend.slim_output_contract import install_slim_output_contract
 from backend.final_output_contract import install_final_output_contract
 from backend.preview_contract import install_preview_contract
 
@@ -28,6 +29,7 @@ CONTRACT_ORDER = (
     "tem-r-resource",
     "auxiliary-workflows",
     "expiration-api",
+    "slim-output",
     "final-output",
     "preview",
 )
@@ -40,6 +42,7 @@ _STATE_FLAGS = {
     "tem-r-resource": "tem_r_resource_contract_v1",
     "auxiliary-workflows": "auxiliary_workflows_contract_v1",
     "expiration-api": "expiration_api_contract_v1",
+    "slim-output": "slim_output_contract_v1",
     "final-output": "final_output_contract_v1",
     "preview": "visible_preview_contract",
 }
@@ -87,6 +90,9 @@ def _install_health_contract(core_module) -> None:
             "main_facade_hooks": (
                 list(registered_post_facade_hooks(main_core))
                 if main_core is not None else []
+            ),
+            "ctkm_output_profile": getattr(
+                core_module.app.state, "ctkm_output_profile", "full"
             ),
         })
         return result
@@ -153,6 +159,9 @@ def verify_contract_suite(core_module) -> None:
     if getattr(retained_main, "_get_or_map", None) is not mapper:
         raise RuntimeError("Facade ctkm_main giữ reference _get_or_map cũ sau facade rebuild")
 
+    if getattr(core_module.app.state, "ctkm_output_profile", None) != "production-slim":
+        raise RuntimeError("Backend CTKM chưa bật production-slim output profile")
+
     core_module.app.state.contract_installation_order = CONTRACT_ORDER
     core_module.app.state.registered_main_facade_hooks = hooks
 
@@ -171,6 +180,7 @@ def install_contract_suite(core_module) -> None:
     install_tem_r_resource_contract(core_module)
     install_auxiliary_workflows_contract(core_module)
     install_expiration_api_contract(core_module)
+    install_slim_output_contract(core_module)
     install_final_output_contract(core_module)
     install_preview_contract(core_module)
     _install_health_contract(core_module)
