@@ -19,6 +19,7 @@ import threading
 
 from backend.contract_suite import install_contract_suite
 from backend.tag_audit_contract import install_tag_audit_contract
+from backend.tag_audit_frontend_contract import install_tag_audit_frontend_contract
 
 _CORE_NAME = "backend.main_api_core"
 _CORE_PATH = Path(__file__).with_name("main_api_core.py")
@@ -177,6 +178,9 @@ install_contract_suite(_core)
 # The tag-audit feature is additive and deliberately installed after the verified
 # legacy suite so it cannot mutate existing CTKM/Tem-R route contracts.
 install_tag_audit_contract(_core)
+# StaticFiles(html=True) is not a generic SPA fallback. Register the browser route
+# explicitly before the root static mount so /scan-tem serves Vite's index.html.
+install_tag_audit_frontend_contract(_core)
 
 # Make imports receive the actual core module. This preserves attribute mutation
 # semantics used by tests and by runtime monkeypatch/configuration code.
