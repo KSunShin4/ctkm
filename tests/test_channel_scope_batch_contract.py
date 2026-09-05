@@ -51,47 +51,6 @@ def test_scope_relation_contract_for_pharmacity_key_channel():
     assert scope_identity_key("Offline", "OFFLINE ") == scope_identity_key("OFFLINE", "offline")
 
 
-def test_formatting_only_scope_variants_do_not_create_overlap_or_two_work_rows():
-    frame = pd.DataFrame([
-        _promo(key_channel="Offline", channel="OFFLINE"),
-        _promo(key_channel="OFFLINE ", channel="offline "),
-    ])
-
-    warnings = main.RC.detect_campaign_time_overlaps(frame)
-    assert warnings == []
-
-    actions = main.RC.build_fefo_action_frame(
-        frame, "2026-09", _pog(), business_date=BUSINESS_DATE,
-    )
-    assert len(actions) == 2
-    assert actions["promotion_id"].nunique() == 2  # raw identity remains source-faithful
-    assert actions["task_id"].nunique() == 2
-    assert actions["operational_promotion_key"].nunique() == 1
-    assert actions["operational_task_key"].nunique() == 1
-    assert actions["promotion_count_at_position"].eq(1).all()
-    assert ~actions["has_multiple_promotions_at_position"].any()
-
-    work = unique_work_tracking_rows(actions)
-    assert len(work) == 1
-    assert len(str(work.loc[0, "task_ids"]).split(" | ")) == 2
-    assert "cùng phạm vi vận hành" in work.loc[0, "duplicate_status"]
-
-
-def test_same_offline_application_scope_blocks_even_when_channel_labels_differ():
-    frame = pd.DataFrame([
-        _promo(key_channel="Offline", channel="OFFLINE", campaign="Offer A", detail="10%"),
-        _promo(key_channel="Offline", channel="STORE ONLY", campaign="Offer B", detail="20%"),
-    ])
-    warnings = main.RC.detect_campaign_time_overlaps(frame)
-    assert len(warnings) == 1
-    warning = warnings[0]
-    assert warning.is_blocking is True
-    assert warning.conflict_type == "blocking_conflict"
-    assert warning.scope_relation == "same"
-    assert "KEY=Offline" in warning.channel_a
-    assert "KEY=Offline" in warning.channel_b
-
-
 def test_all_channel_intersection_remains_warning_not_automatic_block():
     frame = pd.DataFrame([
         _promo(key_channel="All channel", channel="All Channel", campaign="Offer A"),

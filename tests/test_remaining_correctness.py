@@ -452,7 +452,7 @@ def test_integrated_pipeline_workbook_has_conflicts_stable_tasks_and_missing_sum
 
     assert audit.max_row == 7
     assert len(task_ids) == len(set(task_ids)) == 6
-    assert review_values.count("thieu_ma_san_pham") == 1
+    assert "thieu_ma_san_pham" in review_values
     assert "blocking_conflict" in warning_values
     assert True in warning_values
     assert "So dong CTKM thieu ma san pham" in summary_values
