@@ -20,6 +20,7 @@ import threading
 from backend.contract_suite import install_contract_suite
 from backend import tag_audit_contract as _tag_audit_contract
 from backend.tag_audit_contract import install_tag_audit_contract
+from backend.tag_audit_local_ocr_contract import install_tag_audit_local_ocr_contract
 from backend.tag_audit_itemid_contract import install_tag_audit_itemid_contract
 
 _CORE_NAME = "backend.main_api_core"
@@ -187,9 +188,10 @@ _tag_audit_contract._DISPLAY_TO_KEY.update({
 })
 _tag_audit_contract._CANONICAL_KEYS.update({"key_channel", "channel"})
 
-# Company shelf labels visibly print Pxxxxx. Harden OCR observations before route
-# functions capture the extractor/comparator so ITEMID is the primary identity
-# signal. Barcode remains supporting-only.
+# Production scanner pipeline: local RapidOCR is the primary text reader, then
+# ITEMID hardening treats the printed Pxxxxx as the primary identity signal.
+# Gemini remains an optional fallback inside the local OCR contract only.
+install_tag_audit_local_ocr_contract(_tag_audit_contract)
 install_tag_audit_itemid_contract(_tag_audit_contract)
 
 # In the production Docker image frontend/dist exists before this module imports,
