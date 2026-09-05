@@ -18,6 +18,7 @@ import tempfile
 import threading
 
 from backend.contract_suite import install_contract_suite
+from backend.tag_audit_contract import install_tag_audit_contract
 
 _CORE_NAME = "backend.main_api_core"
 _CORE_PATH = Path(__file__).with_name("main_api_core.py")
@@ -173,6 +174,9 @@ for _name, _value in {
 # All compatibility/hardening layers are installed and verified by one ordered
 # suite. The suite also binds the shared mapping validator before routes capture it.
 install_contract_suite(_core)
+# The tag-audit feature is additive and deliberately installed after the verified
+# legacy suite so it cannot mutate existing CTKM/Tem-R route contracts.
+install_tag_audit_contract(_core)
 
 # Make imports receive the actual core module. This preserves attribute mutation
 # semantics used by tests and by runtime monkeypatch/configuration code.
