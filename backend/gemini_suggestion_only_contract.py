@@ -9,6 +9,13 @@ user saves/confirms them as a preset or sends them explicitly.
 """
 from __future__ import annotations
 
+import threading
+
+from modules.facade_contracts import register_post_facade_hook
+
+
+_HOOK_NAME = "gemini-suggestion-only-contract-v1"
+
 
 def install_gemini_suggestion_only_contract(core_module) -> None:
     if getattr(core_module.app.state, "gemini_suggestion_only_contract_v1", False):
@@ -22,20 +29,25 @@ def install_gemini_suggestion_only_contract(core_module) -> None:
     from backend import input_contract
     validate_mapping = input_contract.validate_manual_mapping
 
+    # Availability/cooldown gate installed earlier. Keep a private reference for
+    # preview-only AI suggestions, then replace the public gate so production
+    # enqueue cannot call Gemini implicitly.
+    gemini_available = core_module._enforce_gemini_cooldown
+    preview_state = threading.local()
+
     def deterministic_mapping_or_none(main_module, df, schema_section, explicit, preset, *, kind: str):
         """Resolve executable mapping without Gemini or legacy AI cache."""
-        sheet_label = str(getattr(df, "attrs", {}).get("sheet_name") or kind.upper())
         if explicit is not None:
             checked = validate_mapping(explicit, df, schema_section)
-            return checked, "manual"
+            return checked, "manual-confirmed"
 
         if preset:
             try:
                 checked = validate_mapping(preset, df, schema_section)
                 return checked, "saved-preset"
             except ValueError:
-                # Do not trust a stale preset; deterministic recognition may still
-                # recover a standard Pharmacity file below.
+                # A stale preset is not executable. Deterministic recognition may
+                # still recover a standard Pharmacity file below.
                 pass
 
         infer = (
@@ -89,24 +101,73 @@ def install_gemini_suggestion_only_contract(core_module) -> None:
             "Hãy xem gợi ý mapping, kiểm tra và lưu mapping đã xác nhận trước khi chạy."
         )
 
-    # Bind execution mapper to both retained facade and shared core. Explicit
-    # mapping_override continues to bypass _get_or_map in main_core._process.
-    main_core._get_or_map = deterministic_get_or_map
-    main_mod._get_or_map = deterministic_get_or_map
+    # Keep compatibility with the existing contract-suite verification marker,
+    # while making the final execution policy explicit.
+    deterministic_get_or_map._ctkm_mapping_result_contract_v1 = True
+    deterministic_get_or_map._ctkm_gemini_suggestion_only_v1 = True
+
+    def bind_execution_mapper(core, facade_module=None):
+        core._get_or_map = deterministic_get_or_map
+        main_mod._get_or_map = deterministic_get_or_map
+        if facade_module is not None:
+            facade_module._get_or_map = deterministic_get_or_map
+
+    bind_execution_mapper(main_core, main_mod)
+    register_post_facade_hook(main_core, _HOOK_NAME, bind_execution_mapper)
 
     def preview_mapping_suggestion(sheet_name, df, schema_section, mapping_logs=None):
         """Explicit AI suggestion path: validate result, do not save to cache."""
         logs = [] if mapping_logs is None else mapping_logs
-        core_module._enforce_gemini_cooldown()
+        gemini_available()
         result = main_mod.CM.map_columns_with_gemini(sheet_name, df, schema_section)
         checked = validate_mapping(result.mapping, df, schema_section)
         safe = main_mod.MC.mapping_result_to_dict_safe(result)
         safe["mapping"] = checked
-        safe["source"] = "gemini-suggestion"
+        safe["source"] = "gemini-suggestion-unapproved"
         logs.append({**safe, "sheet_name": sheet_name})
         return checked, logs
 
     main_mod.preview_mapping = preview_mapping_suggestion
     main_core.preview_mapping = preview_mapping_suggestion
 
+    def block_implicit_gemini() -> None:
+        if getattr(preview_state, "allowed", False):
+            gemini_available()
+            return
+        raise core_module.HTTPException(
+            status_code=422,
+            detail=(
+                "Mapping chưa được xác nhận. Gemini chỉ được dùng để gợi ý trong màn hình "
+                "duyệt mapping; hãy kiểm tra và lưu mapping đã xác nhận trước khi chạy."
+            ),
+        )
+
+    core_module._enforce_gemini_cooldown = block_implicit_gemini
+
+    # The input contract's preview endpoint calls _enforce_gemini_cooldown before
+    # invoking main.preview_mapping. Wrap only that endpoint in a thread-local
+    # permission so production enqueue remains blocked.
+    original_preview = core_module.preview_mapping_job
+
+    async def preview_mapping_job(*args, **kwargs):
+        preview_state.allowed = True
+        try:
+            return await original_preview(*args, **kwargs)
+        finally:
+            preview_state.allowed = False
+
+    for route in core_module.app.routes:
+        if getattr(route, "path", None) != "/api/preview-mapping":
+            continue
+        if "POST" not in (getattr(route, "methods", None) or set()):
+            continue
+        route.endpoint = preview_mapping_job
+        dependant = getattr(route, "dependant", None)
+        if dependant is not None:
+            dependant.call = preview_mapping_job
+        break
+    else:
+        raise RuntimeError("Không tìm thấy POST /api/preview-mapping để khóa Gemini preview-only")
+
+    core_module.preview_mapping_job = preview_mapping_job
     core_module.app.state.gemini_suggestion_only_contract_v1 = True
