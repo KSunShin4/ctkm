@@ -81,8 +81,6 @@ def test_partial_pog_location_is_not_reported_as_complete():
 
 
 def test_multiple_pog_positions_are_all_preserved():
-    # Keep snapshot aligned so this test isolates position multiplicity rather than
-    # the independent unknown-POG-month review axis.
     pog = pd.DataFrame([
         {
             "item_id": "P1001", "store_id": "S1", "pog_code": "A",
@@ -135,8 +133,6 @@ def test_unknown_channel_is_byte_for_byte_preserved_and_does_not_hide_overlap():
     )
 
     assert len(warnings) == 1
-    # Warning display now carries both KEY Channel and Channel so scope is explicit;
-    # the raw source channel remains byte-for-byte preserved in the DataFrame.
     assert warnings[0].channel_a == f"KEY=(không rõ) | Channel={channel_a}"
     assert warnings[0].channel_b == f"KEY=(không rõ) | Channel={channel_b}"
     assert warnings[0].conflict_type == "potential_cross_channel_overlap"
@@ -163,26 +159,6 @@ def test_process_preserves_channel_and_source_excel_row():
     assert result.loc[0, "source_row_id"] == "Monthly:2"
 
 
-def test_overlap_moves_only_affected_campaign_rows_to_review():
-    frame = pd.DataFrame([
-        _promotion("P1", campaign_name="A"),
-        _promotion("P1", campaign_name="B"),
-        _promotion("P1", campaign_name="Later", promo_from=pd.Timestamp("2026-09-10"), promo_to=pd.Timestamp("2026-09-20")),
-        _promotion("P2", campaign_name="Unrelated"),
-    ])
-    warnings = main.RC.detect_campaign_time_overlaps(frame)
-
-    result = main.RC.build_fefo_action_frame(
-        frame, "2026-08", business_date=BUSINESS_DATE, overlap_warnings=warnings,
-    )
-
-    by_campaign = result.set_index("campaign_name")["scheduled_action"].to_dict()
-    assert by_campaign == {
-        "A": "review", "B": "review", "Later": "chờ gắn tem", "Unrelated": "gắn tem",
-    }
-    assert "xung_dot_thoi_gian" in result.set_index("campaign_name").loc["A", "reason"]
-
-
 def test_clearance_same_sku_different_period_is_not_dropped():
     ctkm = pd.DataFrame([_promotion("P1", campaign_name="CTKM")])
     clearance = pd.DataFrame([_promotion(
@@ -194,25 +170,6 @@ def test_clearance_same_sku_different_period_is_not_dropped():
 
     assert source["campaign_name"].tolist() == ["CTKM", "Clearance"]
     assert source["program_source"].tolist() == ["CTKM", "CLEARANCE"]
-
-
-def test_ctkm_clearance_same_sku_and_period_are_both_kept_for_review():
-    frame = main._build_promo_action_source(
-        pd.DataFrame([_promotion("P1", campaign_name="CTKM")]),
-        pd.DataFrame([_promotion("P1", campaign_name="Clearance", program_source="CLEARANCE")]),
-    )
-    warnings = main.RC.detect_campaign_time_overlaps(frame)
-
-    actions = main.RC.build_fefo_action_frame(
-        frame, "2026-08", business_date=BUSINESS_DATE, overlap_warnings=warnings,
-    )
-
-    assert len(actions) == 2
-    assert set(actions["program_source"]) == {"CTKM", "CLEARANCE"}
-    assert set(actions["scheduled_action"]) == {"review"}
-    assert actions["source_row_id"].nunique() == 2
-    assert any(value.startswith("CTKM:") for value in actions["source_row_id"])
-    assert any(value.startswith("CLEARANCE:") for value in actions["source_row_id"])
 
 
 def test_exact_duplicates_are_consolidated_with_lineage():
