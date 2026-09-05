@@ -13,6 +13,7 @@ from backend.runtime_contract import install_runtime_contract
 from backend.input_contract import install_input_contract
 from backend.mapping_result_contract import install_mapping_result_contract
 from backend.gemini_availability_contract import install_gemini_availability_contract
+from backend.gemini_suggestion_only_contract import install_gemini_suggestion_only_contract
 from backend.tem_r_resource_contract import install_tem_r_resource_contract
 from backend.auxiliary_workflows_contract import install_auxiliary_workflows_contract
 from backend.expiration_api_contract import install_expiration_api_contract
@@ -25,6 +26,7 @@ CONTRACT_ORDER = (
     "input",
     "mapping-result",
     "gemini-availability",
+    "gemini-suggestion-only",
     "tem-r-resource",
     "auxiliary-workflows",
     "expiration-api",
@@ -37,6 +39,7 @@ _STATE_FLAGS = {
     "input": "input_contract_v1",
     "mapping-result": "mapping_result_contract_v1",
     "gemini-availability": "gemini_availability_contract_v1",
+    "gemini-suggestion-only": "gemini_suggestion_only_contract_v1",
     "tem-r-resource": "tem_r_resource_contract_v1",
     "auxiliary-workflows": "auxiliary_workflows_contract_v1",
     "expiration-api": "expiration_api_contract_v1",
@@ -88,6 +91,7 @@ def _install_health_contract(core_module) -> None:
                 list(registered_post_facade_hooks(main_core))
                 if main_core is not None else []
             ),
+            "gemini_role": "mapping-suggestion-only",
         })
         return result
 
@@ -146,10 +150,14 @@ def verify_contract_suite(core_module) -> None:
     hooks = registered_post_facade_hooks(main_core)
     if "mapping-result-contract-v1" not in hooks:
         raise RuntimeError("Main facade chưa đăng ký mapping-result post-facade hook")
+    if "gemini-suggestion-only-contract-v1" not in hooks:
+        raise RuntimeError("Main facade chưa đăng ký Gemini suggestion-only hook")
 
     mapper = getattr(main_core, "_get_or_map", None)
     if not getattr(mapper, "_ctkm_mapping_result_contract_v1", False):
         raise RuntimeError("Mapping-result hardening không còn bọc _ctkm_main_core._get_or_map")
+    if not getattr(mapper, "_ctkm_gemini_suggestion_only_v1", False):
+        raise RuntimeError("Execution mapper chưa khóa Gemini về suggestion-only")
     if getattr(retained_main, "_get_or_map", None) is not mapper:
         raise RuntimeError("Facade ctkm_main giữ reference _get_or_map cũ sau facade rebuild")
 
@@ -159,15 +167,13 @@ def verify_contract_suite(core_module) -> None:
 
 def install_contract_suite(core_module) -> None:
     """Install contracts in their only supported order, then verify the surface."""
-    # The input module still contains its historical validator for compatibility.
-    # Make the production suite explicitly bind the shared validator before any
-    # route captures it; do not depend on import side effects in main_api.py.
     input_contract.validate_manual_mapping = validate_manual_mapping
 
     install_runtime_contract(core_module)
     install_input_contract(core_module)
     install_mapping_result_contract(core_module, validate_manual_mapping)
     install_gemini_availability_contract(core_module)
+    install_gemini_suggestion_only_contract(core_module)
     install_tem_r_resource_contract(core_module)
     install_auxiliary_workflows_contract(core_module)
     install_expiration_api_contract(core_module)
