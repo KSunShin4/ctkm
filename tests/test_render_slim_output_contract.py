@@ -71,7 +71,6 @@ def _actions():
 
 
 def _install_on_fake_backend():
-    # Use the public exporter module but isolate installation state.
     core = SimpleNamespace(
         app=SimpleNamespace(state=SimpleNamespace()),
         _main_mod=SimpleNamespace(EX=main.EX),
@@ -81,52 +80,53 @@ def _install_on_fake_backend():
 
 
 def test_slim_backend_export_writes_only_required_operational_sheets(tmp_path):
-    core = _install_on_fake_backend()
-    output = tmp_path / "slim.xlsx"
-    actions = _actions()
-    summary = {
-        "Thang bao cao": "2026-09",
-        "Ngay nghiep vu": pd.Timestamp("2026-09-05"),
-        "So dong KM thieu vi tri POG": 1,
-        "So dong can kiem tra vi tri": 1,
-        "So dong cho gan": 1,
-        "So dong can review": 1,
-    }
+    original_export = main.EX.export_final_report
+    try:
+        core = _install_on_fake_backend()
+        output = tmp_path / "slim.xlsx"
+        actions = _actions()
+        summary = {
+            "Thang bao cao": "2026-09",
+            "Ngay nghiep vu": pd.Timestamp("2026-09-05"),
+            "So dong KM thieu vi tri POG": 1,
+            "So dong can kiem tra vi tri": 1,
+            "So dong cho gan": 1,
+            "So dong can review": 1,
+        }
 
-    main.EX.export_final_report(
-        output_path=output,
-        df_matched=pd.DataFrame(),
-        df_ctkm_only=pd.DataFrame(),
-        df_pog_only=pd.DataFrame(),
-        overlap_warnings=[],
-        mapping_logs=[],
-        reconciliation_summary=summary,
-        df_fefo_actions=actions,
-    )
+        main.EX.export_final_report(
+            output_path=output,
+            df_matched=pd.DataFrame(),
+            df_ctkm_only=pd.DataFrame(),
+            df_pog_only=pd.DataFrame(),
+            overlap_warnings=[],
+            mapping_logs=[],
+            reconciliation_summary=summary,
+            df_fefo_actions=actions,
+        )
 
-    workbook = load_workbook(output, data_only=False)
-    assert workbook.sheetnames == SLIM_SHEET_ORDER
-    assert "Canh bao trung thoi gian" not in workbook.sheetnames
-    assert "Mapping log" not in workbook.sheetnames
-    assert "Tom tat" not in workbook.sheetnames
-    assert "POG metadata" not in workbook.sheetnames
-    assert "Xác nhận CTKM Clearance" not in workbook.sheetnames
+        workbook = load_workbook(output, data_only=False)
+        assert workbook.sheetnames == SLIM_SHEET_ORDER
+        assert "Canh bao trung thoi gian" not in workbook.sheetnames
+        assert "Mapping log" not in workbook.sheetnames
+        assert "Tom tat" not in workbook.sheetnames
+        assert "POG metadata" not in workbook.sheetnames
+        assert "Xác nhận CTKM Clearance" not in workbook.sheetnames
 
-    assert workbook["Gắn tem"].max_row == 2
-    assert workbook["Tháo tem"].max_row == 2
-    assert workbook["Chờ gắn"].max_row == 2
-    # P1001 keeps its operational action and also appears in review.
-    assert workbook["Cần review"].max_row == 2
-    assert workbook["CTKM thieu vi tri ke"].max_row == 2
-    assert workbook["POG cần kiểm tra"].max_row == 2
-    assert workbook["Audit hành động"].max_row == 4
-    workbook.close()
+        assert workbook["Gắn tem"].max_row == 2
+        assert workbook["Tháo tem"].max_row == 2
+        assert workbook["Chờ gắn"].max_row == 2
+        assert workbook["Cần review"].max_row == 2
+        assert workbook["CTKM thieu vi tri ke"].max_row == 2
+        assert workbook["POG cần kiểm tra"].max_row == 2
+        assert workbook["Audit hành động"].max_row == 4
+        workbook.close()
 
-    validate_ctkm_workbook(output, summary)
-    assert core.app.state.ctkm_output_profile == "production-slim"
+        validate_ctkm_workbook(output, summary)
+        assert core.app.state.ctkm_output_profile == "production-slim"
+    finally:
+        main.EX.export_final_report = original_export
 
 
-def test_full_library_export_remains_available_outside_backend_contract(tmp_path):
-    # The contract is backend-installed; source exporter still exposes the full
-    # implementation for CLI/tests that do not install the backend suite.
+def test_full_library_export_remains_available_outside_backend_contract():
     assert hasattr(main.EX, "_original_export_final_report")
