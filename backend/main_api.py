@@ -191,6 +191,7 @@ async def _scan_tem_spa_entry(request, call_next):
     return await call_next(request)
 
 
+setattr(_core, "_scan_tem_spa_entry", _scan_tem_spa_entry)
 if not getattr(_core.app.state, "scan_tem_spa_middleware_v1", False):
     _core.app.middleware("http")(_scan_tem_spa_entry)
     _core.app.state.scan_tem_spa_middleware_v1 = True
