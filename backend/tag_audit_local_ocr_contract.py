@@ -146,8 +146,11 @@ def extract_tag_with_rapidocr(image: bytes, month: str | None) -> dict:
 
     # Shelf-tag current price is deliberately printed much larger than the old
     # price. Use OCR box height as the deterministic primary ranking signal.
+    # Never treat the numeric part of ITEMID (P20383) as a money candidate.
     price_candidates: list[tuple[float, float, int]] = []
     for line in lines:
+        if _ITEM_RE.search(line["text"]):
+            continue
         for value in _parse_money(line["text"]):
             price_candidates.append((line["height"], line["score"], value))
     price_candidates.sort(key=lambda value: (value[0], value[1]), reverse=True)
@@ -208,7 +211,7 @@ def install_tag_audit_local_ocr_contract(tag_audit_module) -> None:
         return
 
     original_gemini = tag_audit_module._extract_tag_with_gemini
-    original_context_payload = tag_audit_module._context_payload
+    original_context_payload = getattr(tag_audit_module, "_context_payload", None)
 
     def local_first_extract(image: bytes, mime_type: str, month: str | None) -> dict:
         local_error = None
@@ -232,14 +235,19 @@ def install_tag_audit_local_ocr_contract(tag_audit_module) -> None:
             return local
         raise RuntimeError(local_error or "RapidOCR không khả dụng và Gemini fallback chưa cấu hình")
 
-    def context_payload_with_local(cache: dict) -> dict:
-        payload = original_context_payload(cache)
-        payload["local_ocr_available"] = True
-        payload["ocr_primary"] = "rapidocr"
-        payload["gemini_fallback_available"] = bool(os.getenv("GEMINI_API_KEY"))
-        return payload
-
     tag_audit_module._extract_tag_with_gemini = local_first_extract
-    tag_audit_module._context_payload = context_payload_with_local
+
+    # Lightweight facades used by unit tests may expose only extractor/comparator.
+    # Production tag_audit_contract has _context_payload, so enrich it there only.
+    if callable(original_context_payload):
+        def context_payload_with_local(cache: dict) -> dict:
+            payload = original_context_payload(cache)
+            payload["local_ocr_available"] = True
+            payload["ocr_primary"] = "rapidocr"
+            payload["gemini_fallback_available"] = bool(os.getenv("GEMINI_API_KEY"))
+            return payload
+
+        tag_audit_module._context_payload = context_payload_with_local
+
     tag_audit_module.extract_tag_with_rapidocr = extract_tag_with_rapidocr
     tag_audit_module._local_ocr_contract_v1 = True
