@@ -186,6 +186,41 @@ _tag_audit_contract._DISPLAY_TO_KEY.update({
 })
 _tag_audit_contract._CANONICAL_KEYS.update({"key_channel", "channel"})
 
+# In the production Docker image frontend/dist exists before this module imports,
+# so main_api_core has already mounted StaticFiles at "/". Starlette normalizes a
+# root Mount's ``path`` to the empty string. The original tag-audit helper looked
+# only for path == "/", failed to see the root mount, and appended API routes after
+# StaticFiles. POST /api/tag-audit/context was therefore intercepted by StaticFiles
+# and returned 405 Method Not Allowed. Keep all tag-audit API routes ahead of the
+# root frontend mount, regardless of that normalization detail.
+def _insert_tag_audit_route_before_frontend(
+    core_module, path: str, endpoint, methods: list[str], **kwargs
+):
+    core_module.app.add_api_route(path, endpoint, methods=methods, **kwargs)
+    routes = core_module.app.router.routes
+    new_route = next(
+        route for route in reversed(routes)
+        if getattr(route, "path", None) == path
+        and set(methods).issubset(getattr(route, "methods", set()) or set())
+    )
+    routes.remove(new_route)
+    mount_index = next(
+        (
+            index for index, route in enumerate(routes)
+            if route.__class__.__name__ == "Mount"
+            and (
+                getattr(route, "name", None) == "frontend"
+                or getattr(route, "path", None) in {"", "/"}
+            )
+        ),
+        len(routes),
+    )
+    routes.insert(mount_index, new_route)
+
+
+_tag_audit_contract._insert_api_route_before_frontend = _insert_tag_audit_route_before_frontend
+setattr(_core, "_insert_tag_audit_route_before_frontend", _insert_tag_audit_route_before_frontend)
+
 # The tag-audit feature is additive and deliberately installed after the verified
 # legacy suite so it cannot mutate existing CTKM/Tem-R route contracts.
 install_tag_audit_contract(_core)
