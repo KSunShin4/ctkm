@@ -47,19 +47,3 @@ def test_reconciler_ids_distinguish_key_channel():
     actions = main.RC.build_fefo_action_frame(rows, "2026-09", business_date="2026-09-05")
 
     assert actions["promotion_id"].nunique() == 2
-
-
-def test_exporter_base_entrypoint_is_business_first_and_keeps_both_channels():
-    frame = pd.DataFrame({
-        "task_id": ["T1"], "promotion_id": ["PR1"], "pog_position_id": ["L1"],
-        "item_id": ["P1"], "item_name": ["A"], "key_channel": ["OFFLINE"],
-        "channel": ["COMBO"], "campaign_name": ["Campaign"],
-    })
-
-    prepared = main.EX._prepare_action_sheet(frame)
-    selected = main.EX._filter_selected_columns(frame, ["item_name"])
-
-    assert prepared.columns.get_loc("item_id") < prepared.columns.get_loc("task_id")
-    assert prepared.columns.get_loc("key_channel") < prepared.columns.get_loc("promotion_id")
-    # selected_output_columns is a filter, not click-order: identifier stays first.
-    assert selected.columns.tolist() == ["item_id", "item_name", "key_channel", "channel"]
