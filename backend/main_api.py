@@ -23,6 +23,7 @@ from backend.tag_audit_contract import install_tag_audit_contract
 from backend.tag_audit_local_ocr_contract import install_tag_audit_local_ocr_contract
 from backend.tag_audit_itemid_contract import install_tag_audit_itemid_contract
 from backend.tag_audit_progress_contract import install_tag_audit_progress_contract
+from backend.tag_audit_promotion_disambiguation_contract import install_tag_audit_promotion_disambiguation_contract
 
 _CORE_NAME = "backend.main_api_core"
 _CORE_PATH = Path(__file__).with_name("main_api_core.py")
@@ -194,6 +195,7 @@ _tag_audit_contract._CANONICAL_KEYS.update({"key_channel", "channel"})
 # Gemini remains an optional fallback inside the local OCR contract only.
 install_tag_audit_local_ocr_contract(_tag_audit_contract)
 install_tag_audit_itemid_contract(_tag_audit_contract)
+install_tag_audit_promotion_disambiguation_contract(_tag_audit_contract)
 
 # In the production Docker image frontend/dist exists before this module imports,
 # so main_api_core has already mounted StaticFiles at "/". Starlette normalizes a
@@ -232,7 +234,7 @@ setattr(_core, "_insert_tag_audit_route_before_frontend", _insert_tag_audit_rout
 
 # Progress is a store-facing checklist only: count current Gắn-tem promotions,
 # expose stable check keys, and let the browser persist completed checks locally.
-# It wraps the already-hardened ITEMID comparator before scanner routes are added.
+# It wraps the already-hardened comparator before scanner routes are added.
 install_tag_audit_progress_contract(_tag_audit_contract, _core)
 
 # The tag-audit feature is additive and deliberately installed after the verified
