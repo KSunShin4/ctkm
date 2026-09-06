@@ -26,6 +26,7 @@ from backend.tag_audit_itemid_contract import install_tag_audit_itemid_contract
 from backend.tag_audit_progress_contract import install_tag_audit_progress_contract
 from backend.tag_audit_promotion_disambiguation_contract import install_tag_audit_promotion_disambiguation_contract
 from backend.tag_audit_temporal_hint_contract import install_tag_audit_temporal_hint_contract
+from backend.tag_audit_business_date_contract import install_tag_audit_business_date_contract
 
 _CORE_NAME = "backend.main_api_core"
 _CORE_PATH = Path(__file__).with_name("main_api_core.py")
@@ -199,6 +200,7 @@ install_tag_audit_local_ocr_contract(_tag_audit_contract)
 install_tag_audit_itemid_contract(_tag_audit_contract)
 install_tag_audit_promotion_disambiguation_contract(_tag_audit_contract)
 install_tag_audit_temporal_hint_contract(_tag_audit_contract, _tag_audit_local_ocr_contract)
+install_tag_audit_business_date_contract(_tag_audit_contract)
 
 # In the production Docker image frontend/dist exists before this module imports,
 # so main_api_core has already mounted StaticFiles at "/". Starlette normalizes a
