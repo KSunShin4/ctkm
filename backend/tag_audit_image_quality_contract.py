@@ -125,3 +125,42 @@ def inspect_and_preprocess_image(image_bytes: bytes) -> ImageQualityResult:
         "preprocessor": "opencv-clahe-v1",
     }
     return ImageQualityResult(image=processed, diagnostics=diagnostics)
+
+
+def _encode_for_ocr(image) -> bytes:
+    import cv2
+
+    ok, encoded = cv2.imencode(".jpg", image, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
+    if not ok:
+        raise RuntimeError("Không chuẩn bị được ảnh cho OCR")
+    return encoded.tobytes()
+
+
+def install_tag_audit_image_quality_contract(local_ocr_module) -> None:
+    """Wrap only the local OCR extractor; failures fall back to original bytes."""
+    if getattr(local_ocr_module, "_image_quality_contract_v1", False):
+        return
+
+    original_extract = local_ocr_module.extract_tag_with_rapidocr
+
+    def extract_with_quality(image: bytes, month: str | None) -> dict:
+        diagnostics = None
+        ocr_image = image
+        quality_warning = None
+        try:
+            quality = inspect_and_preprocess_image(image)
+            diagnostics = quality.diagnostics
+            ocr_image = _encode_for_ocr(quality.image)
+        except Exception as exc:
+            quality_warning = str(exc)
+
+        observed = original_extract(ocr_image, month)
+        if diagnostics is not None:
+            observed["image_quality"] = diagnostics
+        if quality_warning:
+            observed["image_quality_warning"] = quality_warning
+        return observed
+
+    local_ocr_module.extract_tag_with_rapidocr = extract_with_quality
+    local_ocr_module.inspect_and_preprocess_image = inspect_and_preprocess_image
+    local_ocr_module._image_quality_contract_v1 = True
