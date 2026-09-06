@@ -197,6 +197,7 @@ def _merge_local_with_gemini(local: dict, gemini: dict) -> dict:
     for key in (
         "item_id", "item_id_candidates", "promo_price", "normal_price",
         "promo_from", "promo_to", "date_text", "promo_text", "raw_text",
+        "image_quality", "image_quality_warning",
     ):
         value = local.get(key)
         if value not in (None, "", [], ()):  # preserve zero only if ever valid
@@ -209,6 +210,14 @@ def _merge_local_with_gemini(local: dict, gemini: dict) -> dict:
 def install_tag_audit_local_ocr_contract(tag_audit_module) -> None:
     if getattr(tag_audit_module, "_local_ocr_contract_v1", False):
         return
+
+    # Install the image-quality wrapper on this module itself. It is fail-open:
+    # if preprocessing cannot run, the original RapidOCR extractor still receives
+    # the original bytes and remains responsible only for OCR.
+    from backend.tag_audit_image_quality_contract import install_tag_audit_image_quality_contract
+    import backend.tag_audit_local_ocr_contract as local_ocr_module
+
+    install_tag_audit_image_quality_contract(local_ocr_module)
 
     original_gemini = tag_audit_module._extract_tag_with_gemini
     original_context_payload = getattr(tag_audit_module, "_context_payload", None)
@@ -245,6 +254,7 @@ def install_tag_audit_local_ocr_contract(tag_audit_module) -> None:
             payload["local_ocr_available"] = True
             payload["ocr_primary"] = "rapidocr"
             payload["gemini_fallback_available"] = bool(os.getenv("GEMINI_API_KEY"))
+            payload["image_preprocessor"] = "opencv-clahe-v1"
             return payload
 
         tag_audit_module._context_payload = context_payload_with_local
