@@ -51,6 +51,8 @@ jobs:
         run: npm --prefix frontend ci
       - name: Audit production frontend dependencies
         run: npm --prefix frontend audit --omit=dev --audit-level=high
+      - name: Test auto-capture controller
+        run: npm --prefix frontend run test:auto-capture
       - name: Build frontend
         run: npm --prefix frontend run build
 
