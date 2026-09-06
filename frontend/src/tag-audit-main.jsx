@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react"
 import ReactDOM from "react-dom/client"
 import TagAudit from "./TagAudit.jsx"
+import TagAuditPerceptionFeedback from "./TagAuditPerceptionFeedback.jsx"
 
 const nativeFetch = window.fetch.bind(window)
 
@@ -8,13 +9,25 @@ function emitUploadStatus(detail) {
   window.dispatchEvent(new CustomEvent("ctkm:tag-audit-upload-status", { detail }))
 }
 
+function emitPerceptionResult(detail) {
+  window.dispatchEvent(new CustomEvent("ctkm:tag-audit-perception-result", { detail }))
+}
+
 window.fetch = async (...args) => {
   const requestUrl = String(args[0] instanceof Request ? args[0].url : args[0] || "")
   const method = String(args[1]?.method || (args[0] instanceof Request ? args[0].method : "GET") || "GET").toUpperCase()
   const isWorkbookUpload = method === "POST" && requestUrl.includes("/api/tag-audit/context")
+  const isTagCheck = method === "POST" && requestUrl.includes("/api/tag-audit/check")
 
   try {
     const response = await nativeFetch(...args)
+
+    if (isTagCheck) {
+      let payload = null
+      try { payload = await response.clone().json() } catch {}
+      if (response.ok && payload && typeof payload === "object") emitPerceptionResult(payload)
+    }
+
     if (!isWorkbookUpload) return response
 
     let payload = {}
@@ -65,9 +78,22 @@ function UploadStatusBanner() {
   </div>
 }
 
+function PerceptionStatusBanner() {
+  const [result, setResult] = useState(null)
+
+  useEffect(() => {
+    const handler = event => setResult(event.detail || null)
+    window.addEventListener("ctkm:tag-audit-perception-result", handler)
+    return () => window.removeEventListener("ctkm:tag-audit-perception-result", handler)
+  }, [])
+
+  return <TagAuditPerceptionFeedback result={result} />
+}
+
 function TagAuditEntry() {
   return <>
     <UploadStatusBanner />
+    <PerceptionStatusBanner />
     <TagAudit />
     <aside style={{
       maxWidth: 720,
