@@ -32,6 +32,7 @@ from openpyxl import load_workbook
 import requests
 
 from modules.config_loader import GEMINI_CONFIG
+from modules.channel_scope import scope_identity_key
 
 
 _MAX_IMAGE_BYTES = max(1, int(os.getenv("MAX_TAG_AUDIT_IMAGE_MB", "8"))) * 1024 * 1024
@@ -412,6 +413,7 @@ Barcode chỉ là dữ liệu quan sát phụ, không đồng nghĩa với ITEMI
 def _row_business_key(row: dict) -> tuple:
     return (
         row.get("expected_action"),
+        scope_identity_key(row.get("key_channel"), row.get("channel")),
         _parse_iso_date(row.get("promo_from")),
         _parse_iso_date(row.get("promo_to")),
         _parse_money(row.get("promo_price")),
@@ -692,7 +694,7 @@ def install_tag_audit_contract(core_module) -> None:
         return
 
     async def tag_audit_context(_admin: str = Depends(core_module.require_admin)):
-        context = _cache_latest_job(core_module)
+        context = _current_context(core_module)
         return _context_payload(context)
 
     async def load_tag_audit_context(
