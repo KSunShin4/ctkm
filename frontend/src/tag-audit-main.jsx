@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react"
 import ReactDOM from "react-dom/client"
 import TagAudit from "./TagAudit.jsx"
+import TagAuditQuickCamera from "./TagAuditQuickCamera.jsx"
 import TagAuditPerceptionFeedback from "./TagAuditPerceptionFeedback.jsx"
 import {
   cacheUploadedWorkbook,
@@ -118,10 +119,24 @@ function PerceptionStatusBanner() {
   return <TagAuditPerceptionFeedback result={result} />
 }
 
+function QuickModeLink() {
+  return <div style={{maxWidth:720,margin:"12px auto -2px",padding:"0 14px"}}>
+    <a href="/scan-tem?mode=quick" style={{display:"block",textAlign:"center",padding:"11px 14px",borderRadius:12,background:"#17202a",color:"#fff",textDecoration:"none",font:"750 13px/1.3 Inter, ui-sans-serif, sans-serif"}}>⚡ Quét nhanh · giữ camera mở</a>
+  </div>
+}
+
 function TagAuditEntry() {
+  const quickMode = new URLSearchParams(window.location.search).get("mode") === "quick"
+  if (quickMode) return <>
+    <UploadStatusBanner />
+    <PerceptionStatusBanner />
+    <TagAuditQuickCamera />
+  </>
+
   return <>
     <UploadStatusBanner />
     <PerceptionStatusBanner />
+    <QuickModeLink />
     <TagAudit />
     <aside style={{
       maxWidth: 720,
