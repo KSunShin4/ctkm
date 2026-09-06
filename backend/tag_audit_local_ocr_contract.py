@@ -246,6 +246,12 @@ def install_tag_audit_local_ocr_contract(tag_audit_module) -> None:
 
     tag_audit_module._extract_tag_with_gemini = local_first_extract
 
+    # Barcode is another supporting perception module. Install it only after the
+    # local-first OCR wrapper exists so ZXing augments that observation instead of
+    # being overwritten by this installer. It never maps barcode -> ITEMID.
+    from backend.tag_audit_barcode_contract import install_tag_audit_barcode_contract
+    install_tag_audit_barcode_contract(tag_audit_module)
+
     # Lightweight facades used by unit tests may expose only extractor/comparator.
     # Production tag_audit_contract has _context_payload, so enrich it there only.
     if callable(original_context_payload):
@@ -255,6 +261,7 @@ def install_tag_audit_local_ocr_contract(tag_audit_module) -> None:
             payload["ocr_primary"] = "rapidocr"
             payload["gemini_fallback_available"] = bool(os.getenv("GEMINI_API_KEY"))
             payload["image_preprocessor"] = "opencv-clahe-v1"
+            payload["barcode_fallback"] = "zxingcpp"
             return payload
 
         tag_audit_module._context_payload = context_payload_with_local
