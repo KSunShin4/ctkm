@@ -32,23 +32,19 @@ def _frontend_mount_index(routes):
 def test_tag_audit_routes_are_installed_once_and_precede_static_frontend_when_present():
     get_context = _route("/api/tag-audit/context", "GET")
     post_context = _route("/api/tag-audit/context", "POST")
+    checklist = _route("/api/tag-audit/checklist", "GET")
     check = _route("/api/tag-audit/check", "POST")
 
     routes = list(main_api.app.routes)
     frontend_mount_index = _frontend_mount_index(routes)
-    # Python CI normally runs without a built frontend/dist. In a production
-    # Docker image the root StaticFiles mount exists and all tag-audit API routes
-    # must remain before it.
     if frontend_mount_index is not None:
         assert routes.index(get_context) < frontend_mount_index
         assert routes.index(post_context) < frontend_mount_index
+        assert routes.index(checklist) < frontend_mount_index
         assert routes.index(check) < frontend_mount_index
 
 
 def test_tag_audit_route_helper_handles_starlette_root_mount_normalization(tmp_path):
-    # Starlette normalizes app.mount("/", ...) so the Mount.path can be "".
-    # Reproduce the production topology explicitly: root static mount first,
-    # then install a tag-audit POST route through the hardened helper.
     (tmp_path / "index.html").write_text("ok", encoding="utf-8")
     app = FastAPI()
     app.mount("/", StaticFiles(directory=str(tmp_path), html=True), name="frontend")
@@ -80,6 +76,7 @@ def test_all_tag_audit_routes_require_admin():
     for path, method in (
         ("/api/tag-audit/context", "GET"),
         ("/api/tag-audit/context", "POST"),
+        ("/api/tag-audit/checklist", "GET"),
         ("/api/tag-audit/check", "POST"),
     ):
         route = _route(path, method)
