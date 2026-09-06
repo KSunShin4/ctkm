@@ -2,6 +2,11 @@ import React, { useEffect, useState } from "react"
 import ReactDOM from "react-dom/client"
 import TagAudit from "./TagAudit.jsx"
 import TagAuditPerceptionFeedback from "./TagAuditPerceptionFeedback.jsx"
+import {
+  cacheUploadedWorkbook,
+  restoreTagAuditContext,
+  workbookFromRequestBody,
+} from "./tag-audit-context-cache.js"
 
 const nativeFetch = window.fetch.bind(window)
 
@@ -14,13 +19,34 @@ function emitPerceptionResult(detail) {
 }
 
 window.fetch = async (...args) => {
-  const requestUrl = String(args[0] instanceof Request ? args[0].url : args[0] || "")
-  const method = String(args[1]?.method || (args[0] instanceof Request ? args[0].method : "GET") || "GET").toUpperCase()
-  const isWorkbookUpload = method === "POST" && requestUrl.includes("/api/tag-audit/context")
+  const request = args[0]
+  const options = args[1] || {}
+  const requestUrl = String(request instanceof Request ? request.url : request || "")
+  const method = String(options.method || (request instanceof Request ? request.method : "GET") || "GET").toUpperCase()
+  const isContextUrl = requestUrl.includes("/api/tag-audit/context")
+  const isWorkbookUpload = method === "POST" && isContextUrl
+  const isContextRead = method === "GET" && isContextUrl
   const isTagCheck = method === "POST" && requestUrl.includes("/api/tag-audit/check")
 
   try {
-    const response = await nativeFetch(...args)
+    let response = await nativeFetch(...args)
+
+    // Cloud Run context is process-local. If a scale-to-zero/restart erased it,
+    // transparently restore the last workbook explicitly uploaded on this device.
+    // Never mask auth/validation failures: only the known no-context 409 path may restore.
+    if (isContextRead && response.status === 409) {
+      const restoreOptions = request instanceof Request ? { headers: request.headers } : options
+      const restored = await restoreTagAuditContext(nativeFetch, restoreOptions)
+      if (restored) {
+        response = restored
+        let restoredPayload = null
+        try { restoredPayload = await restored.clone().json() } catch {}
+        emitUploadStatus({
+          kind: "success",
+          message: `Đã tự khôi phục workbook trên thiết bị — ${restoredPayload?.item_count || 0} SKU / ${restoredPayload?.row_count || 0} dòng hành động.`,
+        })
+      }
+    }
 
     if (isTagCheck) {
       let payload = null
@@ -33,6 +59,8 @@ window.fetch = async (...args) => {
     let payload = {}
     try { payload = await response.clone().json() } catch {}
     if (response.ok && payload?.ready) {
+      const workbook = workbookFromRequestBody(options.body)
+      if (workbook) await cacheUploadedWorkbook(workbook)
       emitUploadStatus({
         kind: "success",
         message: `Đã đọc được workbook — ${payload.item_count || 0} SKU / ${payload.row_count || 0} dòng hành động.`,
