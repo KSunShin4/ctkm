@@ -8,6 +8,11 @@ import {
   restoreTagAuditContext,
   workbookFromRequestBody,
 } from "./tag-audit-context-cache.js"
+import {
+  BUSINESS_DATE_EVENT,
+  emitBusinessDateState,
+  staleBusinessDateMessage,
+} from "./tag-audit-business-date-ui.js"
 
 const nativeFetch = window.fetch.bind(window)
 
@@ -27,6 +32,7 @@ window.fetch = async (...args) => {
   const isContextUrl = requestUrl.includes("/api/tag-audit/context")
   const isWorkbookUpload = method === "POST" && isContextUrl
   const isContextRead = method === "GET" && isContextUrl
+  const isChecklistRead = method === "GET" && requestUrl.includes("/api/tag-audit/checklist")
   const isTagCheck = method === "POST" && requestUrl.includes("/api/tag-audit/check")
 
   try {
@@ -42,11 +48,20 @@ window.fetch = async (...args) => {
         response = restored
         let restoredPayload = null
         try { restoredPayload = await restored.clone().json() } catch {}
+        if (restoredPayload) emitBusinessDateState(restoredPayload)
         emitUploadStatus({
           kind: "success",
           message: `Đã tự khôi phục workbook trên thiết bị — ${restoredPayload?.item_count || 0} SKU / ${restoredPayload?.row_count || 0} dòng hành động.`,
         })
       }
+    }
+
+    // Business-date safety is owned by the backend. Mirror its context metadata in
+    // the UI so a stale workbook is visible before a store user starts the camera.
+    if (response.ok && (isContextRead || isWorkbookUpload || isChecklistRead || isTagCheck)) {
+      let scannerPayload = null
+      try { scannerPayload = await response.clone().json() } catch {}
+      if (scannerPayload) emitBusinessDateState(scannerPayload)
     }
 
     if (isTagCheck) {
@@ -119,6 +134,27 @@ function PerceptionStatusBanner() {
   return <TagAuditPerceptionFeedback result={result} />
 }
 
+function BusinessDateBanner({ state, quickMode = false }) {
+  const message = staleBusinessDateMessage(state)
+  if (!message) return null
+  return <div role="alert" style={{
+    maxWidth: 720,
+    margin: "12px auto -2px",
+    padding: "13px 14px",
+    borderRadius: 12,
+    border: "1px solid #fecdca",
+    background: "#fef3f2",
+    color: "#b42318",
+    font: "650 12px/1.5 Inter, ui-sans-serif, sans-serif",
+  }}>
+    <strong>Không dùng workbook cũ để kiểm tem.</strong><br />
+    {message}
+    {quickMode && <div style={{marginTop:10}}>
+      <a href="/scan-tem" style={{color:"#b42318",fontWeight:800}}>← Về Kiểm tem để tải workbook mới</a>
+    </div>}
+  </div>
+}
+
 function QuickModeLink() {
   return <div style={{maxWidth:720,margin:"12px auto -2px",padding:"0 14px"}}>
     <a href="/scan-tem?mode=quick" style={{display:"block",textAlign:"center",padding:"11px 14px",borderRadius:12,background:"#17202a",color:"#fff",textDecoration:"none",font:"750 13px/1.3 Inter, ui-sans-serif, sans-serif"}}>⚡ Quét nhanh · giữ camera mở</a>
@@ -127,16 +163,26 @@ function QuickModeLink() {
 
 function TagAuditEntry() {
   const quickMode = new URLSearchParams(window.location.search).get("mode") === "quick"
+  const [businessDate, setBusinessDate] = useState(null)
+
+  useEffect(() => {
+    const handler = event => setBusinessDate(event.detail || null)
+    window.addEventListener(BUSINESS_DATE_EVENT, handler)
+    return () => window.removeEventListener(BUSINESS_DATE_EVENT, handler)
+  }, [])
+
   if (quickMode) return <>
     <UploadStatusBanner />
     <PerceptionStatusBanner />
-    <TagAuditQuickCamera />
+    <BusinessDateBanner state={businessDate} quickMode />
+    {!businessDate?.stale && <TagAuditQuickCamera />}
   </>
 
   return <>
     <UploadStatusBanner />
     <PerceptionStatusBanner />
-    <QuickModeLink />
+    <BusinessDateBanner state={businessDate} />
+    {!businessDate?.stale && <QuickModeLink />}
     <TagAudit />
     <aside style={{
       maxWidth: 720,
