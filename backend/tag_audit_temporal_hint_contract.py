@@ -11,8 +11,6 @@ from __future__ import annotations
 
 import re
 
-from backend.tag_audit_business_date_contract import install_tag_audit_business_date_contract
-
 
 def infer_unique_promotion_year(tag_audit_module, rows: list[dict]) -> str | None:
     years: set[str] = set()
@@ -64,7 +62,3 @@ def install_tag_audit_temporal_hint_contract(tag_audit_module, local_ocr_module)
     tag_audit_module._extract_tag_with_gemini = extract_with_uploaded_year_hint
     tag_audit_module.infer_unique_promotion_year = lambda rows: infer_unique_promotion_year(tag_audit_module, rows)
     tag_audit_module._temporal_hint_contract_v1 = True
-
-    # Install the report-business-date guard after temporal payload wrapping so
-    # both diagnostics coexist, and before progress wraps the comparator.
-    install_tag_audit_business_date_contract(tag_audit_module)
