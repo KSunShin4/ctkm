@@ -22,6 +22,7 @@ from backend import tag_audit_contract as _tag_audit_contract
 from backend.tag_audit_contract import install_tag_audit_contract
 from backend.tag_audit_local_ocr_contract import install_tag_audit_local_ocr_contract
 from backend.tag_audit_itemid_contract import install_tag_audit_itemid_contract
+from backend.tag_audit_progress_contract import install_tag_audit_progress_contract
 
 _CORE_NAME = "backend.main_api_core"
 _CORE_PATH = Path(__file__).with_name("main_api_core.py")
@@ -228,6 +229,11 @@ def _insert_tag_audit_route_before_frontend(
 
 _tag_audit_contract._insert_api_route_before_frontend = _insert_tag_audit_route_before_frontend
 setattr(_core, "_insert_tag_audit_route_before_frontend", _insert_tag_audit_route_before_frontend)
+
+# Progress is a store-facing checklist only: count current Gắn-tem promotions,
+# expose stable check keys, and let the browser persist completed checks locally.
+# It wraps the already-hardened ITEMID comparator before scanner routes are added.
+install_tag_audit_progress_contract(_tag_audit_contract, _core)
 
 # The tag-audit feature is additive and deliberately installed after the verified
 # legacy suite so it cannot mutate existing CTKM/Tem-R route contracts.
