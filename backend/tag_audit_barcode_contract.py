@@ -183,23 +183,17 @@ def _record_gemini_failure(exc: Exception) -> None:
         _GEMINI_BLOCK_UNTIL = max(_GEMINI_BLOCK_UNTIL, time.monotonic() + cooldown)
 
 
-def _recover_after_perception_failure(
-    image: bytes,
-    month: str | None,
-    exc: Exception,
-    local_observed: dict | None = None,
-) -> dict:
+def _recover_after_perception_failure(image: bytes, month: str | None, exc: Exception) -> dict:
     """Keep the scan usable when optional Gemini fallback is unauthorized/down."""
     from backend.tag_audit_rescue_ocr import rescue_with_focused_local_ocr
 
-    observed = dict(local_observed) if local_observed else None
-    rescue_message = ""
-    if observed is None:
-        try:
-            observed = rescue_with_focused_local_ocr(image, month)
-        except Exception as rescue_exc:
-            observed = None
-            rescue_message = str(rescue_exc)
+    try:
+        observed = rescue_with_focused_local_ocr(image, month)
+    except Exception as rescue_exc:
+        observed = None
+        rescue_message = str(rescue_exc)
+    else:
+        rescue_message = ""
 
     if observed is None:
         observed = _blank_local_observation()
@@ -211,6 +205,7 @@ def _recover_after_perception_failure(
         warning += f"; rescue OCR: {rescue_message}"
     observed["ocr_warning"] = warning
     observed["gemini_fallback_failed"] = True
+    observed["gemini_fallback_error"] = str(exc)
     return observed
 
 
@@ -231,11 +226,28 @@ def install_tag_audit_barcode_contract(tag_audit_module) -> None:
     def extract_with_barcode(image: bytes, mime_type: str, month: str | None) -> dict:
         local = _local_preflight(image, month)
 
-        # Most scans should stop here: deterministic local ITEMID + price is enough
-        # to identify the target and continue comparison. If dates are missing the
-        # business layer can return REVIEW/manual rather than consuming Gemini.
-        if _local_good_enough(local):
+        # No key means no remote fallback at all. Preserve the established local
+        # warning contract instead of passing through the pacing/cooldown gate.
+        if not os.getenv("GEMINI_API_KEY"):
+            if local:
+                observed = _mark_local_only(local, "gemini_not_configured")
+                if not _local_candidate_key(local)[0]:
+                    observed.setdefault(
+                        "ocr_warning",
+                        "RapidOCR chưa đọc đủ ITEMID + giá + ngày; Gemini fallback chưa cấu hình.",
+                    )
+            else:
+                try:
+                    observed = original_extract(image, mime_type, month)
+                except Exception as exc:
+                    observed = _recover_after_perception_failure(image, month, exc)
+
+        # Most configured-key scans should stop here: deterministic local ITEMID
+        # + price is enough to identify the target and continue comparison. If
+        # dates are missing the business layer can REVIEW/manual-confirm them.
+        elif _local_good_enough(local):
             observed = _mark_local_only(local, "local_itemid_price")
+
         else:
             allowed, gate_reason = _pace_optional_gemini()
             if not allowed:
@@ -252,9 +264,9 @@ def install_tag_audit_barcode_contract(tag_audit_module) -> None:
                     observed = original_extract(image, mime_type, month)
                 except Exception as exc:
                     _record_gemini_failure(exc)
-                    observed = _recover_after_perception_failure(
-                        image, month, exc, local_observed=local
-                    )
+                    # Keep the original three-argument recovery contract so tests
+                    # and downstream monkeypatches remain compatible.
+                    observed = _recover_after_perception_failure(image, month, exc)
 
         existing = re.sub(r"\D", "", str(observed.get("barcode") or ""))
         if _NUMERIC_BARCODE_RE.fullmatch(existing):

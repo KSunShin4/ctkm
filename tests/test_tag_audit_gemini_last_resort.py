@@ -20,6 +20,7 @@ def test_local_itemid_and_price_skip_gemini_even_when_dates_are_partial(monkeypa
             (image, mime_type, month)
         ),
     )
+    monkeypatch.setenv("GEMINI_API_KEY", "configured")
     monkeypatch.setattr(
         barcode_contract,
         "_local_preflight",
@@ -64,6 +65,7 @@ def test_gemini_runs_only_after_local_preflight_is_not_useful(monkeypatch):
         _barcode_contract_v1=False,
         _extract_tag_with_gemini=remote,
     )
+    monkeypatch.setenv("GEMINI_API_KEY", "configured")
     monkeypatch.setattr(barcode_contract, "_local_preflight", lambda image, month: None)
     monkeypatch.setattr(barcode_contract, "_pace_optional_gemini", lambda: (True, ""))
     monkeypatch.setattr(barcode_contract, "extract_supporting_barcodes", _no_barcode)
@@ -84,6 +86,7 @@ def test_gemini_cooldown_preserves_partial_local_result_without_remote_call(monk
         _barcode_contract_v1=False,
         _extract_tag_with_gemini=should_not_run,
     )
+    monkeypatch.setenv("GEMINI_API_KEY", "configured")
     monkeypatch.setattr(
         barcode_contract,
         "_local_preflight",
@@ -114,11 +117,47 @@ def test_gemini_cooldown_preserves_partial_local_result_without_remote_call(monk
     assert "tạm nghỉ" in observed["ocr_warning"]
 
 
+def test_no_key_bypasses_gemini_gate_and_keeps_local_warning(monkeypatch):
+    module = SimpleNamespace(
+        _barcode_contract_v1=False,
+        _extract_tag_with_gemini=lambda image, mime_type, month: (_ for _ in ()).throw(
+            AssertionError("remote extractor must not run")
+        ),
+    )
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.setattr(
+        barcode_contract,
+        "_local_preflight",
+        lambda image, month: {
+            "item_id": "P03845",
+            "item_id_candidates": ["P03845"],
+            "barcode": "",
+            "promo_price": None,
+            "promo_from": None,
+            "promo_to": None,
+            "ocr_engine": "rapidocr",
+        },
+    )
+    monkeypatch.setattr(
+        barcode_contract,
+        "_pace_optional_gemini",
+        lambda: (_ for _ in ()).throw(AssertionError("gate must not run without key")),
+    )
+    monkeypatch.setattr(barcode_contract, "extract_supporting_barcodes", _no_barcode)
+
+    barcode_contract.install_tag_audit_barcode_contract(module)
+    observed = module._extract_tag_with_gemini(b"image", "image/jpeg", "2026-09")
+
+    assert observed["item_id"] == "P03845"
+    assert "Gemini fallback chưa cấu hình" in observed["ocr_warning"]
+
+
 def test_429_and_403_create_different_fallback_cooldowns(monkeypatch):
     monkeypatch.setenv("TAG_AUDIT_GEMINI_429_COOLDOWN_SECONDS", "7")
     monkeypatch.setenv("TAG_AUDIT_GEMINI_AUTH_COOLDOWN_SECONDS", "11")
+    monkeypatch.setattr(barcode_contract.time, "monotonic", lambda: 100.0)
+    monkeypatch.setattr(barcode_contract, "_GEMINI_BLOCK_UNTIL", 0.0)
 
-    barcode_contract._GEMINI_BLOCK_UNTIL = 0.0
     barcode_contract._record_gemini_failure(RuntimeError("HTTP 429 rate limit"))
     after_429 = barcode_contract._GEMINI_BLOCK_UNTIL
 
@@ -126,7 +165,5 @@ def test_429_and_403_create_different_fallback_cooldowns(monkeypatch):
     barcode_contract._record_gemini_failure(RuntimeError("HTTP 403 forbidden"))
     after_403 = barcode_contract._GEMINI_BLOCK_UNTIL
 
-    # Both failures block immediate retries; auth/access failures use the configured
-    # longer window so every scan does not repeat a known-bad request.
-    assert after_429 > 0
-    assert after_403 > after_429
+    assert after_429 == 107.0
+    assert after_403 == 111.0

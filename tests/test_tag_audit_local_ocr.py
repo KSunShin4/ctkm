@@ -104,12 +104,15 @@ def test_local_first_returns_partial_local_result_without_gemini(monkeypatch):
     assert "Gemini fallback chưa cấu hình" in observed["ocr_warning"]
 
 
-def test_local_first_keeps_partial_rapidocr_when_gemini_returns_403(monkeypatch):
+def test_local_first_skips_gemini_when_local_itemid_and_price_are_usable(monkeypatch):
+    remote_calls = []
+
     class FakeTagAudit:
         _local_ocr_contract_v1 = False
 
         @staticmethod
         def _extract_tag_with_gemini(image, mime_type, month):
+            remote_calls.append((image, mime_type, month))
             raise RuntimeError("OCR Gemini thất bại: HTTP 403")
 
         @staticmethod
@@ -137,8 +140,9 @@ def test_local_first_keeps_partial_rapidocr_when_gemini_returns_403(monkeypatch)
     local_ocr.install_tag_audit_local_ocr_contract(module)
     observed = module._extract_tag_with_gemini(b"image", "image/jpeg", "2026-09")
 
+    assert remote_calls == []
     assert observed["item_id"] == "P25175"
     assert observed["promo_price"] == 500000
     assert observed["ocr_engine"] == "rapidocr"
-    assert observed["gemini_fallback_error"] == "OCR Gemini thất bại: HTTP 403"
-    assert "giữ kết quả RapidOCR" in observed["ocr_warning"]
+    assert observed["gemini_skipped"] is True
+    assert observed["gemini_skip_reason"] == "local_itemid_price"
