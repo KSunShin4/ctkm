@@ -1,9 +1,15 @@
 # -*- coding: utf-8 -*-
-"""Supporting-only barcode extraction for shelf-tag photos using ZXing-C++.
+"""Supporting-only barcode extraction for shelf-tag photos.
 
 Barcode is deliberately NOT a product identity in this project. This module may
 populate observed barcode text to help operators/debugging, but it never maps a
 barcode to Pharmacity ITEMID and never changes CTKM PASS/FAIL decisions.
+
+Barcode perception is local-first as well: OpenCV's BarcodeDetector is tried
+before ZXing-C++. The OpenCV fallback matters for real store photos where ZXing
+may miss or ambiguously detect a small UPC/EAN among several shelf labels. If a
+full frame has multiple candidates, a target band just below the scanner line is
+used only to disambiguate supporting barcode evidence; ambiguity stays blank.
 
 Gemini is intentionally last-resort. Before the optional remote fallback is
 allowed, the wrapper reuses the local RapidOCR pipeline and the focused rescue
@@ -37,33 +43,146 @@ def _decode_image(image_bytes: bytes):
     return decoded
 
 
+def _normalize_barcode(value) -> str:
+    digits = re.sub(r"\D", "", str(value or ""))
+    return digits if _NUMERIC_BARCODE_RE.fullmatch(digits) else ""
+
+
+def _append_unique(values: list[str], raw_value) -> None:
+    value = _normalize_barcode(raw_value)
+    if value and value not in values:
+        values.append(value)
+
+
+def _read_opencv_barcodes(image) -> list[str]:
+    """Decode numeric UPC/EAN values with OpenCV when the module is available."""
+    import cv2
+
+    detector_type = getattr(cv2, "barcode_BarcodeDetector", None)
+    if detector_type is None:
+        return []
+    try:
+        detector = detector_type()
+        result = detector.detectAndDecodeWithType(image)
+    except Exception:
+        return []
+    if not result or len(result) < 2:
+        return []
+
+    ok = bool(result[0])
+    decoded_info = result[1] or ()
+    if not ok and not decoded_info:
+        return []
+
+    values: list[str] = []
+    for raw_value in decoded_info:
+        _append_unique(values, raw_value)
+    return values
+
+
 def _read_zxing_barcodes(image) -> list[str]:
     import zxingcpp
 
     values: list[str] = []
-    seen: set[str] = set()
     for barcode in zxingcpp.read_barcodes(image):
-        text = str(getattr(barcode, "text", "") or "").strip()
-        if not _NUMERIC_BARCODE_RE.fullmatch(text):
-            continue
-        if text not in seen:
-            seen.add(text)
-            values.append(text)
+        _append_unique(values, getattr(barcode, "text", ""))
     return values
 
 
+def _merge_barcode_candidates(*candidate_groups: list[str]) -> list[str]:
+    values: list[str] = []
+    for group in candidate_groups:
+        for value in group:
+            _append_unique(values, value)
+    return values
+
+
+def _target_barcode_crop(image):
+    """Crop the barcode band of the tag intentionally centred under scan line.
+
+    Pharmacity shelf labels place the barcode below the large price. Operators
+    aim the green horizontal line at the target price, so this conservative band
+    excludes most labels above/below and much of the right-hand neighbour. It is
+    only a supporting disambiguation hint; if it contains >1 barcode we refuse to
+    choose one.
+    """
+    height, width = image.shape[:2]
+    x0 = int(round(width * 0.08))
+    x1 = int(round(width * 0.74))
+    y0 = int(round(height * 0.43))
+    y1 = int(round(height * 0.72))
+    if x1 - x0 < 120 or y1 - y0 < 80:
+        return None
+    crop = image[y0:y1, x0:x1]
+    return crop if getattr(crop, "size", 0) else None
+
+
+def _upscale_barcode_crop(image):
+    import cv2
+
+    height, width = image.shape[:2]
+    long_edge = max(height, width)
+    if long_edge >= 1400:
+        return image
+    scale = min(3.0, 1400.0 / max(1, long_edge))
+    if scale <= 1.05:
+        return image
+    return cv2.resize(
+        image,
+        (max(1, int(round(width * scale))), max(1, int(round(height * scale)))),
+        interpolation=cv2.INTER_CUBIC,
+    )
+
+
+def _read_region_barcodes(image) -> list[str]:
+    """Use both local decoders and one upscale retry for small shelf barcodes."""
+    values = _merge_barcode_candidates(
+        _read_opencv_barcodes(image),
+        _read_zxing_barcodes(image),
+    )
+    if values:
+        return values
+
+    enlarged = _upscale_barcode_crop(image)
+    if enlarged is image:
+        return []
+    return _merge_barcode_candidates(
+        _read_opencv_barcodes(enlarged),
+        _read_zxing_barcodes(enlarged),
+    )
+
+
 def extract_supporting_barcodes(image_bytes: bytes) -> dict:
-    """Return deterministic numeric candidates; never guess when >1 are present."""
+    """Return target-aware supporting barcode evidence without guessing identity."""
     decoded = _decode_image(image_bytes)
-    candidates = _read_zxing_barcodes(decoded)
+
+    # First try the complete image. OpenCV can decode some real UPC/EAN photos
+    # that ZXing misses; if exactly one numeric value is visible, that evidence is
+    # already deterministic and no target crop is needed.
+    full_candidates = _read_region_barcodes(decoded)
+    if len(full_candidates) == 1:
+        return {
+            "barcode": full_candidates[0],
+            "barcode_candidates": full_candidates,
+            "barcode_source": "local_barcode_fullframe",
+        }
+
+    # A multi-label store photo can legitimately contain several barcodes. Only
+    # then use the operator-centred barcode band to isolate the target shelf tag.
+    target_crop = _target_barcode_crop(decoded)
+    target_candidates = _read_region_barcodes(target_crop) if target_crop is not None else []
+    if len(target_candidates) == 1:
+        return {
+            "barcode": target_candidates[0],
+            "barcode_candidates": _merge_barcode_candidates(target_candidates, full_candidates),
+            "barcode_source": "local_barcode_target_band",
+        }
+
+    all_candidates = _merge_barcode_candidates(target_candidates, full_candidates)
     return {
-        "barcode": candidates[0] if len(candidates) == 1 else "",
-        "barcode_candidates": candidates,
-        "barcode_source": (
-            "zxingcpp" if len(candidates) == 1
-            else "zxingcpp_ambiguous" if len(candidates) > 1
-            else "zxingcpp_none"
-        ),
+        "barcode": "",
+        "barcode_candidates": all_candidates,
+        "barcode_source": "local_barcode_ambiguous" if all_candidates else "local_barcode_none",
     }
 
 
@@ -268,8 +387,8 @@ def install_tag_audit_barcode_contract(tag_audit_module) -> None:
                     # and downstream monkeypatches remain compatible.
                     observed = _recover_after_perception_failure(image, month, exc)
 
-        existing = re.sub(r"\D", "", str(observed.get("barcode") or ""))
-        if _NUMERIC_BARCODE_RE.fullmatch(existing):
+        existing = _normalize_barcode(observed.get("barcode"))
+        if existing:
             observed["barcode"] = existing
             observed.setdefault("barcode_candidates", [existing])
             observed.setdefault("barcode_source", "ocr")
@@ -279,7 +398,7 @@ def install_tag_audit_barcode_contract(tag_audit_module) -> None:
             barcode_result = extract_supporting_barcodes(image)
         except Exception as exc:
             observed.setdefault("barcode_candidates", [])
-            observed.setdefault("barcode_source", "zxingcpp_error")
+            observed.setdefault("barcode_source", "local_barcode_error")
             observed["barcode_warning"] = str(exc)
             return observed
 
