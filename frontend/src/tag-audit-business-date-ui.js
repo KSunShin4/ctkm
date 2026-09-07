@@ -12,6 +12,8 @@ export function businessDateState(payload) {
   if (!context) return null
   return {
     stale: context.business_date_stale === true,
+    blocked: context.business_date_blocked === true,
+    reclassifiesActions: context.scanner_reclassifies_actions === true,
     businessDate: String(context.business_date || "").trim(),
     scannerBusinessDate: String(context.scanner_business_date || "").trim(),
     reportMonth: String(context.report_month || context.month || "").trim(),
@@ -32,8 +34,12 @@ export function formatBusinessDate(value) {
 }
 
 export function staleBusinessDateMessage(state) {
-  if (!state?.stale) return ""
+  if (!state?.stale && !state?.blocked) return ""
   const report = formatBusinessDate(state.businessDate) || "không rõ"
   const today = formatBusinessDate(state.scannerBusinessDate) || "hôm nay"
-  return `Workbook kiểm tem đang theo ngày ${report}; ngày kiểm hiện tại là ${today}. Hãy chạy hoặc tải workbook CTKM mới trước khi kiểm tem.`
+  if (state?.blocked) {
+    const month = state.reportMonth || "không rõ"
+    return `Workbook kiểm tem thuộc tháng ${month}, không khớp ngày kiểm ${today}. Hãy chạy hoặc tải workbook CTKM đúng tháng trước khi kiểm tem.`
+  }
+  return `Workbook được tạo theo ngày ${report}; hệ thống đang tự tính lại Gắn/Tháo/Chờ theo ngày kiểm ${today}. Không cần chạy lại workbook mỗi ngày.`
 }
