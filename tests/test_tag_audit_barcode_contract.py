@@ -110,3 +110,45 @@ def test_wrapper_is_fail_open_when_zxing_errors(monkeypatch):
     assert observed["barcode"] == ""
     assert observed["barcode_source"] == "zxingcpp_error"
     assert observed["barcode_warning"] == "decoder unavailable"
+
+
+def test_gemini_403_does_not_discard_local_rescue_observation(monkeypatch):
+    def failing_extract(image, mime_type, month):
+        raise RuntimeError("OCR Gemini thất bại: HTTP 403")
+
+    module = SimpleNamespace(
+        _barcode_contract_v1=False,
+        _extract_tag_with_gemini=failing_extract,
+    )
+    monkeypatch.setattr(
+        barcode_contract,
+        "_recover_after_perception_failure",
+        lambda image, month, exc: {
+            "item_id": "P25175",
+            "item_id_candidates": ["P25175"],
+            "barcode": "",
+            "promo_price": 500000,
+            "promo_from": "2026-09-06",
+            "promo_to": "2026-09-15",
+            "ocr_engine": "rapidocr",
+            "ocr_rescue": True,
+            "ocr_warning": str(exc),
+        },
+    )
+    monkeypatch.setattr(
+        barcode_contract,
+        "extract_supporting_barcodes",
+        lambda image: {
+            "barcode": "",
+            "barcode_candidates": [],
+            "barcode_source": "zxingcpp_none",
+        },
+    )
+
+    barcode_contract.install_tag_audit_barcode_contract(module)
+    observed = module._extract_tag_with_gemini(b"image", "image/jpeg", "2026-09")
+
+    assert observed["item_id"] == "P25175"
+    assert observed["promo_price"] == 500000
+    assert observed["ocr_rescue"] is True
+    assert observed["barcode_source"] == "zxingcpp_none"
