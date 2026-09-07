@@ -102,3 +102,43 @@ def test_local_first_returns_partial_local_result_without_gemini(monkeypatch):
     assert observed["item_id"] == "P03845"
     assert observed["ocr_engine"] == "rapidocr"
     assert "Gemini fallback chưa cấu hình" in observed["ocr_warning"]
+
+
+def test_local_first_keeps_partial_rapidocr_when_gemini_returns_403(monkeypatch):
+    class FakeTagAudit:
+        _local_ocr_contract_v1 = False
+
+        @staticmethod
+        def _extract_tag_with_gemini(image, mime_type, month):
+            raise RuntimeError("OCR Gemini thất bại: HTTP 403")
+
+        @staticmethod
+        def _context_payload(cache):
+            return {"ready": True}
+
+    monkeypatch.setenv("GEMINI_API_KEY", "configured-but-forbidden")
+    monkeypatch.setattr(
+        local_ocr,
+        "extract_tag_with_rapidocr",
+        lambda image, month: {
+            "item_id": "P25175",
+            "item_id_candidates": ["P25175"],
+            "promo_text": "MUA 1 TANG 1",
+            "promo_price": 500000,
+            "promo_from": "2026-09-06",
+            "promo_to": None,
+            "raw_text": "P25175 MUA 1 TANG 1 500,000 KM:06/09-15/09",
+            "confidence": 0.82,
+            "ocr_engine": "rapidocr",
+        },
+    )
+
+    module = FakeTagAudit()
+    local_ocr.install_tag_audit_local_ocr_contract(module)
+    observed = module._extract_tag_with_gemini(b"image", "image/jpeg", "2026-09")
+
+    assert observed["item_id"] == "P25175"
+    assert observed["promo_price"] == 500000
+    assert observed["ocr_engine"] == "rapidocr"
+    assert observed["gemini_fallback_error"] == "OCR Gemini thất bại: HTTP 403"
+    assert "giữ kết quả RapidOCR" in observed["ocr_warning"]
