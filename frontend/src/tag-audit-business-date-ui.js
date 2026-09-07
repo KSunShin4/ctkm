@@ -9,10 +9,13 @@ function contextFromPayload(payload) {
 
 export function businessDateState(payload) {
   const context = contextFromPayload(payload)
-  if (!context) return null
+  const blocked = context.business_date_blocked === true
   return {
-    stale: context.business_date_stale === true,
-    blocked: context.business_date_blocked === true,
+    // Existing scanner UI gates Quick Scan on `stale`. Keep that public shape,
+    // but make it mean a real incompatibility rather than merely yesterday's date.
+    stale: blocked,
+    blocked,
+    reportDateStale: context.business_date_stale === true,
     reclassifiesActions: context.scanner_reclassifies_actions === true,
     businessDate: String(context.business_date || "").trim(),
     scannerBusinessDate: String(context.scanner_business_date || "").trim(),
@@ -34,7 +37,7 @@ export function formatBusinessDate(value) {
 }
 
 export function staleBusinessDateMessage(state) {
-  if (!state?.stale && !state?.blocked) return ""
+  if (!state?.reportDateStale && !state?.blocked) return ""
   const report = formatBusinessDate(state.businessDate) || "không rõ"
   const today = formatBusinessDate(state.scannerBusinessDate) || "hôm nay"
   if (state?.blocked) {
