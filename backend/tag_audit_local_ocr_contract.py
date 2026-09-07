@@ -388,7 +388,20 @@ def install_tag_audit_local_ocr_contract(tag_audit_module) -> None:
             local_error = str(exc)
 
         if os.getenv("GEMINI_API_KEY"):
-            gemini = original_gemini(image, mime_type, month)
+            try:
+                gemini = original_gemini(image, mime_type, month)
+            except Exception as exc:
+                if local:
+                    local["ocr_warning"] = (
+                        f"Gemini fallback thất bại ({exc}); đang giữ kết quả RapidOCR cục bộ."
+                    )
+                    local["gemini_fallback_error"] = str(exc)
+                    return local
+                if local_error:
+                    raise RuntimeError(
+                        f"RapidOCR thất bại ({local_error}); Gemini fallback cũng thất bại ({exc})."
+                    ) from exc
+                raise
             if local:
                 return _merge_local_with_gemini(local, gemini)
             gemini["ocr_engine"] = "gemini"
