@@ -9,6 +9,7 @@ function contextFromPayload(payload) {
 
 export function businessDateState(payload) {
   const context = contextFromPayload(payload)
+  if (!context) return null
   const blocked = context.business_date_blocked === true
   return {
     // Existing scanner UI gates Quick Scan on `stale`. Keep that public shape,
