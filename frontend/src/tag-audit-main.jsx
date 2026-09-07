@@ -161,6 +161,28 @@ function QuickModeLink() {
   </div>
 }
 
+function GlobalExitButton() {
+  return <a
+    href="/"
+    aria-label="Thoát kiểm tem và về các chức năng chính"
+    style={{
+      position:"fixed",
+      left:14,
+      bottom:14,
+      zIndex:100,
+      padding:"11px 14px",
+      borderRadius:12,
+      background:"#17202a",
+      color:"#fff",
+      textDecoration:"none",
+      boxShadow:"0 8px 24px rgba(16,24,40,.22)",
+      font:"800 12px/1.2 Inter,ui-sans-serif,sans-serif",
+    }}
+  >
+    ← Thoát · Chức năng khác
+  </a>
+}
+
 function TagAuditEntry() {
   const quickMode = new URLSearchParams(window.location.search).get("mode") === "quick"
   const [businessDate, setBusinessDate] = useState(null)
@@ -172,6 +194,7 @@ function TagAuditEntry() {
   }, [])
 
   if (quickMode) return <>
+    <GlobalExitButton />
     <UploadStatusBanner />
     <PerceptionStatusBanner />
     <BusinessDateBanner state={businessDate} quickMode />
@@ -179,6 +202,7 @@ function TagAuditEntry() {
   </>
 
   return <>
+    <GlobalExitButton />
     <UploadStatusBanner />
     <PerceptionStatusBanner />
     <BusinessDateBanner state={businessDate} />
