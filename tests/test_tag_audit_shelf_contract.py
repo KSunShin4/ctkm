@@ -1,0 +1,124 @@
+import asyncio
+from io import BytesIO
+
+from fastapi import UploadFile
+from openpyxl import Workbook
+
+from backend import main_api
+from backend import tag_audit_business_date_contract as business_date
+from backend import tag_audit_shelf_contract as shelf_contract
+
+
+HEADERS = [
+    "Phạm vi áp dụng (KEY Channel)", "Kênh chương trình (Channel)",
+    "Mã sản phẩm", "Tên sản phẩm", "Đơn vị sản phẩm (Promo UoM)",
+    "POG", "Vị trí", "Facing", "Công việc", "Ngày gắn", "Ngày tháo",
+    "Campaign", "Scheme detail", "From", "To", "Giá thường", "Giá KM",
+    "Nguồn", "Lý do / Cảnh báo", "Product type", "Cửa hàng",
+]
+
+
+def _workbook_bytes():
+    workbook = Workbook()
+    workbook.remove(workbook.active)
+    guide = workbook.create_sheet("HƯỚNG DẪN")
+    guide.append(["DANH SÁCH THAO TÁC TEM KHUYẾN MÃI"])
+    guide.append(["Tháng báo cáo", "2026-09"])
+    guide.append(["Ngày nghiệp vụ", "2026-09-07"])
+    for name in ("Gắn tem", "Tháo tem", "Chờ gắn"):
+        workbook.create_sheet(name).append(HEADERS)
+    workbook["Gắn tem"].append([
+        "All channel", "ALL CHANNEL", "P25860", "HOTCHLAND SLEEP NOW", "Hộp",
+        "POG-A", "KỆ-01", 1, "snapshot action", "2026-09-06", "2026-09-14",
+        "GIẢM 15%", "GIẢM 15%", "2026-09-06", "2026-09-13",
+        457000, 388450, "CTKM", "", "NORMAL", "S1",
+    ])
+    workbook["Gắn tem"].append([
+        "All channel", "ALL CHANNEL", "P25175", "FELIX GINKGO BILOBA", "Hộp",
+        "POG-A", "KỆ-01", 2, "snapshot action", "2026-09-06", "2026-09-16",
+        "MUA 1 TẶNG 1", "MUA 1 TẶNG 1", "2026-09-06", "2026-09-15",
+        500000, 500000, "CTKM", "", "NORMAL", "S1",
+    ])
+    buffer = BytesIO()
+    workbook.save(buffer)
+    workbook.close()
+    return buffer.getvalue()
+
+
+def _route(path: str, method: str):
+    matches = [
+        route for route in main_api.app.routes
+        if getattr(route, "path", None) == path
+        and method in (getattr(route, "methods", None) or set())
+    ]
+    assert len(matches) == 1
+    return matches[0]
+
+
+def test_shelf_routes_are_store_facing_not_admin_only():
+    for path, method in (
+        ("/api/tag-audit/shelf/session", "POST"),
+        ("/api/tag-audit/shelf/session/{session_id}", "GET"),
+    ):
+        route = _route(path, method)
+        dependency_calls = [getattr(dep, "call", None) for dep in route.dependant.dependencies]
+        assert main_api.require_admin not in dependency_calls
+
+
+def test_shelf_routes_precede_static_frontend_when_present():
+    routes = list(main_api.app.routes)
+    mount_indexes = [
+        index for index, route in enumerate(routes)
+        if route.__class__.__name__ == "Mount"
+        and (getattr(route, "name", None) == "frontend" or getattr(route, "path", None) in {"", "/"})
+    ]
+    if not mount_indexes:
+        return
+    mount_index = mount_indexes[0]
+    assert routes.index(_route("/api/tag-audit/shelf/session", "POST")) < mount_index
+    assert routes.index(_route("/api/tag-audit/shelf/session/{session_id}", "GET")) < mount_index
+
+
+def test_public_session_parses_real_action_workbook_without_admin(monkeypatch):
+    monkeypatch.setattr(business_date, "current_vn_business_date", lambda: "2026-09-07")
+    upload = UploadFile(filename="actions.xlsx", file=BytesIO(_workbook_bytes()))
+
+    payload = asyncio.run(main_api.create_tag_audit_shelf_session(upload))
+
+    assert payload["action_count"] == 2
+    assert payload["shelf_count"] == 1
+    assert payload["shelves"][0]["shelf_label"] == "POG-A · KỆ-01"
+    assert payload["shelves"][0]["sku_count"] == 2
+    assert [item["item_id"] for item in payload["items"]] == ["P25175", "P25860"]
+    restored = asyncio.run(main_api.read_tag_audit_shelf_session(payload["session_id"]))
+    assert restored["context_id"] == payload["context_id"]
+    assert restored["action_count"] == 2
+
+
+def test_shelf_grouping_keeps_action_count_and_unique_sku_count():
+    items = shelf_contract._decorate_items([
+        {"check_key":"a1","item_id":"P1","pog_code":"POG-A","location_id":"L1"},
+        {"check_key":"a2","item_id":"P1","pog_code":"POG-A","location_id":"L1"},
+        {"check_key":"b1","item_id":"P2","pog_code":"POG-A","location_id":"L1"},
+        {"check_key":"c1","item_id":"P3","pog_code":"POG-B","location_id":""},
+    ])
+    shelves = shelf_contract._build_shelves(items)
+
+    assert items[0]["shelf_key"] == "POG-A::L1"
+    assert items[0]["shelf_label"] == "POG-A · L1"
+    assert shelves[0]["action_count"] == 3
+    assert shelves[0]["sku_count"] == 2
+    assert shelves[1]["action_count"] == 1
+    assert shelves[1]["sku_count"] == 1
+
+
+def test_missing_pog_and_location_are_grouped_explicitly():
+    items = shelf_contract._decorate_items([
+        {"check_key":"a","item_id":"P1","pog_code":"","location_id":""},
+        {"check_key":"b","item_id":"P2","pog_code":None,"location_id":None},
+    ])
+    shelves = shelf_contract._build_shelves(items)
+    assert len(shelves) == 1
+    assert shelves[0]["shelf_key"] == "__NO_LOCATION__"
+    assert shelves[0]["shelf_label"] == "Chưa có vị trí kệ"
+    assert shelves[0]["action_count"] == 2

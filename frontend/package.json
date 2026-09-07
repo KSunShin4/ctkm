@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test:auto-capture": "node --test src/tag-audit-auto-capture.test.mjs src/tag-audit-business-date-ui.test.mjs src/tag-audit-barcode.test.mjs"
+    "test:auto-capture": "node --test src/tag-audit-auto-capture.test.mjs src/tag-audit-business-date-ui.test.mjs src/tag-audit-barcode.test.mjs src/tag-audit-shelf-progress.test.mjs"
   },
   "dependencies": {
     "react": "^18.3.1",

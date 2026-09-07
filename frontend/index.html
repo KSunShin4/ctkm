@@ -10,9 +10,16 @@
   </head>
   <body>
     <div id="root"></div>
+    <a id="shelf-shortcut" href="/scan-tem?mode=shelf" style="display:none;position:fixed;right:14px;bottom:14px;z-index:50;background:#175cd3;color:#fff;text-decoration:none;padding:11px 14px;border-radius:12px;box-shadow:0 8px 24px rgba(16,24,40,.22);font:800 12px/1.2 Inter,ui-sans-serif,sans-serif">▤ Kiểm theo kệ</a>
     <script type="module">
       if (window.location.pathname.startsWith('/scan-tem')) {
-        import('/src/tag-audit-main.jsx')
+        const mode = new URLSearchParams(window.location.search).get('mode')
+        if (mode === 'shelf') {
+          import('/src/tag-audit-shelf-main.jsx')
+        } else {
+          document.getElementById('shelf-shortcut').style.display = 'block'
+          import('/src/tag-audit-main.jsx')
+        }
       } else {
         import('/src/main.jsx')
       }
