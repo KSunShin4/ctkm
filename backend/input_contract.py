@@ -154,7 +154,13 @@ def install_input_contract(core_module) -> None:
 
     async def read_upload_limited(upload, max_bytes: int, label: str) -> bytes:
         content = await original_read(upload, max_bytes, label)
-        return _validate_xlsx_container(content, label)
+        # This shared byte-limit reader is also used by the shelf-tag image route.
+        # Validate OOXML only for uploads that are actually declared as .xlsx;
+        # CTKM/POG/Tem-R routes already enforce that extension before calling us.
+        filename = str(getattr(upload, "filename", "") or "").lower()
+        if filename.endswith(".xlsx"):
+            return _validate_xlsx_container(content, label)
+        return content
 
     core_module._read_upload_limited = read_upload_limited
 
