@@ -11,6 +11,7 @@ audit, then creates shallow scanner-only row copies whose ``expected_action`` is
 derived from ``promo_from`` / ``promo_to`` as of the current Viet Nam date.
 Known report-month mismatches remain blocking because the monthly source itself is
 then incompatible; a merely older ``business_date`` is informational, not a block.
+Legacy rows without report metadata keep their existing snapshot behavior.
 """
 from __future__ import annotations
 
@@ -134,6 +135,13 @@ def derive_scanner_action(row: dict, business_date: str) -> tuple[str, str]:
 
 def scanner_rows_for_current_date(rows: list[dict], business_date: str | None = None) -> list[dict]:
     """Return scanner-only shallow copies reclassified for the requested date."""
+    # Only workbooks produced with the report metadata contract can safely opt in
+    # to dynamic reclassification. Legacy/test rows without metadata retain their
+    # historical snapshot action semantics instead of being silently reinterpreted.
+    metadata = metadata_from_rows(rows)
+    if not metadata.get("business_date") and not metadata.get("report_month"):
+        return [dict(row) for row in rows or []]
+
     today = _iso_date(business_date) if business_date is not None else current_vn_business_date()
     today = today or current_vn_business_date()
     derived: list[dict] = []
@@ -190,7 +198,7 @@ def install_tag_audit_business_date_contract(tag_audit_module) -> None:
         payload["scanner_business_date"] = today
         payload["business_date_stale"] = bool(business_date and business_date != today)
         payload["business_date_blocked"] = _known_report_month_mismatch(rows, today)
-        payload["scanner_reclassifies_actions"] = True
+        payload["scanner_reclassifies_actions"] = bool(business_date or report_month)
         return payload
 
     def compare_with_current_business_date(rows, observed, manual_item_id=""):
