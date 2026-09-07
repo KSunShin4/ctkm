@@ -12,7 +12,12 @@
     <div id="root"></div>
     <script type="module">
       if (window.location.pathname.startsWith('/scan-tem')) {
-        import('/src/tag-audit-main.jsx')
+        const mode = new URLSearchParams(window.location.search).get('mode')
+        if (mode === 'shelf') {
+          import('/src/tag-audit-shelf-main.jsx')
+        } else {
+          import('/src/tag-audit-main.jsx')
+        }
       } else {
         import('/src/main.jsx')
       }
