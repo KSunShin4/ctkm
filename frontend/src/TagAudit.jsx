@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react"
+import { chooseBarcodeCandidate } from "./tag-audit-barcode.js"
 
 const API = import.meta.env.VITE_API_BASE_URL || ""
 
@@ -51,7 +52,7 @@ async function detectBarcode(file) {
     const preferred = ["ean_13","ean_8","upc_a","upc_e","code_128","code_39"].filter(x => supported.includes(x))
     if (!preferred.length) return ""
     const detector = new window.BarcodeDetector({ formats: preferred }); const bitmap = await createImageBitmap(file)
-    try { const values = await detector.detect(bitmap); const candidate = values.find(item => /\d{8,14}/.test(String(item.rawValue || ""))) || values[0]; return String(candidate?.rawValue || "").replace(/\D/g, "") } finally { bitmap.close?.() }
+    try { const values = await detector.detect(bitmap); return chooseBarcodeCandidate(values) } finally { bitmap.close?.() }
   } catch { return "" }
 }
 
