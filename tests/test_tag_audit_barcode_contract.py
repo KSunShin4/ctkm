@@ -12,7 +12,8 @@ def test_zxing_dependency_is_importable():
 
 
 def test_single_numeric_candidate_is_supporting_barcode(monkeypatch):
-    monkeypatch.setattr(barcode_contract, "_decode_image", lambda image: np.zeros((4, 4, 3), dtype=np.uint8))
+    monkeypatch.setattr(barcode_contract, "_decode_image", lambda image: np.zeros((400, 400, 3), dtype=np.uint8))
+    monkeypatch.setattr(barcode_contract, "_read_opencv_barcodes", lambda image: [])
     monkeypatch.setattr(barcode_contract, "_read_zxing_barcodes", lambda image: ["8850029850726"])
 
     result = barcode_contract.extract_supporting_barcodes(b"image")
@@ -20,23 +21,80 @@ def test_single_numeric_candidate_is_supporting_barcode(monkeypatch):
     assert result == {
         "barcode": "8850029850726",
         "barcode_candidates": ["8850029850726"],
-        "barcode_source": "zxingcpp",
+        "barcode_source": "local_barcode_fullframe",
     }
 
 
-def test_multiple_numeric_candidates_are_ambiguous_not_guessed(monkeypatch):
-    monkeypatch.setattr(barcode_contract, "_decode_image", lambda image: object())
-    monkeypatch.setattr(
-        barcode_contract,
-        "_read_zxing_barcodes",
-        lambda image: ["8850029850726", "3546895533263"],
-    )
+def test_opencv_decoded_upca_is_used_when_zxing_misses(monkeypatch):
+    monkeypatch.setattr(barcode_contract, "_decode_image", lambda image: np.zeros((400, 400, 3), dtype=np.uint8))
+    monkeypatch.setattr(barcode_contract, "_read_opencv_barcodes", lambda image: ["727400112101"])
+    monkeypatch.setattr(barcode_contract, "_read_zxing_barcodes", lambda image: [])
+
+    result = barcode_contract.extract_supporting_barcodes(b"image")
+
+    assert result["barcode"] == "727400112101"
+    assert result["barcode_candidates"] == ["727400112101"]
+    assert result["barcode_source"] == "local_barcode_fullframe"
+
+
+def test_multiple_fullframe_candidates_use_single_target_band_candidate(monkeypatch):
+    image = np.zeros((1000, 800, 3), dtype=np.uint8)
+    target_crop = np.ones((290, 528, 3), dtype=np.uint8)
+    monkeypatch.setattr(barcode_contract, "_decode_image", lambda payload: image)
+    monkeypatch.setattr(barcode_contract, "_target_barcode_crop", lambda decoded: target_crop)
+
+    def fake_opencv(frame):
+        if frame is image:
+            return ["727400112101", "851712004646"]
+        if frame is target_crop:
+            return ["727400112101"]
+        return []
+
+    monkeypatch.setattr(barcode_contract, "_read_opencv_barcodes", fake_opencv)
+    monkeypatch.setattr(barcode_contract, "_read_zxing_barcodes", lambda frame: [])
+
+    result = barcode_contract.extract_supporting_barcodes(b"image")
+
+    assert result["barcode"] == "727400112101"
+    assert result["barcode_candidates"] == ["727400112101", "851712004646"]
+    assert result["barcode_source"] == "local_barcode_target_band"
+
+
+def test_multiple_target_candidates_remain_ambiguous_not_guessed(monkeypatch):
+    image = np.zeros((1000, 800, 3), dtype=np.uint8)
+    target_crop = np.ones((290, 528, 3), dtype=np.uint8)
+    monkeypatch.setattr(barcode_contract, "_decode_image", lambda payload: image)
+    monkeypatch.setattr(barcode_contract, "_target_barcode_crop", lambda decoded: target_crop)
+
+    def fake_opencv(frame):
+        if frame is image:
+            return ["727400112101", "851712004646"]
+        if frame is target_crop:
+            return ["727400112101", "851712004646"]
+        return []
+
+    monkeypatch.setattr(barcode_contract, "_read_opencv_barcodes", fake_opencv)
+    monkeypatch.setattr(barcode_contract, "_read_zxing_barcodes", lambda frame: [])
 
     result = barcode_contract.extract_supporting_barcodes(b"image")
 
     assert result["barcode"] == ""
-    assert result["barcode_candidates"] == ["8850029850726", "3546895533263"]
-    assert result["barcode_source"] == "zxingcpp_ambiguous"
+    assert result["barcode_candidates"] == ["727400112101", "851712004646"]
+    assert result["barcode_source"] == "local_barcode_ambiguous"
+
+
+def test_short_false_positive_is_rejected_by_both_decoders(monkeypatch):
+    image = np.zeros((400, 400, 3), dtype=np.uint8)
+    monkeypatch.setattr(barcode_contract, "_decode_image", lambda payload: image)
+    monkeypatch.setattr(barcode_contract, "_read_opencv_barcodes", lambda frame: [])
+    monkeypatch.setattr(barcode_contract, "_read_zxing_barcodes", lambda frame: [])
+    monkeypatch.setattr(barcode_contract, "_target_barcode_crop", lambda frame: None)
+
+    assert barcode_contract._normalize_barcode("14496") == ""
+    result = barcode_contract.extract_supporting_barcodes(b"image")
+    assert result["barcode"] == ""
+    assert result["barcode_candidates"] == []
+    assert result["barcode_source"] == "local_barcode_none"
 
 
 def test_wrapper_does_not_override_existing_ocr_barcode(monkeypatch):
@@ -50,7 +108,7 @@ def test_wrapper_does_not_override_existing_ocr_barcode(monkeypatch):
     monkeypatch.setattr(
         barcode_contract,
         "extract_supporting_barcodes",
-        lambda image: (_ for _ in ()).throw(AssertionError("ZXing must not run")),
+        lambda image: (_ for _ in ()).throw(AssertionError("local barcode decoders must not run")),
     )
 
     barcode_contract.install_tag_audit_barcode_contract(module)
@@ -74,9 +132,9 @@ def test_wrapper_fills_blank_barcode_but_keeps_itemid_unchanged(monkeypatch):
         barcode_contract,
         "extract_supporting_barcodes",
         lambda image: {
-            "barcode": "8850029850726",
-            "barcode_candidates": ["8850029850726"],
-            "barcode_source": "zxingcpp",
+            "barcode": "727400112101",
+            "barcode_candidates": ["727400112101"],
+            "barcode_source": "local_barcode_fullframe",
         },
     )
 
@@ -85,11 +143,11 @@ def test_wrapper_fills_blank_barcode_but_keeps_itemid_unchanged(monkeypatch):
 
     assert observed["item_id"] == "P03845"
     assert observed["promo_price"] == 57750
-    assert observed["barcode"] == "8850029850726"
-    assert observed["barcode_source"] == "zxingcpp"
+    assert observed["barcode"] == "727400112101"
+    assert observed["barcode_source"] == "local_barcode_fullframe"
 
 
-def test_wrapper_is_fail_open_when_zxing_errors(monkeypatch):
+def test_wrapper_is_fail_open_when_local_barcode_decoders_error(monkeypatch):
     module = SimpleNamespace(
         _barcode_contract_v1=False,
         _extract_tag_with_gemini=lambda image, mime_type, month: {
@@ -108,7 +166,7 @@ def test_wrapper_is_fail_open_when_zxing_errors(monkeypatch):
 
     assert observed["item_id"] == "P03845"
     assert observed["barcode"] == ""
-    assert observed["barcode_source"] == "zxingcpp_error"
+    assert observed["barcode_source"] == "local_barcode_error"
     assert observed["barcode_warning"] == "decoder unavailable"
 
 
@@ -141,7 +199,7 @@ def test_gemini_403_does_not_discard_local_rescue_observation(monkeypatch):
         lambda image: {
             "barcode": "",
             "barcode_candidates": [],
-            "barcode_source": "zxingcpp_none",
+            "barcode_source": "local_barcode_none",
         },
     )
 
@@ -151,4 +209,4 @@ def test_gemini_403_does_not_discard_local_rescue_observation(monkeypatch):
     assert observed["item_id"] == "P25175"
     assert observed["promo_price"] == 500000
     assert observed["ocr_rescue"] is True
-    assert observed["barcode_source"] == "zxingcpp_none"
+    assert observed["barcode_source"] == "local_barcode_none"
