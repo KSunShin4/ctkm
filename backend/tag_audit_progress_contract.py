@@ -174,3 +174,9 @@ def install_tag_audit_progress_contract(tag_audit_module, core_module) -> None:
     )
     core_module.tag_audit_checklist = tag_audit_checklist
     core_module.app.state.tag_audit_progress_contract_v1 = True
+
+    # The manual shelf checker is a separate store-facing mode. It intentionally
+    # uses isolated temporary workbook sessions and therefore does not require an
+    # admin login or mutate the admin scanner context.
+    from backend.tag_audit_shelf_contract import install_tag_audit_shelf_contract
+    install_tag_audit_shelf_contract(tag_audit_module, core_module)
