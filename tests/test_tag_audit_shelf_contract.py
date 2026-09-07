@@ -1,5 +1,48 @@
+import asyncio
+from io import BytesIO
+
+from fastapi import UploadFile
+from openpyxl import Workbook
+
 from backend import main_api
+from backend import tag_audit_business_date_contract as business_date
 from backend import tag_audit_shelf_contract as shelf_contract
+
+
+HEADERS = [
+    "Phạm vi áp dụng (KEY Channel)", "Kênh chương trình (Channel)",
+    "Mã sản phẩm", "Tên sản phẩm", "Đơn vị sản phẩm (Promo UoM)",
+    "POG", "Vị trí", "Facing", "Công việc", "Ngày gắn", "Ngày tháo",
+    "Campaign", "Scheme detail", "From", "To", "Giá thường", "Giá KM",
+    "Nguồn", "Lý do / Cảnh báo", "Product type", "Cửa hàng",
+]
+
+
+def _workbook_bytes():
+    workbook = Workbook()
+    workbook.remove(workbook.active)
+    guide = workbook.create_sheet("HƯỚNG DẪN")
+    guide.append(["DANH SÁCH THAO TÁC TEM KHUYẾN MÃI"])
+    guide.append(["Tháng báo cáo", "2026-09"])
+    guide.append(["Ngày nghiệp vụ", "2026-09-07"])
+    for name in ("Gắn tem", "Tháo tem", "Chờ gắn"):
+        workbook.create_sheet(name).append(HEADERS)
+    workbook["Gắn tem"].append([
+        "All channel", "ALL CHANNEL", "P25860", "HOTCHLAND SLEEP NOW", "Hộp",
+        "POG-A", "KỆ-01", 1, "snapshot action", "2026-09-06", "2026-09-14",
+        "GIẢM 15%", "GIẢM 15%", "2026-09-06", "2026-09-13",
+        457000, 388450, "CTKM", "", "NORMAL", "S1",
+    ])
+    workbook["Gắn tem"].append([
+        "All channel", "ALL CHANNEL", "P25175", "FELIX GINKGO BILOBA", "Hộp",
+        "POG-A", "KỆ-01", 2, "snapshot action", "2026-09-06", "2026-09-16",
+        "MUA 1 TẶNG 1", "MUA 1 TẶNG 1", "2026-09-06", "2026-09-15",
+        500000, 500000, "CTKM", "", "NORMAL", "S1",
+    ])
+    buffer = BytesIO()
+    workbook.save(buffer)
+    workbook.close()
+    return buffer.getvalue()
 
 
 def _route(path: str, method: str):
@@ -34,6 +77,22 @@ def test_shelf_routes_precede_static_frontend_when_present():
     mount_index = mount_indexes[0]
     assert routes.index(_route("/api/tag-audit/shelf/session", "POST")) < mount_index
     assert routes.index(_route("/api/tag-audit/shelf/session/{session_id}", "GET")) < mount_index
+
+
+def test_public_session_parses_real_action_workbook_without_admin(monkeypatch):
+    monkeypatch.setattr(business_date, "current_vn_business_date", lambda: "2026-09-07")
+    upload = UploadFile(filename="actions.xlsx", file=BytesIO(_workbook_bytes()))
+
+    payload = asyncio.run(main_api.create_tag_audit_shelf_session(upload))
+
+    assert payload["action_count"] == 2
+    assert payload["shelf_count"] == 1
+    assert payload["shelves"][0]["shelf_label"] == "POG-A · KỆ-01"
+    assert payload["shelves"][0]["sku_count"] == 2
+    assert [item["item_id"] for item in payload["items"]] == ["P25175", "P25860"]
+    restored = asyncio.run(main_api.read_tag_audit_shelf_session(payload["session_id"]))
+    assert restored["context_id"] == payload["context_id"]
+    assert restored["action_count"] == 2
 
 
 def test_shelf_grouping_keeps_action_count_and_unique_sku_count():
