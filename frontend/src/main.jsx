@@ -148,6 +148,23 @@ const ensureTagAuditNav = root => {
   const nav = root?.querySelector?.('.module-nav')
   if (!nav) return
 
+  // Store-facing shelf checking is a first-class module. Keep it immediately
+  // beside “Kiểm tra hạn dùng” and never gate it behind Admin.
+  let shelfButton = nav.querySelector('[data-ctkm-shelf-link="v1"]')
+  if (!shelfButton) {
+    shelfButton = document.createElement('button')
+    shelfButton.type = 'button'
+    shelfButton.dataset.ctkmShelfLink = 'v1'
+    shelfButton.textContent = 'Kiểm tra kệ'
+    shelfButton.title = 'Mở chế độ kiểm Đúng/Sai từng action theo kệ'
+    shelfButton.addEventListener('click', () => {
+      window.location.assign('/scan-tem?mode=shelf')
+    })
+    const expirationButton = nav.firstElementChild
+    if (expirationButton) expirationButton.after(shelfButton)
+    else nav.appendChild(shelfButton)
+  }
+
   const existing = nav.querySelector('[data-ctkm-tag-audit-link="v1"]')
   const isAdmin = Array.from(root.querySelectorAll?.('.auth-actions span') || [])
     .some(node => node.textContent?.trim() === 'ADMIN')
