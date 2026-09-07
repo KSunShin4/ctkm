@@ -62,7 +62,17 @@ def test_tag_check_accepts_jpeg_bytes_without_xlsx_validation(monkeypatch):
         headers=Headers({"content-type": "image/jpeg"}),
     )
 
-    result = asyncio.run(main_api.check_tag(image=upload, _admin="admin"))
+    result = asyncio.run(main_api.check_tag(
+        image=upload,
+        manual_item_id="",
+        barcode_hint="",
+        manual_promo_price="",
+        manual_normal_price="",
+        manual_promo_from="",
+        manual_promo_to="",
+        manual_promo_text="",
+        _admin="admin",
+    ))
 
     assert result["verdict"]["code"] == "correct"
     assert result["observed"]["item_id"] == "P30766"
