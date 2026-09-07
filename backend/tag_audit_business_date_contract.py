@@ -1,21 +1,21 @@
 # -*- coding: utf-8 -*-
-"""Business-date safety guard for the physical shelf-tag scanner.
+"""Business-date contract for the physical shelf-tag scanner.
 
-CTKM action sheets are generated for one ``business_date``. Reusing yesterday's
-result workbook can therefore change a correct Gắn/Tháo/Chờ verdict into a wrong
-one even when OCR is perfect. Preserve the report date as technical scanner
-metadata, expose it in context diagnostics, and refuse deterministic comparison
-when a known report date is not today's Viet Nam business date.
+The exported workbook is a monthly source snapshot, while Gắn/Tháo/Chờ is a
+business-date decision. A store must therefore be able to reuse a same-month
+workbook on later days without trusting the action sheet that happened to be
+correct on export day.
 
-The guard is deliberately conservative:
-- it reads only the existing HƯỚNG DẪN labels written by the exporter;
-- it never invents a date when the metadata is absent or invalid;
-- missing metadata remains backward-compatible and does not block scanning;
-- source business fields are not normalized or mutated.
+This layer preserves the workbook's original values and action-sheet identity for
+audit, then creates shallow scanner-only row copies whose ``expected_action`` is
+derived from ``promo_from`` / ``promo_to`` as of the current Viet Nam date.
+Known report-month mismatches remain blocking because the monthly source itself is
+then incompatible; a merely older ``business_date`` is informational, not a block.
+Legacy rows without report metadata keep their existing snapshot behavior.
 """
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from io import BytesIO
 import re
 from zoneinfo import ZoneInfo
@@ -27,6 +27,9 @@ from openpyxl.utils.datetime import from_excel
 _GUIDE_SHEET = "HƯỚNG DẪN"
 _BUSINESS_DATE_KEY = "_report_business_date"
 _REPORT_MONTH_KEY = "_report_month"
+_SNAPSHOT_ACTION_KEY = "_snapshot_expected_action"
+_SCANNER_DATE_KEY = "_scanner_action_date"
+_SCANNER_REASON_KEY = "_scanner_action_reason"
 _VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 
 
@@ -106,6 +109,58 @@ def metadata_from_rows(rows: list[dict]) -> dict:
     return {"business_date": None, "report_month": None}
 
 
+def derive_scanner_action(row: dict, business_date: str) -> tuple[str, str]:
+    """Derive today's scanner action without mutating source business values."""
+    today_text = _iso_date(business_date)
+    promo_from_text = _iso_date(row.get("promo_from"))
+    promo_to_text = _iso_date(row.get("promo_to"))
+    if not today_text:
+        return "review", "scanner_business_date_invalid"
+    if not promo_from_text or not promo_to_text:
+        return "review", "missing_or_invalid_promo_dates"
+
+    today = date.fromisoformat(today_text)
+    promo_from = date.fromisoformat(promo_from_text)
+    promo_to = date.fromisoformat(promo_to_text)
+    if promo_from > promo_to:
+        return "review", "promo_from_after_promo_to"
+    if today < promo_from:
+        return "cho_gan", "before_attach_date"
+    if today <= promo_to:
+        return "gan_tem", "promotion_active"
+    if today >= promo_to + timedelta(days=1):
+        return "thao_tem", "removal_date_reached"
+    return "review", "scanner_action_undetermined"
+
+
+def scanner_rows_for_current_date(rows: list[dict], business_date: str | None = None) -> list[dict]:
+    """Return scanner-only shallow copies reclassified for the requested date."""
+    # Only workbooks produced with the report metadata contract can safely opt in
+    # to dynamic reclassification. Legacy/test rows without metadata retain their
+    # historical snapshot action semantics instead of being silently reinterpreted.
+    metadata = metadata_from_rows(rows)
+    if not metadata.get("business_date") and not metadata.get("report_month"):
+        return [dict(row) for row in rows or []]
+
+    today = _iso_date(business_date) if business_date is not None else current_vn_business_date()
+    today = today or current_vn_business_date()
+    derived: list[dict] = []
+    for source_row in rows or []:
+        row = dict(source_row)
+        row[_SNAPSHOT_ACTION_KEY] = source_row.get("expected_action")
+        action, reason = derive_scanner_action(source_row, today)
+        row["expected_action"] = action
+        row[_SCANNER_DATE_KEY] = today
+        row[_SCANNER_REASON_KEY] = reason
+        derived.append(row)
+    return derived
+
+
+def _known_report_month_mismatch(rows: list[dict], today: str) -> bool:
+    report_month = metadata_from_rows(rows).get("report_month")
+    return bool(report_month and report_month != str(today)[:7])
+
+
 def install_tag_audit_business_date_contract(tag_audit_module) -> None:
     if getattr(tag_audit_module, "_business_date_contract_v1", False):
         return
@@ -133,32 +188,53 @@ def install_tag_audit_business_date_contract(tag_audit_module) -> None:
 
     def context_payload_with_business_date(cache: dict) -> dict:
         payload = original_context_payload(cache)
-        metadata = metadata_from_rows(cache.get("rows") or [])
+        rows = cache.get("rows") or []
+        metadata = metadata_from_rows(rows)
         today = current_vn_business_date()
         business_date = metadata.get("business_date")
-        payload["report_month"] = metadata.get("report_month")
+        report_month = metadata.get("report_month")
+        payload["report_month"] = report_month
         payload["business_date"] = business_date
         payload["scanner_business_date"] = today
         payload["business_date_stale"] = bool(business_date and business_date != today)
+        payload["business_date_blocked"] = _known_report_month_mismatch(rows, today)
+        payload["scanner_reclassifies_actions"] = bool(business_date or report_month)
         return payload
 
-    def compare_with_business_date_guard(rows, observed, manual_item_id=""):
-        metadata = metadata_from_rows(rows)
-        business_date = metadata.get("business_date")
+    def compare_with_current_business_date(rows, observed, manual_item_id=""):
         today = current_vn_business_date()
-        if business_date and business_date != today:
+        metadata = metadata_from_rows(rows)
+        report_month = metadata.get("report_month")
+        if _known_report_month_mismatch(rows, today):
             raise tag_audit_module.HTTPException(
                 status_code=409,
                 detail=(
-                    f"Workbook kiểm tem đang theo ngày {business_date}; hôm nay là {today}. "
-                    "Hãy chạy hoặc tải workbook CTKM mới trước khi kiểm tem."
+                    f"Workbook kiểm tem thuộc tháng {report_month}; tháng kiểm hiện tại là {today[:7]}. "
+                    "Hãy chạy hoặc tải workbook CTKM đúng tháng trước khi kiểm tem."
                 ),
             )
-        return original_compare(rows, observed, manual_item_id=manual_item_id)
+
+        scanner_rows = scanner_rows_for_current_date(rows, today)
+        result = original_compare(scanner_rows, observed, manual_item_id=manual_item_id)
+        expected = result.get("expected") or {}
+        if str(expected.get("expected_action") or "") == "review":
+            result["verdict"] = {
+                "code": "review_business_date",
+                "title": "Cần kiểm tra ngày CTKM",
+                "detail": "Dữ liệu ngày chương trình thiếu hoặc không hợp lệ nên chưa thể xác định Gắn/Tháo/Chờ.",
+                "severity": "warning",
+            }
+            mismatches = list(result.get("mismatches") or [])
+            if "business_date" not in mismatches:
+                mismatches.append("business_date")
+            result["mismatches"] = mismatches
+        return result
 
     tag_audit_module._parse_action_workbook = parse_with_report_metadata
     tag_audit_module._context_payload = context_payload_with_business_date
-    tag_audit_module.compare_observation = compare_with_business_date_guard
+    tag_audit_module.compare_observation = compare_with_current_business_date
     tag_audit_module.read_tag_audit_report_metadata = read_report_metadata
     tag_audit_module.tag_audit_current_business_date = current_vn_business_date
+    tag_audit_module.derive_scanner_action = derive_scanner_action
+    tag_audit_module.scanner_rows_for_current_date = scanner_rows_for_current_date
     tag_audit_module._business_date_contract_v1 = True
