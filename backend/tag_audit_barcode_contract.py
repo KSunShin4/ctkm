@@ -54,6 +54,42 @@ def extract_supporting_barcodes(image_bytes: bytes) -> dict:
     }
 
 
+def _recover_after_perception_failure(image: bytes, month: str | None, exc: Exception) -> dict:
+    """Keep the scan usable when optional Gemini fallback is unauthorized/down."""
+    from backend.tag_audit_rescue_ocr import rescue_with_focused_local_ocr
+
+    try:
+        observed = rescue_with_focused_local_ocr(image, month)
+    except Exception as rescue_exc:
+        observed = None
+        rescue_message = str(rescue_exc)
+    else:
+        rescue_message = ""
+
+    if observed is None:
+        observed = {
+            "item_id": "",
+            "item_id_candidates": [],
+            "barcode": "",
+            "product_name": "",
+            "promo_text": "",
+            "normal_price": None,
+            "promo_price": None,
+            "promo_from": None,
+            "promo_to": None,
+            "raw_text": "",
+            "confidence": 0.0,
+            "ocr_engine": "local-rescue-failed",
+        }
+    observed = dict(observed)
+    warning = f"Gemini fallback không dùng được: {type(exc).__name__}: {exc}"
+    if rescue_message:
+        warning += f"; rescue OCR: {rescue_message}"
+    observed["ocr_warning"] = warning
+    observed["gemini_fallback_failed"] = True
+    return observed
+
+
 def install_tag_audit_barcode_contract(tag_audit_module) -> None:
     """Wrap OCR extraction and add barcode evidence only when it is still blank."""
     if getattr(tag_audit_module, "_barcode_contract_v1", False):
@@ -62,7 +98,14 @@ def install_tag_audit_barcode_contract(tag_audit_module) -> None:
     original_extract = tag_audit_module._extract_tag_with_gemini
 
     def extract_with_barcode(image: bytes, mime_type: str, month: str | None) -> dict:
-        observed = original_extract(image, mime_type, month)
+        try:
+            observed = original_extract(image, mime_type, month)
+        except Exception as exc:
+            # The local-first extractor may already have read useful text before
+            # optional Gemini fallback returns 401/403/429. Do a tighter local-only
+            # retry instead of discarding the whole observation and returning blanks.
+            observed = _recover_after_perception_failure(image, month, exc)
+
         existing = re.sub(r"\D", "", str(observed.get("barcode") or ""))
         if _NUMERIC_BARCODE_RE.fullmatch(existing):
             observed["barcode"] = existing
