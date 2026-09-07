@@ -1,6 +1,6 @@
+import asyncio
 from io import BytesIO
 
-import pytest
 from fastapi import UploadFile
 from starlette.datastructures import Headers
 
@@ -41,8 +41,7 @@ def _observed():
     }
 
 
-@pytest.mark.asyncio
-async def test_tag_check_accepts_jpeg_bytes_without_xlsx_validation(monkeypatch):
+def test_tag_check_accepts_jpeg_bytes_without_xlsx_validation(monkeypatch):
     """Regression: scanner images must never enter the OOXML/ZIP validator."""
     monkeypatch.setattr(tag_audit_contract, "_CONTEXT_CACHE", {
         "source_key": "test:image-upload",
@@ -63,7 +62,7 @@ async def test_tag_check_accepts_jpeg_bytes_without_xlsx_validation(monkeypatch)
         headers=Headers({"content-type": "image/jpeg"}),
     )
 
-    result = await main_api.check_tag(image=upload, _admin="admin")
+    result = asyncio.run(main_api.check_tag(image=upload, _admin="admin"))
 
     assert result["verdict"]["code"] == "correct"
     assert result["observed"]["item_id"] == "P30766"
