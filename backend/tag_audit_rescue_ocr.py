@@ -1,10 +1,16 @@
 # -*- coding: utf-8 -*-
 """Focused rescue OCR for store photos containing several shelf tags.
 
-The operator aims the green scan line at one tag. This module retries local OCR
-on progressively tighter crops around the frame centre so tiny ITEMID text gets
-more pixels and neighbouring tags are excluded. It never maps barcode to ITEMID
-and never decides CTKM correctness.
+The operator aims the green scan line at one tag. Pharmacity labels place the
+small Pxxxxx ITEMID near the lower-right area of the label, while the large
+price is closer to the visual centre. A symmetric centre crop can therefore
+read the price yet clip the ITEMID completely.
+
+This rescue stage first tries small right/lower anchor crops that keep the
+ITEMID near the middle of the OCR frame, then tries wider right-biased crops
+that contain the whole target label, and finally falls back to the historical
+symmetric centre crops. Everything remains local RapidOCR/ONNX: barcode is
+supporting-only and no CTKM business decision is made here.
 """
 from __future__ import annotations
 
@@ -29,28 +35,51 @@ def _decode(image_bytes: bytes):
     return image
 
 
-def _center_crop(image, width_ratio: float, height_ratio: float):
+def _ratio_crop(
+    image,
+    *,
+    center_x: float,
+    center_y: float,
+    width_ratio: float,
+    height_ratio: float,
+):
+    """Crop around a normalized anchor while staying inside the image bounds."""
     height, width = image.shape[:2]
-    crop_w = max(220, int(round(width * width_ratio)))
-    crop_h = max(180, int(round(height * height_ratio)))
+    crop_w = max(120, int(round(width * width_ratio)))
+    crop_h = max(100, int(round(height * height_ratio)))
     crop_w = min(width, crop_w)
     crop_h = min(height, crop_h)
-    cx, cy = width // 2, height // 2
-    x0 = max(0, cx - crop_w // 2)
-    y0 = max(0, cy - crop_h // 2)
-    x1 = min(width, x0 + crop_w)
-    y1 = min(height, y0 + crop_h)
-    return image[y0:y1, x0:x1]
+
+    cx = int(round(width * center_x))
+    cy = int(round(height * center_y))
+    x0 = cx - crop_w // 2
+    y0 = cy - crop_h // 2
+    x0 = max(0, min(width - crop_w, x0))
+    y0 = max(0, min(height - crop_h, y0))
+    x1 = x0 + crop_w
+    y1 = y0 + crop_h
+    crop = image[y0:y1, x0:x1]
+    return crop if getattr(crop, "size", 0) else None
 
 
-def _upscale_for_itemid(image):
+def _center_crop(image, width_ratio: float, height_ratio: float):
+    return _ratio_crop(
+        image,
+        center_x=0.50,
+        center_y=0.50,
+        width_ratio=width_ratio,
+        height_ratio=height_ratio,
+    )
+
+
+def _upscale_for_itemid(image, *, target_long_edge: int = 2000):
     import cv2
 
     height, width = image.shape[:2]
     long_edge = max(height, width)
-    if long_edge >= 1800:
+    if long_edge >= target_long_edge:
         return image
-    scale = min(3.0, 1800.0 / max(1, long_edge))
+    scale = min(4.0, float(target_long_edge) / max(1, long_edge))
     if scale <= 1.05:
         return image
     return cv2.resize(
@@ -77,28 +106,53 @@ def _score(observed: dict) -> tuple:
     )
 
 
+# The scan line is horizontally centred, but on the Pharmacity label the Pxxxxx
+# identity is printed to the right and slightly below the large price. The first
+# two profiles intentionally shift the OCR crop toward that anchor. The following
+# profiles widen around the whole target cell, then preserve legacy symmetric
+# fallbacks for unusual layouts.
+_CROP_PROFILES = (
+    ("itemid-anchor-34x22", 0.80, 0.59, 0.34, 0.22, 2200),
+    ("itemid-anchor-42x28", 0.76, 0.60, 0.42, 0.28, 2200),
+    ("cell-right-64x38", 0.57, 0.54, 0.64, 0.38, 2200),
+    ("cell-right-72x44", 0.57, 0.54, 0.72, 0.44, 2200),
+    ("focus-45x28", 0.50, 0.50, 0.45, 0.28, 2000),
+    ("focus-55x34", 0.50, 0.50, 0.55, 0.34, 2000),
+    ("focus-65x40", 0.50, 0.50, 0.65, 0.40, 2000),
+)
+
+
 def rescue_with_focused_local_ocr(image_bytes: bytes, month: str | None) -> dict | None:
-    """Return the best local-only candidate from tight centre crops."""
+    """Return the best local-only candidate from layout-aware focus crops."""
     from backend import tag_audit_local_ocr_contract as local_ocr
 
     image = _decode(image_bytes)
     candidates: list[dict] = []
-    # First crop roughly one Pharmacity shelf-label cell around the scan-line
-    # centre, then widen slightly in case the operator is not perfectly centred.
-    for label, width_ratio, height_ratio in (
-        ("focus-45x28", 0.45, 0.28),
-        ("focus-55x34", 0.55, 0.34),
-        ("focus-65x40", 0.65, 0.40),
-    ):
-        crop = _upscale_for_itemid(_center_crop(image, width_ratio, height_ratio))
+
+    for label, center_x, center_y, width_ratio, height_ratio, target_long_edge in _CROP_PROFILES:
+        crop = _ratio_crop(
+            image,
+            center_x=center_x,
+            center_y=center_y,
+            width_ratio=width_ratio,
+            height_ratio=height_ratio,
+        )
+        if crop is None:
+            continue
+        crop = _upscale_for_itemid(crop, target_long_edge=target_long_edge)
         try:
             observed = local_ocr.extract_tag_with_rapidocr(_encode(crop), month)
         except Exception:
             continue
+
         observed = dict(observed)
         observed["ocr_target_region"] = label
         observed["ocr_rescue"] = True
         candidates.append(observed)
+
+        # Only short-circuit when one crop independently contains the full
+        # deterministic evidence. ITEMID-only candidates are still retained and
+        # may beat price-only/background crops at the end.
         if _score(observed)[0]:
             return observed
 
