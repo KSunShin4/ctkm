@@ -1,13 +1,10 @@
 # -*- coding: utf-8 -*-
 """Daily, device-local checklist contract for the shelf-tag scanner.
 
-The backend owns only deterministic checklist identity. Progress persistence stays
-in the browser so a store can resume after page reload or Cloud Run scale-to-zero
-without adding a database just for this workflow.
-
-Only promotions whose expected action is ``gan_tem`` belong to the required-tag
-checklist. ``thao_tem`` and ``cho_gan`` rows remain fully auditable by the scanner,
-but they are not counted as physical tags that are expected to be present.
+The backend owns deterministic checklist identity. Progress persistence stays in
+the browser. The checklist is computed from the scanner's current-date derived
+action set when that contract is installed, so a monthly workbook can be reused
+without carrying yesterday's Gắn/Tháo/Chờ denominator forward.
 """
 from __future__ import annotations
 
@@ -23,6 +20,7 @@ _EXCLUDED_PROGRESS_VERDICTS = {
     "review_identity",
     "review_ambiguous",
     "review_itemid_ambiguous",
+    "review_business_date",
 }
 
 
@@ -52,11 +50,16 @@ def checklist_key(tag_audit_module, row: dict) -> str:
     return "tag_" + sha256(encoded).hexdigest()[:24]
 
 
+def _current_action_rows(tag_audit_module, rows: list[dict]) -> list[dict]:
+    derive = getattr(tag_audit_module, "scanner_rows_for_current_date", None)
+    return derive(rows) if callable(derive) else list(rows or [])
+
+
 def checklist_rows(tag_audit_module, rows: list[dict]) -> list[dict]:
-    """Return unique promotion-level tags that should currently be present."""
+    """Return unique promotion-level tags that should be present today."""
     items: list[dict] = []
     seen: set[str] = set()
-    for row in rows or []:
+    for row in _current_action_rows(tag_audit_module, rows):
         if str(row.get("expected_action") or "") != "gan_tem":
             continue
         key = checklist_key(tag_audit_module, row)
