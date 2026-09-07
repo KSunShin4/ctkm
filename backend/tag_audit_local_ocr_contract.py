@@ -5,10 +5,10 @@ RapidOCR is the primary text reader. Gemini remains an optional fallback only
 when local OCR cannot recover the minimum fields required for a deterministic
 comparison. Neither OCR engine decides CTKM correctness.
 
-Targeting v1 adds a conservative center-ROI + right-angle orientation search.
-The full frame is always retained as a candidate, so targeting cannot make an
-otherwise readable off-center tag disappear. Extra OCR passes run only when the
-initial candidates do not already contain one ITEMID + price + date range.
+Targeting v2 first tries a tight focus region around the scanner crosshair, then
+the broader center ROI and finally the full frame. Right-angle orientation search
+uses the same order. The full frame is always retained as fallback, so targeting
+cannot make an otherwise readable off-center tag disappear.
 """
 from __future__ import annotations
 
@@ -30,6 +30,8 @@ _DATE_RANGE_RE = re.compile(
 _MONEY_RE = re.compile(r"(?<!\d)(\d{1,3}(?:[.,]\d{3})+|\d{4,9})\s*(?:VND|VNĐ|Đ|D)?\b", re.IGNORECASE)
 _PROMO_RE = re.compile(r"\b(?:GI[ẢA]M|MUA|T[ẶA]NG|TANG|SALE|KM)\b", re.IGNORECASE)
 
+_FOCUS_X_INSET = 0.22
+_FOCUS_Y_INSET = 0.28
 _CENTER_X_INSET = 0.08
 _CENTER_Y_INSET = 0.15
 _ROTATIONS = (90, 270, 180)
@@ -121,16 +123,24 @@ def _ocr_lines_from_array(decoded, *, variant: str, rotation: int) -> list[dict]
     return lines
 
 
-def _center_crop(decoded):
+def _crop_region(decoded, x_inset: float, y_inset: float):
     height, width = decoded.shape[:2]
-    x0 = int(round(width * _CENTER_X_INSET))
-    x1 = int(round(width * (1.0 - _CENTER_X_INSET)))
-    y0 = int(round(height * _CENTER_Y_INSET))
-    y1 = int(round(height * (1.0 - _CENTER_Y_INSET)))
+    x0 = int(round(width * x_inset))
+    x1 = int(round(width * (1.0 - x_inset)))
+    y0 = int(round(height * y_inset))
+    y1 = int(round(height * (1.0 - y_inset)))
     if x1 - x0 < 180 or y1 - y0 < 180:
         return None
     crop = decoded[y0:y1, x0:x1]
     return crop if getattr(crop, "size", 0) else None
+
+
+def _focus_crop(decoded):
+    return _crop_region(decoded, _FOCUS_X_INSET, _FOCUS_Y_INSET)
+
+
+def _center_crop(decoded):
+    return _crop_region(decoded, _CENTER_X_INSET, _CENTER_Y_INSET)
 
 
 def _rotate_image(decoded, degrees: int):
@@ -170,7 +180,7 @@ def _line_evidence(lines: list[dict]) -> dict:
     complete = bool(unique_item and has_date and money_count >= 1)
     # Structured shelf-tag evidence dominates generic OCR confidence. Multiple
     # ITEMIDs are deliberately penalized so a busy multi-tag frame does not beat
-    # a coherent center crop merely because it contains more readable text.
+    # a coherent focused crop merely because it contains more readable text.
     structure_score = 0.0
     if unique_item:
         structure_score += 10.0
@@ -196,9 +206,9 @@ def _line_evidence(lines: list[dict]) -> dict:
 
 def _candidate_key(candidate: dict) -> tuple:
     evidence = candidate["evidence"]
-    # If two candidates have equivalent structured evidence, prefer the center
-    # ROI because the UI explicitly asks the operator to put one tag in the frame.
-    center_bonus = 1 if candidate.get("variant") == "center" else 0
+    # If candidates have equivalent structured evidence, prefer the region the
+    # operator intentionally centered under the scanner crosshair.
+    variant_bonus = {"focus": 2, "center": 1}.get(candidate.get("variant"), 0)
     rotation_bonus = 1 if int(candidate.get("rotation") or 0) == 0 else 0
     return (
         int(bool(evidence["complete"])),
@@ -206,7 +216,7 @@ def _candidate_key(candidate: dict) -> tuple:
         int(bool(evidence["has_date"])),
         min(2, int(evidence["money_count"])),
         float(evidence["structure_score"]),
-        center_bonus,
+        variant_bonus,
         rotation_bonus,
         float(evidence["average_score"]),
     )
@@ -228,6 +238,7 @@ def _rapidocr_lines(image: bytes) -> list[dict]:
     if decoded is None:
         raise RuntimeError("Không giải mã được ảnh tem")
 
+    focus = _focus_crop(decoded)
     center = _center_crop(decoded)
     candidates: list[dict] = []
 
@@ -243,16 +254,28 @@ def _rapidocr_lines(image: bytes) -> list[dict]:
             "evidence": _line_evidence(lines),
         })
 
-    # Always compare the full frame with the operator-guided center region first.
-    add_candidate(decoded, "full", 0)
-    add_candidate(center, "center", 0)
+    # Most store scans intentionally put one shelf tag under the center crosshair.
+    # Try that tight region first so neighboring tags cannot contaminate identity.
+    add_candidate(focus, "focus", 0)
     best = _choose_best_ocr_candidate(candidates)
     if best and best["evidence"]["complete"]:
         return best["lines"]
 
-    # A sideways phone photo is common in store use. Search only right-angle
-    # rotations, and stop as soon as a complete candidate exists for that angle.
+    # If the focus box is incomplete, broaden conservatively before using the
+    # entire photograph. The full frame remains a guaranteed fallback candidate.
+    add_candidate(center, "center", 0)
+    add_candidate(decoded, "full", 0)
+    best = _choose_best_ocr_candidate(candidates)
+    if best and best["evidence"]["complete"]:
+        return best["lines"]
+
+    # A sideways phone photo is common in store use. For each right angle, test
+    # the focused region first, then broaden only if the focused read is incomplete.
     for rotation in _ROTATIONS:
+        add_candidate(focus, "focus", rotation)
+        best = _choose_best_ocr_candidate(candidates)
+        if best and best["evidence"]["complete"]:
+            return best["lines"]
         add_candidate(center, "center", rotation)
         add_candidate(decoded, "full", rotation)
         best = _choose_best_ocr_candidate(candidates)
@@ -429,7 +452,7 @@ def install_tag_audit_local_ocr_contract(tag_audit_module) -> None:
             payload["ocr_primary"] = "rapidocr"
             payload["gemini_fallback_available"] = bool(os.getenv("GEMINI_API_KEY"))
             payload["image_preprocessor"] = "opencv-clahe-v1"
-            payload["ocr_targeting"] = "center-roi-orientation-v1"
+            payload["ocr_targeting"] = "focus-center-roi-orientation-v2"
             payload["barcode_fallback"] = "zxingcpp"
             return payload
 
