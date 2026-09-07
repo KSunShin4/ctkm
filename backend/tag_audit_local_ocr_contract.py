@@ -4,6 +4,11 @@
 RapidOCR is the primary text reader. Gemini remains an optional fallback only
 when local OCR cannot recover the minimum fields required for a deterministic
 comparison. Neither OCR engine decides CTKM correctness.
+
+Targeting v1 adds a conservative center-ROI + right-angle orientation search.
+The full frame is always retained as a candidate, so targeting cannot make an
+otherwise readable off-center tag disappear. Extra OCR passes run only when the
+initial candidates do not already contain one ITEMID + price + date range.
 """
 from __future__ import annotations
 
@@ -24,6 +29,10 @@ _DATE_RANGE_RE = re.compile(
 )
 _MONEY_RE = re.compile(r"(?<!\d)(\d{1,3}(?:[.,]\d{3})+|\d{4,9})\s*(?:VND|VNĐ|Đ|D)?\b", re.IGNORECASE)
 _PROMO_RE = re.compile(r"\b(?:GI[ẢA]M|MUA|T[ẶA]NG|TANG|SALE|KM)\b", re.IGNORECASE)
+
+_CENTER_X_INSET = 0.08
+_CENTER_Y_INSET = 0.15
+_ROTATIONS = (90, 270, 180)
 
 
 def _get_engine():
@@ -87,15 +96,7 @@ def _parse_money(text: str) -> list[int]:
     return values
 
 
-def _rapidocr_lines(image: bytes) -> list[dict]:
-    import cv2
-    import numpy as np
-
-    array = np.frombuffer(image, dtype=np.uint8)
-    decoded = cv2.imdecode(array, cv2.IMREAD_COLOR)
-    if decoded is None:
-        raise RuntimeError("Không giải mã được ảnh tem")
-
+def _ocr_lines_from_array(decoded, *, variant: str, rotation: int) -> list[dict]:
     result = _get_engine()(decoded)
     texts = list(getattr(result, "txts", None) or [])
     scores = list(getattr(result, "scores", None) or [])
@@ -110,8 +111,158 @@ def _rapidocr_lines(image: bytes) -> list[dict]:
         except (TypeError, ValueError):
             score = 0.0
         box = boxes[index] if index < len(boxes) else None
-        lines.append({"text": clean, "score": score, "height": _box_height(box)})
+        lines.append({
+            "text": clean,
+            "score": score,
+            "height": _box_height(box),
+            "ocr_variant": variant,
+            "ocr_rotation_degrees": int(rotation),
+        })
     return lines
+
+
+def _center_crop(decoded):
+    height, width = decoded.shape[:2]
+    x0 = int(round(width * _CENTER_X_INSET))
+    x1 = int(round(width * (1.0 - _CENTER_X_INSET)))
+    y0 = int(round(height * _CENTER_Y_INSET))
+    y1 = int(round(height * (1.0 - _CENTER_Y_INSET)))
+    if x1 - x0 < 180 or y1 - y0 < 180:
+        return None
+    crop = decoded[y0:y1, x0:x1]
+    return crop if getattr(crop, "size", 0) else None
+
+
+def _rotate_image(decoded, degrees: int):
+    import cv2
+
+    if degrees == 90:
+        return cv2.rotate(decoded, cv2.ROTATE_90_CLOCKWISE)
+    if degrees == 180:
+        return cv2.rotate(decoded, cv2.ROTATE_180)
+    if degrees == 270:
+        return cv2.rotate(decoded, cv2.ROTATE_90_COUNTERCLOCKWISE)
+    return decoded
+
+
+def _line_evidence(lines: list[dict]) -> dict:
+    raw_text = "\n".join(str(line.get("text") or "") for line in lines)
+    itemids = _canonical_itemids(raw_text)
+    has_date = any(_DATE_RANGE_RE.search(str(line.get("text") or "")) for line in lines)
+    money_count = 0
+    promo_hint = False
+    valid_scores: list[float] = []
+    for line in lines:
+        text = str(line.get("text") or "")
+        if not _ITEM_RE.search(text):
+            money_count += len(_parse_money(text))
+        if _PROMO_RE.search(text):
+            promo_hint = True
+        try:
+            score = float(line.get("score") or 0)
+        except (TypeError, ValueError):
+            score = 0.0
+        if score > 0:
+            valid_scores.append(score)
+
+    average_score = sum(valid_scores) / len(valid_scores) if valid_scores else 0.0
+    unique_item = len(itemids) == 1
+    complete = bool(unique_item and has_date and money_count >= 1)
+    # Structured shelf-tag evidence dominates generic OCR confidence. Multiple
+    # ITEMIDs are deliberately penalized so a busy multi-tag frame does not beat
+    # a coherent center crop merely because it contains more readable text.
+    structure_score = 0.0
+    if unique_item:
+        structure_score += 10.0
+    elif itemids:
+        structure_score += max(0.0, 3.0 - float(len(itemids) - 1))
+    if has_date:
+        structure_score += 5.0
+    structure_score += min(2, money_count) * 2.0
+    if promo_hint:
+        structure_score += 1.0
+    structure_score += min(1.0, average_score)
+    return {
+        "itemids": itemids,
+        "unique_item": unique_item,
+        "has_date": has_date,
+        "money_count": money_count,
+        "promo_hint": promo_hint,
+        "average_score": average_score,
+        "complete": complete,
+        "structure_score": structure_score,
+    }
+
+
+def _candidate_key(candidate: dict) -> tuple:
+    evidence = candidate["evidence"]
+    # If two candidates have equivalent structured evidence, prefer the center
+    # ROI because the UI explicitly asks the operator to put one tag in the frame.
+    center_bonus = 1 if candidate.get("variant") == "center" else 0
+    rotation_bonus = 1 if int(candidate.get("rotation") or 0) == 0 else 0
+    return (
+        int(bool(evidence["complete"])),
+        int(bool(evidence["unique_item"])),
+        int(bool(evidence["has_date"])),
+        min(2, int(evidence["money_count"])),
+        float(evidence["structure_score"]),
+        center_bonus,
+        rotation_bonus,
+        float(evidence["average_score"]),
+    )
+
+
+def _choose_best_ocr_candidate(candidates: list[dict]) -> dict | None:
+    usable = [candidate for candidate in candidates if candidate.get("lines")]
+    if not usable:
+        return None
+    return max(usable, key=_candidate_key)
+
+
+def _rapidocr_lines(image: bytes) -> list[dict]:
+    import cv2
+    import numpy as np
+
+    array = np.frombuffer(image, dtype=np.uint8)
+    decoded = cv2.imdecode(array, cv2.IMREAD_COLOR)
+    if decoded is None:
+        raise RuntimeError("Không giải mã được ảnh tem")
+
+    center = _center_crop(decoded)
+    candidates: list[dict] = []
+
+    def add_candidate(frame, variant: str, rotation: int) -> None:
+        if frame is None:
+            return
+        rotated = _rotate_image(frame, rotation)
+        lines = _ocr_lines_from_array(rotated, variant=variant, rotation=rotation)
+        candidates.append({
+            "variant": variant,
+            "rotation": rotation,
+            "lines": lines,
+            "evidence": _line_evidence(lines),
+        })
+
+    # Always compare the full frame with the operator-guided center region first.
+    add_candidate(decoded, "full", 0)
+    add_candidate(center, "center", 0)
+    best = _choose_best_ocr_candidate(candidates)
+    if best and best["evidence"]["complete"]:
+        return best["lines"]
+
+    # A sideways phone photo is common in store use. Search only right-angle
+    # rotations, and stop as soon as a complete candidate exists for that angle.
+    for rotation in _ROTATIONS:
+        add_candidate(center, "center", rotation)
+        add_candidate(decoded, "full", rotation)
+        best = _choose_best_ocr_candidate(candidates)
+        if best and best["evidence"]["complete"]:
+            return best["lines"]
+
+    best = _choose_best_ocr_candidate(candidates)
+    if best:
+        return best["lines"]
+    return []
 
 
 def extract_tag_with_rapidocr(image: bytes, month: str | None) -> dict:
@@ -164,6 +315,7 @@ def extract_tag_with_rapidocr(image: bytes, month: str | None) -> dict:
 
     scores = [line["score"] for line in lines if line["score"] > 0]
     confidence = sum(scores) / len(scores) if scores else 0.0
+    first_line = lines[0] if lines else {}
     return {
         "item_id": item_id,
         "item_id_candidates": itemids,
@@ -178,6 +330,8 @@ def extract_tag_with_rapidocr(image: bytes, month: str | None) -> dict:
         "raw_text": raw_text,
         "confidence": round(confidence, 4),
         "ocr_engine": "rapidocr",
+        "ocr_target_region": str(first_line.get("ocr_variant") or "full"),
+        "ocr_rotation_degrees": int(first_line.get("ocr_rotation_degrees") or 0),
     }
 
 
@@ -197,7 +351,8 @@ def _merge_local_with_gemini(local: dict, gemini: dict) -> dict:
     for key in (
         "item_id", "item_id_candidates", "promo_price", "normal_price",
         "promo_from", "promo_to", "date_text", "promo_text", "raw_text",
-        "image_quality", "image_quality_warning",
+        "image_quality", "image_quality_warning", "ocr_target_region",
+        "ocr_rotation_degrees",
     ):
         value = local.get(key)
         if value not in (None, "", [], ()):  # preserve zero only if ever valid
@@ -261,6 +416,7 @@ def install_tag_audit_local_ocr_contract(tag_audit_module) -> None:
             payload["ocr_primary"] = "rapidocr"
             payload["gemini_fallback_available"] = bool(os.getenv("GEMINI_API_KEY"))
             payload["image_preprocessor"] = "opencv-clahe-v1"
+            payload["ocr_targeting"] = "center-roi-orientation-v1"
             payload["barcode_fallback"] = "zxingcpp"
             return payload
 
