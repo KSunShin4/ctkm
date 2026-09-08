@@ -46,7 +46,7 @@ function tokenMatchScore(needle, candidate) {
   if (needle === candidate) return 100
   if (candidate.startsWith(needle)) return 86
   if (candidate.includes(needle)) return 76
-  if (needle.length >= 4) {
+  if (/^[a-z]+$/.test(needle) && needle.length >= 4) {
     const allowed = needle.length >= 8 ? 2 : 1
     if (Math.abs(needle.length - candidate.length) <= allowed && editDistance(needle, candidate) <= allowed) return 64
   }
@@ -69,6 +69,11 @@ export function shelfSearchHaystack(shelf, items = []) {
   return normalizeText([...technical, ...itemParts].join(" "))
 }
 
+function itemHint(item) {
+  const text = [item?.item_id, item?.item_name].filter(Boolean).join(" · ")
+  return text ? `Có ${text}` : ""
+}
+
 function searchShelf(shelf, items, query) {
   const needle = normalizeText(query)
   if (!needle) return {matches:true, score:0, matchHint:""}
@@ -76,8 +81,21 @@ function searchShelf(shelf, items, query) {
   const {technical, itemParts, shelfItems} = searchableParts(shelf, items)
   const normalizedTechnical = technical.map(normalizeText)
   const normalizedItems = itemParts.map(normalizeText)
+  const compactTechnical = technical.map(compactText)
   const allParts = [...normalizedTechnical, ...normalizedItems]
   const compactParts = [...technical, ...itemParts].map(compactText)
+
+  if (/^p\d{3,8}$/.test(compactNeedle)) {
+    const exactItem = shelfItems.find(item => compactText(item?.item_id) === compactNeedle)
+    return exactItem ? {matches:true, score:240, matchHint:itemHint(exactItem)} : {matches:false, score:0, matchHint:""}
+  }
+
+  const looksLikeShelfCode = /^(?:ke|pog|loc|location|vitri|vt|tang)[a-z0-9]*\d/.test(compactNeedle)
+  if (looksLikeShelfCode) {
+    const exactTechnical = compactTechnical.some(part => part.includes(compactNeedle))
+    if (!exactTechnical) return {matches:false, score:0, matchHint:""}
+    return {matches:true, score:225, matchHint:""}
+  }
 
   let score = 0
   if (normalizedTechnical.includes(needle)) score = Math.max(score, 180)
@@ -105,8 +123,7 @@ function searchShelf(shelf, items, query) {
     const itemMatches = id === needle || name.includes(needle) || compactId.includes(compactNeedle) || compactName.includes(compactNeedle)
       || queryTokens.every(token => itemTokens.some(candidate => tokenMatchScore(token, candidate)))
     if (itemMatches) {
-      matchHint = [item?.item_id, item?.item_name].filter(Boolean).join(" · ")
-      if (matchHint) matchHint = `Có ${matchHint}`
+      matchHint = itemHint(item)
       break
     }
   }
