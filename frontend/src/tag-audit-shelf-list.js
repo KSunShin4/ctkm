@@ -130,7 +130,7 @@ export function smartShelfList(shelves, items, getStats, {query="", filter="todo
     const stats = getStats(shelf.shelf_key)
     const status = shelfStatus(stats)
     const search = searchShelf(shelf, items, query)
-    const matchesFilter = filter === "all" || status === filter || (filter === "todo" && status !== "done")
+    const matchesFilter = filter === "all" || status === filter || (filter === "todo" && (needle ? true : status !== "done"))
     return {shelf, stats, status, order, priority:shelfPriority(status, stats), matchesQuery:search.matches, matchesFilter, matchScore:search.score, matchHint:search.matchHint}
   }).filter(row => row.matchesQuery && row.matchesFilter)
 
@@ -175,8 +175,9 @@ export function smartShelfSuggestions(shelves, items, getStats, progress = {}, {
   })
   const result = []
   const seen = new Set()
+  const maxSuggestions = Math.max(1, Number(limit) || 7)
   const add = (row, kind, label, reason) => {
-    if (!row || seen.has(row.shelf.shelf_key) || result.length >= Math.max(1, Number(limit) || 7)) return
+    if (!row || seen.has(row.shelf.shelf_key) || result.length >= maxSuggestions) return
     seen.add(row.shelf.shelf_key)
     result.push({...row, kind, label, reason})
   }
@@ -188,17 +189,16 @@ export function smartShelfSuggestions(shelves, items, getStats, progress = {}, {
   if (recent) add(recent, "resume", "Tiếp tục đang kiểm", `${recent.stats.checked}/${recent.stats.total} action · còn ${recent.stats.remaining}`)
 
   const remaining = rows.filter(row => row.stats.remaining > 0)
-  if (remaining.length) {
-    const anchor = recent ? recent.order : -1
-    const orderedAfter = [...remaining]
-      .filter(row => !seen.has(row.shelf.shelf_key))
-      .sort((a,b) => {
-        const da = a.order > anchor ? a.order - anchor : a.order + rows.length - anchor
-        const db = b.order > anchor ? b.order - anchor : b.order + rows.length - anchor
-        return da - db
-      })
-    for (const row of orderedAfter.slice(0, 2)) add(row, "next", "Nên kiểm tiếp", row.stats.checked ? `${row.stats.checked}/${row.stats.total} action · còn ${row.stats.remaining}` : `${row.stats.total} action · chưa kiểm`)
-  }
+  const anchor = recent ? recent.order : -1
+  const orderedAfter = [...remaining]
+    .filter(row => !seen.has(row.shelf.shelf_key))
+    .sort((a,b) => {
+      const da = a.order > anchor ? a.order - anchor : a.order + rows.length - anchor
+      const db = b.order > anchor ? b.order - anchor : b.order + rows.length - anchor
+      return da - db
+    })
+  const firstNext = orderedAfter[0] || null
+  add(firstNext, "next", "Nên kiểm tiếp", firstNext?.stats.checked ? `${firstNext.stats.checked}/${firstNext.stats.total} action · còn ${firstNext.stats.remaining}` : `${firstNext?.stats.total || 0} action · chưa kiểm`)
 
   const almostDone = [...rows]
     .filter(row => row.stats.remaining > 0 && row.stats.checked > 0 && row.stats.remaining <= 3 && !seen.has(row.shelf.shelf_key))
@@ -209,6 +209,11 @@ export function smartShelfSuggestions(shelves, items, getStats, progress = {}, {
     .filter(row => row.unresolvedIssues > 0 && !seen.has(row.shelf.shelf_key))
     .sort((a,b) => b.unresolvedIssues - a.unresolvedIssues || b.lastCheckedAt - a.lastCheckedAt)
   for (const row of issues) add(row, "issue", "Cần quay lại", `${row.unresolvedIssues} Sai/Review chưa xử lý`)
+
+  const secondNext = orderedAfter.find(row => !seen.has(row.shelf.shelf_key)) || null
+  add(secondNext, "next", "Nên kiểm tiếp", secondNext?.stats.checked ? `${secondNext.stats.checked}/${secondNext.stats.total} action · còn ${secondNext.stats.remaining}` : `${secondNext?.stats.total || 0} action · chưa kiểm`)
+
+  for (const row of inProgress) add(row, "resume", "Đang kiểm dở", `${row.stats.checked}/${row.stats.total} action · còn ${row.stats.remaining}`)
 
   const untouched = rows.filter(row => row.stats.checked === 0 && row.stats.remaining > 0 && !seen.has(row.shelf.shelf_key))
   for (const row of untouched) add(row, "todo", "Chưa kiểm", `${row.stats.total} action`)
