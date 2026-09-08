@@ -1,6 +1,13 @@
 from backend import main_api  # installs production scanner/progress contracts
 from backend import tag_audit_contract
-from backend.tag_audit_progress_contract import checklist_rows, context_id
+from backend.tag_audit_progress_contract import (
+    checklist_rows,
+    context_id,
+    promotion_key,
+    shelf_task_rows,
+    task_key,
+    workbook_scope_id,
+)
 
 
 def _row(**overrides):
@@ -20,6 +27,7 @@ def _row(**overrides):
         "pog_code": "A",
         "location_id": "1",
         "facing": 1,
+        "store_id": "S1",
     }
     row.update(overrides)
     return row
@@ -42,7 +50,7 @@ def _observed(**overrides):
     return value
 
 
-def test_checklist_counts_only_tags_expected_to_be_present():
+def test_camera_checklist_still_counts_only_tags_expected_to_be_present():
     items = checklist_rows(tag_audit_contract, [
         _row(),
         _row(item_id="P2", expected_action="thao_tem", source_sheet="Tháo tem"),
@@ -51,6 +59,33 @@ def test_checklist_counts_only_tags_expected_to_be_present():
 
     assert [item["item_id"] for item in items] == ["P03845"]
     assert items[0]["expected_action"] == "gan_tem"
+    assert items[0]["promotion_key"].startswith("promo_")
+    assert items[0]["task_key"] == items[0]["check_key"]
+
+
+def test_shelf_tasks_include_active_and_due_removal_but_not_waiting():
+    items = shelf_task_rows(tag_audit_contract, [
+        _row(item_id="P1", expected_action="gan_tem"),
+        _row(item_id="P2", expected_action="thao_tem"),
+        _row(item_id="P3", expected_action="cho_gan"),
+    ])
+    assert {(item["item_id"], item["expected_action"]) for item in items} == {
+        ("P1", "gan_tem"),
+        ("P2", "thao_tem"),
+    }
+
+
+def test_promotion_key_is_stable_across_action_transition_but_task_key_changes():
+    active = _row(expected_action="gan_tem")
+    removal = _row(expected_action="thao_tem")
+    assert promotion_key(tag_audit_contract, active) == promotion_key(tag_audit_contract, removal)
+    assert task_key(tag_audit_contract, active) != task_key(tag_audit_contract, removal)
+
+
+def test_workbook_scope_is_action_independent():
+    active = [_row(expected_action="gan_tem"), _row(item_id="P2", expected_action="gan_tem")]
+    transitioned = [_row(expected_action="thao_tem"), _row(item_id="P2", expected_action="thao_tem")]
+    assert workbook_scope_id(tag_audit_contract, active) == workbook_scope_id(tag_audit_contract, transitioned)
 
 
 def test_same_promotion_is_not_counted_twice_for_pog_position_variants():
@@ -76,6 +111,8 @@ def test_direct_itemid_success_is_progress_eligible():
     assert result["progress_eligible"] is True
     assert result["progress_state"] == "pass"
     assert result["check_key"].startswith("tag_")
+    assert result["task_key"] == result["check_key"]
+    assert result["promotion_key"].startswith("promo_")
 
 
 def test_direct_itemid_wrong_price_still_counts_as_checked_but_failed():
@@ -111,9 +148,10 @@ def test_remove_or_wait_tag_never_advances_required_tag_progress():
     assert wait["verdict"]["code"] == "early_tag"
     assert remove["progress_eligible"] is False
     assert wait["progress_eligible"] is False
+    assert remove["promotion_key"].startswith("promo_")
 
 
-def test_context_payload_exposes_progress_scope_and_checklist_count():
+def test_context_payload_exposes_camera_progress_scope_and_checklist_count():
     payload = tag_audit_contract._context_payload({
         "source": "uploaded-workbook",
         "job_id": None,
