@@ -37,6 +37,12 @@ test("search is accent-insensitive, compact-form friendly and typo tolerant", ()
   assert.deepEqual(smartShelfList(shelves,items,getStats,{query:"ginko",filter:"all"}).rows.map(x=>x.shelf.shelf_key), ["B"])
 })
 
+test("typing searches all statuses even when browsing filter is still todo", () => {
+  const result = smartShelfList(shelves,items,getStats,{query:"P30002",filter:"todo"})
+  assert.deepEqual(result.rows.map(x=>x.shelf.shelf_key), ["D"])
+  assert.equal(result.rows[0].status, "done")
+})
+
 test("default todo hides completed shelves and prioritizes issues then in-progress", () => {
   const result = smartShelfList(shelves,items,getStats,{filter:"todo",limit:12})
   assert.deepEqual(result.rows.map(x=>x.shelf.shelf_key), ["B","E","A","C"])
