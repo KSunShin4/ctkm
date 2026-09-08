@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Daily, device-local checklist contract for the shelf-tag scanner.
+"""Deterministic promotion/task identity and progress contracts for tag audit.
 
-The backend owns deterministic checklist identity. Progress persistence stays in
-the browser. The checklist is computed from the scanner's current-date derived
-action set when that contract is installed, so a monthly workbook can be reused
-without carrying yesterday's Gắn/Tháo/Chờ denominator forward.
+Camera checklist progress remains daily and Gắn-tem only. Manual shelf checking
+uses the same stable promotion identity but may include both Gắn-tem and Tháo-tem
+tasks. A promotion keeps the same ``promotion_key`` when its business action
+changes; ``task_key`` adds the current action on top of that stable identity.
 """
 from __future__ import annotations
 
@@ -14,7 +14,8 @@ import json
 from fastapi import Depends
 
 
-_PROGRESS_VERSION = "tag-audit-progress-v1"
+_PROGRESS_VERSION = "tag-audit-progress-v2"
+_SHELF_PROGRESS_VERSION = "tag-audit-shelf-progress-v2"
 _EXCLUDED_PROGRESS_VERDICTS = {
     "not_found",
     "review_identity",
@@ -24,8 +25,8 @@ _EXCLUDED_PROGRESS_VERDICTS = {
 }
 
 
-def _identity_payload(tag_audit_module, row: dict) -> dict:
-    """Return a stable promotion-level identity without mutating source values."""
+def _promotion_identity_payload(tag_audit_module, row: dict) -> dict:
+    """Return action-independent promotion identity without mutating source values."""
     return {
         "item_id": tag_audit_module._norm_item(row.get("item_id")),
         "key_channel": str(row.get("key_channel") or ""),
@@ -36,53 +37,109 @@ def _identity_payload(tag_audit_module, row: dict) -> dict:
         "promo_to": tag_audit_module._parse_iso_date(row.get("promo_to")),
         "normal_price": tag_audit_module._parse_money(row.get("normal_price")),
         "promo_price": tag_audit_module._parse_money(row.get("promo_price")),
-        "expected_action": str(row.get("expected_action") or ""),
     }
 
 
-def checklist_key(tag_audit_module, row: dict) -> str:
+def _identity_payload(tag_audit_module, row: dict) -> dict:
+    """Backward-compatible task identity payload."""
+    payload = _promotion_identity_payload(tag_audit_module, row)
+    payload["expected_action"] = str(row.get("expected_action") or "")
+    return payload
+
+
+def promotion_key(tag_audit_module, row: dict) -> str:
     encoded = json.dumps(
-        _identity_payload(tag_audit_module, row),
+        _promotion_identity_payload(tag_audit_module, row),
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
     ).encode("utf-8")
+    return "promo_" + sha256(encoded).hexdigest()[:24]
+
+
+def task_key(tag_audit_module, row: dict) -> str:
+    encoded = json.dumps(
+        {
+            "promotion_key": promotion_key(tag_audit_module, row),
+            "expected_action": str(row.get("expected_action") or ""),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    # Preserve the long-standing ``tag_`` prefix for existing scanner consumers.
     return "tag_" + sha256(encoded).hexdigest()[:24]
+
+
+def checklist_key(tag_audit_module, row: dict) -> str:
+    """Compatibility alias for the action-specific task key."""
+    return task_key(tag_audit_module, row)
+
+
+def removal_key(tag_audit_module, row: dict) -> str:
+    """Store-specific removal identity so two stores never share removal state."""
+    encoded = json.dumps(
+        {
+            "promotion_key": promotion_key(tag_audit_module, row),
+            "store_id": str(row.get("store_id") or "").strip(),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return "remove_" + sha256(encoded).hexdigest()[:24]
 
 
 def _current_action_rows(tag_audit_module, rows: list[dict]) -> list[dict]:
     derive = getattr(tag_audit_module, "scanner_rows_for_current_date", None)
-    return derive(rows) if callable(derive) else list(rows or [])
+    return derive(rows) if callable(derive) else [dict(row) for row in rows or []]
 
 
-def checklist_rows(tag_audit_module, rows: list[dict]) -> list[dict]:
-    """Return unique promotion-level tags that should be present today."""
+def _item_from_row(tag_audit_module, row: dict) -> dict:
+    pkey = promotion_key(tag_audit_module, row)
+    tkey = task_key(tag_audit_module, row)
+    return {
+        "promotion_key": pkey,
+        "task_key": tkey,
+        "check_key": tkey,
+        "removal_key": removal_key(tag_audit_module, row),
+        "item_id": row.get("item_id"),
+        "item_name": row.get("item_name"),
+        "promo_uom": row.get("promo_uom"),
+        "key_channel": row.get("key_channel"),
+        "channel": row.get("channel"),
+        "campaign_name": row.get("campaign_name"),
+        "campaign_detail": row.get("campaign_detail"),
+        "promo_from": tag_audit_module._cell_value(row.get("promo_from")),
+        "promo_to": tag_audit_module._cell_value(row.get("promo_to")),
+        "normal_price": tag_audit_module._parse_money(row.get("normal_price")),
+        "promo_price": tag_audit_module._parse_money(row.get("promo_price")),
+        "pog_code": row.get("pog_code"),
+        "location_id": row.get("location_id"),
+        "facing": row.get("facing"),
+        "store_id": row.get("store_id"),
+        "expected_action": str(row.get("expected_action") or ""),
+    }
+
+
+def _deduped_items(tag_audit_module, rows: list[dict], allowed_actions: set[str]) -> list[dict]:
     items: list[dict] = []
     seen: set[str] = set()
     for row in _current_action_rows(tag_audit_module, rows):
-        if str(row.get("expected_action") or "") != "gan_tem":
+        action = str(row.get("expected_action") or "")
+        if action not in allowed_actions:
             continue
-        key = checklist_key(tag_audit_module, row)
-        if key in seen:
+        item = _item_from_row(tag_audit_module, row)
+        if item["task_key"] in seen:
             continue
-        seen.add(key)
-        items.append({
-            "check_key": key,
-            "item_id": row.get("item_id"),
-            "item_name": row.get("item_name"),
-            "key_channel": row.get("key_channel"),
-            "channel": row.get("channel"),
-            "campaign_name": row.get("campaign_name"),
-            "campaign_detail": row.get("campaign_detail"),
-            "promo_from": tag_audit_module._cell_value(row.get("promo_from")),
-            "promo_to": tag_audit_module._cell_value(row.get("promo_to")),
-            "promo_price": tag_audit_module._parse_money(row.get("promo_price")),
-            "pog_code": row.get("pog_code"),
-            "location_id": row.get("location_id"),
-            "facing": row.get("facing"),
-            "store_id": row.get("store_id"),
-            "expected_action": "gan_tem",
-        })
+        seen.add(item["task_key"])
+        items.append(item)
+    return items
+
+
+def checklist_rows(tag_audit_module, rows: list[dict]) -> list[dict]:
+    """Camera/admin checklist: unique tags that must be present today."""
+    items = _deduped_items(tag_audit_module, rows, {"gan_tem"})
     return sorted(
         items,
         key=lambda item: (
@@ -95,7 +152,45 @@ def checklist_rows(tag_audit_module, rows: list[dict]) -> list[dict]:
     )
 
 
+def shelf_task_rows(tag_audit_module, rows: list[dict]) -> list[dict]:
+    """Store shelf workflow: Gắn-tem plus all due Tháo-tem tasks."""
+    return _deduped_items(tag_audit_module, rows, {"gan_tem", "thao_tem"})
+
+
+def workbook_scope_id(tag_audit_module, rows: list[dict]) -> str:
+    """Stable across daily action reclassification for the same promotion set."""
+    keys = sorted({promotion_key(tag_audit_module, row) for row in rows or []})
+    encoded = json.dumps(
+        {"version": _SHELF_PROGRESS_VERSION, "promotion_keys": keys},
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return "book_" + sha256(encoded).hexdigest()[:24]
+
+
+def store_scope_id(tag_audit_module, rows: list[dict]) -> str:
+    store_ids = sorted({str(row.get("store_id") or "").strip() for row in rows or [] if str(row.get("store_id") or "").strip()})
+    payload = {"stores": store_ids} if store_ids else {"workbook": workbook_scope_id(tag_audit_module, rows)}
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return "store_" + sha256(encoded).hexdigest()[:24]
+
+
+def shelf_context_id(tag_audit_module, rows: list[dict]) -> str:
+    keys = sorted(item["task_key"] for item in shelf_task_rows(tag_audit_module, rows))
+    encoded = json.dumps(
+        {
+            "version": _SHELF_PROGRESS_VERSION,
+            "workbook_scope_id": workbook_scope_id(tag_audit_module, rows),
+            "current_task_keys": keys,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return "sctx_" + sha256(encoded).hexdigest()[:24]
+
+
 def context_id(tag_audit_module, rows: list[dict]) -> str:
+    """Backward-compatible camera checklist context (Gắn-tem only)."""
     keys = sorted(item["check_key"] for item in checklist_rows(tag_audit_module, rows))
     encoded = json.dumps(
         {"version": _PROGRESS_VERSION, "required_tag_keys": keys},
@@ -150,7 +245,9 @@ def install_tag_audit_progress_contract(tag_audit_module, core_module) -> None:
                 and identity_source in {"manual_item_id", "ocr_item_id"}
                 and verdict_code not in _EXCLUDED_PROGRESS_VERDICTS
             )
-            result["check_key"] = checklist_key(tag_audit_module, expected) if eligible else None
+            result["promotion_key"] = promotion_key(tag_audit_module, expected) if expected else None
+            result["task_key"] = task_key(tag_audit_module, expected) if eligible else None
+            result["check_key"] = result["task_key"]
             result["progress_eligible"] = eligible
             result["progress_state"] = _progress_state(result)
             return result
@@ -175,8 +272,5 @@ def install_tag_audit_progress_contract(tag_audit_module, core_module) -> None:
     core_module.tag_audit_checklist = tag_audit_checklist
     core_module.app.state.tag_audit_progress_contract_v1 = True
 
-    # The manual shelf checker is a separate store-facing mode. It intentionally
-    # uses isolated temporary workbook sessions and therefore does not require an
-    # admin login or mutate the admin scanner context.
     from backend.tag_audit_shelf_contract import install_tag_audit_shelf_contract
     install_tag_audit_shelf_contract(tag_audit_module, core_module)

@@ -3,25 +3,25 @@ import assert from "node:assert/strict"
 import { nextShelfKey, smartShelfList, smartShelfSuggestions } from "./tag-audit-shelf-list.js"
 
 const shelves = [
-  {shelf_key:"A", shelf_label:"POG-A · KỆ-01"},
-  {shelf_key:"B", shelf_label:"POG-B · KỆ-02"},
-  {shelf_key:"C", shelf_label:"POG-C · KỆ-03"},
-  {shelf_key:"D", shelf_label:"POG-D · KỆ-04"},
-  {shelf_key:"E", shelf_label:"POG-E · KỆ-05"},
+  {shelf_key:"A", shelf_label:"POG-A", locations:["KỆ-01"]},
+  {shelf_key:"B", shelf_label:"POG-B", locations:["KỆ-02"]},
+  {shelf_key:"C", shelf_label:"POG-C", locations:["KỆ-03"]},
+  {shelf_key:"D", shelf_label:"POG-D", locations:["KỆ-04"]},
+  {shelf_key:"E", shelf_label:"POG-E", locations:["KỆ-05"]},
 ]
 const items = [
-  {shelf_key:"A", check_key:"A1", item_id:"P25860", item_name:"HOTCHLAND SLEEP NOW", pog_code:"POG-A", location_id:"KỆ-01"},
-  {shelf_key:"B", check_key:"B1", item_id:"P25175", item_name:"FELIX GINKGO BILOBA", pog_code:"POG-B", location_id:"KỆ-02"},
-  {shelf_key:"C", check_key:"C1", item_id:"P30001", item_name:"OTHER", pog_code:"POG-C", location_id:"KỆ-03"},
-  {shelf_key:"D", check_key:"D1", item_id:"P30002", item_name:"DONE", pog_code:"POG-D", location_id:"KỆ-04"},
-  {shelf_key:"E", check_key:"E1", item_id:"P30003", item_name:"ALMOST DONE", pog_code:"POG-E", location_id:"KỆ-05"},
+  {shelf_key:"A", check_key:"A1", item_id:"P25860", item_name:"HOTCHLAND SLEEP NOW", pog_code:"POG-A", location_id:"KỆ-01",expected_action:"gan_tem"},
+  {shelf_key:"B", check_key:"B1", item_id:"P25175", item_name:"FELIX GINKGO BILOBA", pog_code:"POG-B", location_id:"KỆ-02",expected_action:"gan_tem"},
+  {shelf_key:"C", check_key:"C1", item_id:"P30001", item_name:"OTHER", pog_code:"POG-C", location_id:"KỆ-03",expected_action:"gan_tem"},
+  {shelf_key:"D", check_key:"D1", item_id:"P30002", item_name:"DONE", pog_code:"POG-D", location_id:"KỆ-04",expected_action:"gan_tem"},
+  {shelf_key:"E", check_key:"E1", removal_key:"ER1", item_id:"P30003", item_name:"EXPIRED", pog_code:"POG-E", location_id:"KỆ-05",expected_action:"thao_tem"},
 ]
 const stats = {
-  A:{total:10,checked:4,remaining:6,pass:4,fail:0,review:0},
-  B:{total:8,checked:2,remaining:6,pass:1,fail:1,review:0},
-  C:{total:9,checked:0,remaining:9,pass:0,fail:0,review:0},
-  D:{total:5,checked:5,remaining:0,pass:5,fail:0,review:0},
-  E:{total:7,checked:5,remaining:2,pass:5,fail:0,review:0},
+  A:{total:10,checked:4,remaining:6,pass:4,fail:0,review:0,attachTotal:10,removeTotal:0,removed:0,removePending:0},
+  B:{total:8,checked:2,remaining:6,pass:1,fail:1,review:0,attachTotal:8,removeTotal:0,removed:0,removePending:0},
+  C:{total:9,checked:0,remaining:9,pass:0,fail:0,review:0,attachTotal:9,removeTotal:0,removed:0,removePending:0},
+  D:{total:5,checked:5,remaining:0,pass:5,fail:0,review:0,attachTotal:5,removeTotal:0,removed:0,removePending:0},
+  E:{total:7,checked:6,remaining:1,pass:5,fail:1,review:0,attachTotal:0,removeTotal:7,removed:5,removePending:2},
 }
 const getStats = key => stats[key]
 
@@ -43,10 +43,15 @@ test("typing searches all statuses even when browsing filter is still todo", () 
   assert.equal(result.rows[0].status, "done")
 })
 
-test("default todo hides completed shelves and prioritizes issues then in-progress", () => {
+test("default todo prioritizes due removal before ordinary issues and work", () => {
   const result = smartShelfList(shelves,items,getStats,{filter:"todo",limit:12})
-  assert.deepEqual(result.rows.map(x=>x.shelf.shelf_key), ["B","E","A","C"])
+  assert.deepEqual(result.rows.map(x=>x.shelf.shelf_key), ["E","B","A","C"])
   assert.equal(result.totalMatches, 4)
+})
+
+test("remove filter only shows shelves with unfinished removal work", () => {
+  const result = smartShelfList(shelves,items,getStats,{filter:"remove",limit:12})
+  assert.deepEqual(result.rows.map(x=>x.shelf.shelf_key), ["E"])
 })
 
 test("browsing and search stay compact", () => {
@@ -58,30 +63,31 @@ test("browsing and search stay compact", () => {
   assert.equal(searched.totalMatches, 5)
 })
 
-test("suggestions use progress to resume recent work, then physical next and almost-done shelves", () => {
+test("suggestions put due removal first before recent in-progress work", () => {
   const progress = {
     A1:{state:"pass",checkedAt:"2026-09-08T01:00:00.000Z",resolved:false},
     B1:{state:"fail",reason:"Sai giá",checkedAt:"2026-09-08T01:10:00.000Z",resolved:false},
-    E1:{state:"pass",checkedAt:"2026-09-08T00:30:00.000Z",resolved:false},
   }
-  const suggestions = smartShelfSuggestions(shelves,items,getStats,progress,{limit:7})
-  assert.equal(suggestions[0].shelf.shelf_key, "B")
-  assert.equal(suggestions[0].kind, "resume")
-  assert.equal(suggestions[1].shelf.shelf_key, "C")
-  assert.equal(suggestions[1].kind, "next")
-  assert.ok(suggestions.some(row => row.shelf.shelf_key === "E" && row.kind === "almost"))
+  const removal = {
+    ER1:{state:"still_present",checkedAt:"2026-09-08T01:20:00.000Z"},
+  }
+  const suggestions = smartShelfSuggestions(shelves,items,getStats,progress,removal,{limit:7})
+  assert.equal(suggestions[0].shelf.shelf_key, "E")
+  assert.equal(suggestions[0].kind, "remove")
+  assert.ok(suggestions.some(row => row.shelf.shelf_key === "B" && row.kind === "resume"))
 })
 
 test("unresolved fail or review is suggested for return when not already used", () => {
-  const localStats = {...stats, B:{...stats.B,checked:8,remaining:0}}
+  const localStats = {...stats, B:{...stats.B,checked:8,remaining:0,removePending:0}}
   const localGetStats = key => localStats[key]
   const progress = {
     B1:{state:"fail",reason:"Sai giá",checkedAt:"2026-09-08T01:10:00.000Z",resolved:false},
   }
-  const suggestions = smartShelfSuggestions(shelves,items,localGetStats,progress,{limit:7})
+  const suggestions = smartShelfSuggestions(shelves,items,localGetStats,progress,{}, {limit:7})
   assert.ok(suggestions.some(row => row.shelf.shelf_key === "B" && row.kind === "issue" && row.unresolvedIssues === 1))
 })
 
-test("next shelf keeps existing issue-first fallback behavior", () => {
-  assert.equal(nextShelfKey(shelves,getStats), "B")
+test("next shelf chooses due removal and can exclude the current shelf", () => {
+  assert.equal(nextShelfKey(shelves,getStats), "E")
+  assert.equal(nextShelfKey(shelves,getStats,{excludeKey:"E"}), "B")
 })

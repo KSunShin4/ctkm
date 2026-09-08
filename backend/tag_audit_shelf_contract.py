@@ -1,27 +1,28 @@
 # -*- coding: utf-8 -*-
 """Fast manual shelf-check mode for store staff.
 
-This contract deliberately does not reuse the admin/global tag-audit context.
-A store user uploads an already-generated CTKM action workbook into an isolated,
-short-lived session and receives only the current Gắn-tem checklist grouped by
-POG/location. Progress and fail reasons stay device-local in the browser.
-
-The routes are intentionally not protected by the admin dependency: this is an
-operational store workflow, not an administration workflow. Isolation, bounded
-upload size, bounded session count and TTL prevent one staff session from
-changing the admin scanner context or another staff session.
+The manual shelf workflow is store-facing, isolated from Admin scanner context,
+and includes both active Gắn-tem tasks and all due Tháo-tem tasks. POG is the
+primary work unit; only very large POG groups are split by location to avoid
+forcing staff through many tiny technical shelf cards.
 """
 from __future__ import annotations
 
 from io import BytesIO
 import os
+import re
 import secrets
 import threading
 import time
 
 from fastapi import File, HTTPException, UploadFile
 
-from backend.tag_audit_progress_contract import checklist_rows, context_id
+from backend.tag_audit_progress_contract import (
+    shelf_context_id,
+    shelf_task_rows,
+    store_scope_id,
+    workbook_scope_id,
+)
 
 
 _SESSION_LOCK = threading.RLock()
@@ -29,6 +30,7 @@ _SESSIONS: dict[str, dict] = {}
 _SESSION_TTL_SECONDS = max(900, int(os.getenv("TAG_AUDIT_SHELF_SESSION_TTL_SECONDS", "28800")))
 _MAX_SESSIONS = max(2, int(os.getenv("TAG_AUDIT_SHELF_MAX_SESSIONS", "16")))
 _MAX_UPLOAD_BYTES = max(1, int(os.getenv("TAG_AUDIT_SHELF_MAX_MB", "15"))) * 1024 * 1024
+_MAX_GROUP_ACTIONS = max(10, int(os.getenv("TAG_AUDIT_SHELF_MAX_GROUP_ACTIONS", "30")))
 
 
 def _clean_sessions(now: float | None = None) -> None:
@@ -45,51 +47,99 @@ def _clean_sessions(now: float | None = None) -> None:
             _SESSIONS.pop(key, None)
 
 
-def _shelf_identity(item: dict) -> tuple[str, str]:
+def _natural_key(value) -> tuple:
+    parts = re.split(r"(\d+)", str(value or "").strip().lower())
+    return tuple(int(part) if part.isdigit() else part for part in parts)
+
+
+def _group_identity(item: dict, pog_counts: dict[str, int], max_group_actions: int) -> tuple[str, str, str]:
     pog = str(item.get("pog_code") or "").strip()
     location = str(item.get("location_id") or "").strip()
-    if pog and location:
-        return f"{pog}::{location}", f"{pog} · {location}"
     if pog:
-        return f"{pog}::__NO_LOCATION__", pog
+        if pog_counts.get(pog, 0) > max_group_actions and location:
+            return f"POG::{pog}::LOC::{location}", f"{pog} · {location}", "pog_location"
+        return f"POG::{pog}", pog, "pog"
     if location:
-        return f"__NO_POG__::{location}", location
-    return "__NO_LOCATION__", "Chưa có vị trí kệ"
+        return f"LOC::{location}", location, "location"
+    return "__NO_LOCATION__", "Chưa có vị trí kệ", "unknown"
 
 
-def _decorate_items(items: list[dict]) -> list[dict]:
+def _decorate_items(items: list[dict], max_group_actions: int = _MAX_GROUP_ACTIONS) -> list[dict]:
+    pog_counts: dict[str, int] = {}
+    for item in items:
+        pog = str(item.get("pog_code") or "").strip()
+        if pog:
+            pog_counts[pog] = pog_counts.get(pog, 0) + 1
+
     decorated: list[dict] = []
     for item in items:
-        shelf_key, shelf_label = _shelf_identity(item)
+        shelf_key, shelf_label, group_mode = _group_identity(item, pog_counts, max_group_actions)
         row = dict(item)
         row["shelf_key"] = shelf_key
         row["shelf_label"] = shelf_label
+        row["shelf_group_mode"] = group_mode
+        row["location_label"] = str(item.get("location_id") or "").strip()
         decorated.append(row)
+
+    # Physical walk order: group -> location -> facing -> SKU -> campaign/action.
+    # Same SKU/action variants therefore stay adjacent instead of sending staff
+    # back to the same product after several unrelated items.
+    decorated.sort(
+        key=lambda item: (
+            _natural_key(item.get("shelf_label")),
+            _natural_key(item.get("location_id")),
+            _natural_key(item.get("facing")),
+            str(item.get("item_id") or "").strip().upper(),
+            0 if item.get("expected_action") == "thao_tem" else 1,
+            str(item.get("campaign_name") or ""),
+            str(item.get("task_key") or ""),
+        )
+    )
     return decorated
 
 
 def _build_shelves(items: list[dict]) -> list[dict]:
     grouped: dict[str, dict] = {}
     order: list[str] = []
+    sku_sets: dict[str, set[str]] = {}
+    location_sets: dict[str, set[str]] = {}
+
     for item in items:
         key = str(item.get("shelf_key") or "__NO_LOCATION__")
         if key not in grouped:
             grouped[key] = {
                 "shelf_key": key,
                 "shelf_label": item.get("shelf_label") or "Chưa có vị trí kệ",
+                "shelf_group_mode": item.get("shelf_group_mode") or "unknown",
                 "pog_code": item.get("pog_code"),
-                "location_id": item.get("location_id"),
+                "location_id": item.get("location_id") if item.get("shelf_group_mode") != "pog" else None,
                 "action_count": 0,
+                "attach_count": 0,
+                "remove_count": 0,
                 "sku_count": 0,
+                "location_count": 0,
+                "locations": [],
             }
+            sku_sets[key] = set()
+            location_sets[key] = set()
             order.append(key)
         grouped[key]["action_count"] += 1
+        if item.get("expected_action") == "thao_tem":
+            grouped[key]["remove_count"] += 1
+        else:
+            grouped[key]["attach_count"] += 1
+        item_id = str(item.get("item_id") or "").strip()
+        if item_id:
+            sku_sets[key].add(item_id)
+        location = str(item.get("location_id") or "").strip()
+        if location:
+            location_sets[key].add(location)
 
-    sku_sets: dict[str, set[str]] = {key: set() for key in grouped}
-    for item in items:
-        sku_sets[str(item.get("shelf_key") or "__NO_LOCATION__")].add(str(item.get("item_id") or ""))
     for key in order:
-        grouped[key]["sku_count"] = len({sku for sku in sku_sets[key] if sku})
+        grouped[key]["sku_count"] = len(sku_sets[key])
+        locations = sorted(location_sets[key], key=_natural_key)
+        grouped[key]["locations"] = locations
+        grouped[key]["location_count"] = len(locations)
     return [grouped[key] for key in order]
 
 
@@ -98,13 +148,18 @@ def _session_payload(session_id: str, session: dict) -> dict:
     return {
         "session_id": session_id,
         "context_id": session["context_id"],
+        "workbook_scope_id": session["workbook_scope_id"],
+        "store_scope_id": session["store_scope_id"],
         "created_at": session["created_at"],
         "expires_in_seconds": _SESSION_TTL_SECONDS,
         "action_count": len(items),
+        "attach_count": sum(1 for item in items if item.get("expected_action") == "gan_tem"),
+        "remove_count": sum(1 for item in items if item.get("expected_action") == "thao_tem"),
         "shelf_count": len(session["shelves"]),
         "shelves": session["shelves"],
         "items": items,
-        "progress_scope": "gan_tem_only",
+        "progress_scope": "gan_and_thao",
+        "max_group_actions": _MAX_GROUP_ACTIONS,
     }
 
 
@@ -136,19 +191,21 @@ def install_tag_audit_shelf_contract(tag_audit_module, core_module) -> None:
             rows = await core_module.asyncio.to_thread(
                 tag_audit_module._parse_action_workbook, BytesIO(content)
             )
-            items = _decorate_items(checklist_rows(tag_audit_module, rows))
+            items = _decorate_items(shelf_task_rows(tag_audit_module, rows))
         except HTTPException:
             raise
         except Exception as exc:
             raise HTTPException(status_code=422, detail=f"Workbook kiểm kệ không hợp lệ: {exc}") from exc
         if not items:
-            raise HTTPException(status_code=422, detail="Không tìm thấy action Gắn tem cần kiểm trong workbook")
+            raise HTTPException(status_code=422, detail="Không tìm thấy action Gắn tem hoặc Tháo tem cần xử lý trong workbook")
 
         now = time.time()
         _clean_sessions(now)
         session_id = "shelf_" + secrets.token_urlsafe(18)
         session = {
-            "context_id": context_id(tag_audit_module, rows),
+            "context_id": shelf_context_id(tag_audit_module, rows),
+            "workbook_scope_id": workbook_scope_id(tag_audit_module, rows),
+            "store_scope_id": store_scope_id(tag_audit_module, rows),
             "items": items,
             "shelves": _build_shelves(items),
             "created_at": core_module.datetime.now().isoformat(),

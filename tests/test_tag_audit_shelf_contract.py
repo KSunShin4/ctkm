@@ -79,43 +79,93 @@ def test_shelf_routes_precede_static_frontend_when_present():
     assert routes.index(_route("/api/tag-audit/shelf/session/{session_id}", "GET")) < mount_index
 
 
-def test_public_session_parses_real_action_workbook_without_admin(monkeypatch):
+def test_public_session_parses_active_tasks_and_groups_small_pog(monkeypatch):
     monkeypatch.setattr(business_date, "current_vn_business_date", lambda: "2026-09-07")
     upload = UploadFile(filename="actions.xlsx", file=BytesIO(_workbook_bytes()))
 
     payload = asyncio.run(main_api.create_tag_audit_shelf_session(upload))
 
     assert payload["action_count"] == 2
+    assert payload["attach_count"] == 2
+    assert payload["remove_count"] == 0
     assert payload["shelf_count"] == 1
-    assert payload["shelves"][0]["shelf_label"] == "POG-A · KỆ-01"
+    assert payload["shelves"][0]["shelf_label"] == "POG-A"
+    assert payload["shelves"][0]["location_count"] == 1
+    assert payload["shelves"][0]["locations"] == ["KỆ-01"]
     assert payload["shelves"][0]["sku_count"] == 2
-    assert [item["item_id"] for item in payload["items"]] == ["P25175", "P25860"]
+    assert [item["item_id"] for item in payload["items"]] == ["P25860", "P25175"]
+    assert payload["progress_scope"] == "gan_and_thao"
+    assert payload["context_id"].startswith("sctx_")
+    assert payload["workbook_scope_id"].startswith("book_")
+    assert payload["store_scope_id"].startswith("store_")
     restored = asyncio.run(main_api.read_tag_audit_shelf_session(payload["session_id"]))
     assert restored["context_id"] == payload["context_id"]
-    assert restored["action_count"] == 2
 
 
-def test_shelf_grouping_keeps_action_count_and_unique_sku_count():
+def test_same_month_workbook_surfaces_due_removal_tasks_on_later_date(monkeypatch):
+    monkeypatch.setattr(business_date, "current_vn_business_date", lambda: "2026-09-16")
+    upload = UploadFile(filename="actions.xlsx", file=BytesIO(_workbook_bytes()))
+
+    payload = asyncio.run(main_api.create_tag_audit_shelf_session(upload))
+
+    assert payload["action_count"] == 2
+    assert payload["attach_count"] == 0
+    assert payload["remove_count"] == 2
+    assert all(item["expected_action"] == "thao_tem" for item in payload["items"])
+    assert all(item["promotion_key"].startswith("promo_") for item in payload["items"])
+    assert all(item["removal_key"].startswith("remove_") for item in payload["items"])
+
+
+def test_small_pog_is_one_work_unit_even_with_multiple_locations():
     items = shelf_contract._decorate_items([
-        {"check_key":"a1","item_id":"P1","pog_code":"POG-A","location_id":"L1"},
-        {"check_key":"a2","item_id":"P1","pog_code":"POG-A","location_id":"L1"},
-        {"check_key":"b1","item_id":"P2","pog_code":"POG-A","location_id":"L1"},
-        {"check_key":"c1","item_id":"P3","pog_code":"POG-B","location_id":""},
-    ])
+        {"task_key":"a1","check_key":"a1","item_id":"P1","pog_code":"POG-A","location_id":"L1","facing":1,"expected_action":"gan_tem"},
+        {"task_key":"a2","check_key":"a2","item_id":"P1","pog_code":"POG-A","location_id":"L2","facing":2,"expected_action":"gan_tem"},
+        {"task_key":"b1","check_key":"b1","item_id":"P2","pog_code":"POG-A","location_id":"L2","facing":3,"expected_action":"thao_tem"},
+    ], max_group_actions=30)
     shelves = shelf_contract._build_shelves(items)
 
-    assert items[0]["shelf_key"] == "POG-A::L1"
-    assert items[0]["shelf_label"] == "POG-A · L1"
+    assert {item["shelf_key"] for item in items} == {"POG::POG-A"}
+    assert shelves[0]["shelf_label"] == "POG-A"
     assert shelves[0]["action_count"] == 3
+    assert shelves[0]["attach_count"] == 2
+    assert shelves[0]["remove_count"] == 1
     assert shelves[0]["sku_count"] == 2
-    assert shelves[1]["action_count"] == 1
-    assert shelves[1]["sku_count"] == 1
+    assert shelves[0]["location_count"] == 2
+    assert shelves[0]["locations"] == ["L1", "L2"]
+
+
+def test_large_pog_is_split_by_location_only_after_threshold():
+    source = []
+    for index in range(31):
+        source.append({
+            "task_key":f"t{index}", "check_key":f"t{index}", "item_id":f"P{index:05d}",
+            "pog_code":"POG-BIG", "location_id":"L1" if index < 16 else "L2",
+            "facing":index, "expected_action":"gan_tem",
+        })
+    items = shelf_contract._decorate_items(source, max_group_actions=30)
+    shelves = shelf_contract._build_shelves(items)
+
+    assert {item["shelf_key"] for item in items} == {"POG::POG-BIG::LOC::L1", "POG::POG-BIG::LOC::L2"}
+    assert [shelf["action_count"] for shelf in shelves] == [16, 15]
+
+
+def test_items_follow_natural_location_and_facing_order():
+    items = shelf_contract._decorate_items([
+        {"task_key":"c","check_key":"c","item_id":"P3","pog_code":"POG-A","location_id":"KỆ-10","facing":1,"expected_action":"gan_tem"},
+        {"task_key":"b","check_key":"b","item_id":"P2","pog_code":"POG-A","location_id":"KỆ-2","facing":2,"expected_action":"gan_tem"},
+        {"task_key":"a","check_key":"a","item_id":"P1","pog_code":"POG-A","location_id":"KỆ-2","facing":1,"expected_action":"thao_tem"},
+    ], max_group_actions=30)
+    assert [(item["location_id"], item["facing"], item["item_id"]) for item in items] == [
+        ("KỆ-2", 1, "P1"),
+        ("KỆ-2", 2, "P2"),
+        ("KỆ-10", 1, "P3"),
+    ]
 
 
 def test_missing_pog_and_location_are_grouped_explicitly():
     items = shelf_contract._decorate_items([
-        {"check_key":"a","item_id":"P1","pog_code":"","location_id":""},
-        {"check_key":"b","item_id":"P2","pog_code":None,"location_id":None},
+        {"task_key":"a","check_key":"a","item_id":"P1","pog_code":"","location_id":"","expected_action":"gan_tem"},
+        {"task_key":"b","check_key":"b","item_id":"P2","pog_code":None,"location_id":None,"expected_action":"gan_tem"},
     ])
     shelves = shelf_contract._build_shelves(items)
     assert len(shelves) == 1
