@@ -63,6 +63,21 @@ test("browsing and search stay compact", () => {
   assert.equal(searched.totalMatches, 5)
 })
 
+test("clicking search exposes a full progress-aware shelf directory", () => {
+  const progress = {
+    A1:{state:"pass",checkedAt:"2026-09-08T01:00:00.000Z",resolved:false},
+    B1:{state:"fail",reason:"Sai giá",checkedAt:"2026-09-08T01:10:00.000Z",resolved:false},
+  }
+  const removal = {
+    ER1:{state:"still_present",checkedAt:"2026-09-08T01:20:00.000Z"},
+  }
+  const directory = smartShelfSuggestions(shelves,items,getStats,progress,removal,{limit:7})
+  assert.deepEqual(directory.map(row => row.shelf.shelf_key), ["E","B","A","C","D"])
+  assert.deepEqual(directory.map(row => row.kind), ["remove","resume","resume","todo","done"])
+  assert.equal(directory.length, shelves.length)
+  assert.match(directory[0].reason, /KỆ-05/)
+})
+
 test("suggestions put due removal first before recent in-progress work", () => {
   const progress = {
     A1:{state:"pass",checkedAt:"2026-09-08T01:00:00.000Z",resolved:false},
@@ -85,6 +100,13 @@ test("unresolved fail or review is suggested for return when not already used", 
   }
   const suggestions = smartShelfSuggestions(shelves,items,localGetStats,progress,{}, {limit:7})
   assert.ok(suggestions.some(row => row.shelf.shelf_key === "B" && row.kind === "issue" && row.unresolvedIssues === 1))
+})
+
+test("focus directory remains bounded for very large stores", () => {
+  const manyShelves = Array.from({length:100}, (_, index) => ({shelf_key:`S${index}`, shelf_label:`POG-${index}`}))
+  const manyStats = () => ({total:1,checked:0,remaining:1,pass:0,fail:0,review:0,attachTotal:1,removeTotal:0,removed:0,removePending:0})
+  const directory = smartShelfSuggestions(manyShelves,[],manyStats,{}, {}, {limit:7,browseLimit:60})
+  assert.equal(directory.length, 60)
 })
 
 test("next shelf chooses due removal and can exclude the current shelf", () => {
