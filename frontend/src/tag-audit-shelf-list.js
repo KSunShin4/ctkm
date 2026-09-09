@@ -202,7 +202,22 @@ function unresolvedIssueCount(shelfKey, items, progress, removalProgress) {
   return count
 }
 
-export function smartShelfSuggestions(shelves, items, getStats, progress = {}, removalProgress = {}, {limit=7} = {}) {
+function locationReason(shelf) {
+  const locations = Array.isArray(shelf?.locations) ? shelf.locations.filter(Boolean) : []
+  if (!locations.length) return ""
+  const first = locations.slice(0, 2).join(" · ")
+  return locations.length > 2 ? `${first} · +${locations.length - 2} vị trí` : first
+}
+
+/**
+ * Build the focus-state shelf directory.
+ *
+ * The search field is also a browse entry point: focusing it with an empty query
+ * must expose a ready-to-tap shelf list, not only a handful of recommendations.
+ * Rows remain progress-aware and are ordered for store work:
+ * removal -> in-progress -> unresolved issues -> untouched -> completed.
+ */
+export function smartShelfSuggestions(shelves, items, getStats, progress = {}, removalProgress = {}, {limit=7, browseLimit=60} = {}) {
   const rows = (Array.isArray(shelves) ? shelves : []).map((shelf, order) => {
     const stats = getStats(shelf.shelf_key)
     return {
@@ -216,55 +231,61 @@ export function smartShelfSuggestions(shelves, items, getStats, progress = {}, r
   })
   const result = []
   const seen = new Set()
-  const maxSuggestions = Math.max(1, Number(limit) || 7)
+  const highlightFloor = Math.max(1, Number(limit) || 7)
+  const maxBrowse = Math.max(highlightFloor, Math.min(rows.length, Math.max(1, Number(browseLimit) || 60)))
   const add = (row, kind, label, reason) => {
-    if (!row || seen.has(row.shelf.shelf_key) || result.length >= maxSuggestions) return
+    if (!row || seen.has(row.shelf.shelf_key) || result.length >= maxBrowse) return
     seen.add(row.shelf.shelf_key)
     result.push({...row, kind, label, reason})
   }
 
-  // Due removal always outranks normal checking. Staff should clear expired tags
-  // before spending time on active promotional checks.
   const dueRemoval = rows
     .filter(row => row.stats.removePending > 0)
-    .sort((a,b) => b.stats.removePending - a.stats.removePending || a.order - b.order)
+    .sort((a,b) => b.stats.removePending - a.stats.removePending || b.lastCheckedAt - a.lastCheckedAt || a.order - b.order)
   for (const row of dueRemoval) {
-    add(row, "remove", "Cần tháo trước", `${row.stats.removePending} tem cần tháo${row.stats.attachTotal ? ` · ${row.stats.attachTotal} action đang chạy` : ""}`)
+    const loc = locationReason(row.shelf)
+    add(row, "remove", "Cần tháo trước", `${row.stats.removePending} tem cần tháo${loc ? ` · ${loc}` : ""}`)
   }
 
   const inProgress = rows
-    .filter(row => row.stats.remaining > 0 && row.stats.checked > 0 && row.stats.removePending === 0)
+    .filter(row => row.stats.removePending === 0 && row.stats.remaining > 0 && row.stats.checked > 0)
     .sort((a,b) => b.lastCheckedAt - a.lastCheckedAt || b.stats.checked - a.stats.checked || a.order - b.order)
-  const recent = inProgress[0] || null
-  if (recent) add(recent, "resume", "Tiếp tục đang kiểm", `${recent.stats.checked}/${recent.stats.total} action · còn ${recent.stats.remaining}`)
+  inProgress.forEach((row, index) => {
+    const loc = locationReason(row.shelf)
+    add(row, "resume", index === 0 ? "Tiếp tục đang kiểm" : "Đang kiểm dở", `${row.stats.checked}/${row.stats.total} action · còn ${row.stats.remaining}${loc ? ` · ${loc}` : ""}`)
+  })
 
-  const remaining = rows.filter(row => row.stats.remaining > 0 && row.stats.removePending === 0)
-  const anchor = recent ? recent.order : -1
-  const orderedAfter = [...remaining]
-    .filter(row => !seen.has(row.shelf.shelf_key))
-    .sort((a,b) => {
-      const da = a.order > anchor ? a.order - anchor : a.order + rows.length - anchor
-      const db = b.order > anchor ? b.order - anchor : b.order + rows.length - anchor
-      return da - db
-    })
-  const firstNext = orderedAfter[0] || null
-  add(firstNext, "next", "Nên kiểm tiếp", firstNext?.stats.checked ? `${firstNext.stats.checked}/${firstNext.stats.total} action · còn ${firstNext.stats.remaining}` : `${firstNext?.stats.total || 0} action · chưa kiểm`)
-
-  const almostDone = [...rows]
-    .filter(row => row.stats.removePending === 0 && row.stats.remaining > 0 && row.stats.checked > 0 && row.stats.remaining <= 3 && !seen.has(row.shelf.shelf_key))
-    .sort((a,b) => a.stats.remaining - b.stats.remaining || b.lastCheckedAt - a.lastCheckedAt)
-  for (const row of almostDone) add(row, "almost", "Sắp xong", `Chỉ còn ${row.stats.remaining} action`)
-
-  const issues = [...rows]
+  const issues = rows
     .filter(row => row.unresolvedIssues > 0 && !seen.has(row.shelf.shelf_key))
-    .sort((a,b) => b.unresolvedIssues - a.unresolvedIssues || b.lastCheckedAt - a.lastCheckedAt)
-  for (const row of issues) add(row, "issue", "Cần quay lại", `${row.unresolvedIssues} lỗi/Review chưa xử lý`)
+    .sort((a,b) => b.unresolvedIssues - a.unresolvedIssues || b.lastCheckedAt - a.lastCheckedAt || a.order - b.order)
+  for (const row of issues) {
+    const loc = locationReason(row.shelf)
+    add(row, "issue", "Cần quay lại", `${row.unresolvedIssues} Sai/Review chưa xử lý${loc ? ` · ${loc}` : ""}`)
+  }
 
-  for (const row of orderedAfter) add(row, "next", "Nên kiểm tiếp", row.stats.checked ? `${row.stats.checked}/${row.stats.total} action · còn ${row.stats.remaining}` : `${row.stats.total} action · chưa kiểm`)
-  for (const row of inProgress) add(row, "resume", "Đang kiểm dở", `${row.stats.checked}/${row.stats.total} action · còn ${row.stats.remaining}`)
+  const untouched = rows
+    .filter(row => row.stats.removePending === 0 && row.stats.checked === 0 && row.stats.remaining > 0 && !seen.has(row.shelf.shelf_key))
+    .sort((a,b) => a.order - b.order)
+  for (const row of untouched) {
+    const loc = locationReason(row.shelf)
+    add(row, "todo", "Chưa kiểm", `${row.stats.total} action${loc ? ` · ${loc}` : ""}`)
+  }
 
-  const untouched = rows.filter(row => row.stats.checked === 0 && row.stats.remaining > 0 && !seen.has(row.shelf.shelf_key))
-  for (const row of untouched) add(row, "todo", "Chưa kiểm", `${row.stats.total} action`)
+  const remaining = rows
+    .filter(row => row.stats.remaining > 0 && !seen.has(row.shelf.shelf_key))
+    .sort((a,b) => a.order - b.order)
+  for (const row of remaining) {
+    const loc = locationReason(row.shelf)
+    add(row, "next", "Nên kiểm tiếp", `${row.stats.checked}/${row.stats.total} action · còn ${row.stats.remaining}${loc ? ` · ${loc}` : ""}`)
+  }
+
+  const completed = rows
+    .filter(row => !seen.has(row.shelf.shelf_key))
+    .sort((a,b) => a.order - b.order)
+  for (const row of completed) {
+    const loc = locationReason(row.shelf)
+    add(row, "done", "Đã xong", `${row.stats.total} action đã hoàn thành${loc ? ` · ${loc}` : ""}`)
+  }
 
   return result
 }
