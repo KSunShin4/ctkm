@@ -41,9 +41,14 @@ def register_post_facade_hook(core_module, name: str, hook: Callable) -> None:
 
 def _apply_builtin_contracts(core_module, facade_module=None) -> None:
     """Apply built-in correctness contracts without changing the public registry."""
+    from modules.source_fidelity import apply_source_fidelity_hook
     from modules.all_km_reconciliation import apply_all_km_reconciliation_hook
 
+    # Restore raw passthrough source columns immediately after action derivation,
+    # before any exporter/reconciliation contract sees the action frame.
+    apply_source_fidelity_hook(core_module, facade_module)
     apply_all_km_reconciliation_hook(core_module, facade_module)
+
     # main.py's import-order contract intentionally exposes the currently active
     # exporter as ``_export_with_location_summary`` on each facade module. Keep
     # that public facade attribute aligned after the built-in all-KM wrapper is
