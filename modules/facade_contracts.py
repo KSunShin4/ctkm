@@ -44,6 +44,12 @@ def _apply_builtin_contracts(core_module, facade_module=None) -> None:
     from modules.all_km_reconciliation import apply_all_km_reconciliation_hook
 
     apply_all_km_reconciliation_hook(core_module, facade_module)
+    # main.py's import-order contract intentionally exposes the currently active
+    # exporter as ``_export_with_location_summary`` on each facade module. Keep
+    # that public facade attribute aligned after the built-in all-KM wrapper is
+    # applied, without registering or stacking another public hook.
+    if facade_module is not None:
+        setattr(facade_module, "_export_with_location_summary", core_module.EX.export_final_report)
 
 
 def run_post_facade_hooks(core_module, facade_module=None) -> tuple[str, ...]:
