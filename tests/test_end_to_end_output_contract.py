@@ -49,6 +49,8 @@ def _build_minimal_valid_report(path: Path):
             else "Không có dữ liệu nghiệp vụ."
         )
         ws.append([note])
+        if name == "POG không có CTKM":
+            ws.sheet_state = "hidden"
 
     summary_ws = wb.create_sheet("Tom tat")
     summary_ws.append(["Chi so", "Gia tri"])

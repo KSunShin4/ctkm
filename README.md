@@ -162,8 +162,10 @@ Các sheet chính:
 | `Audit hành động` | Toàn bộ action/source lineage, kể cả dòng được gom ở work sheet |
 | `CTKM thieu vi tri ke` | Audit các promotion thiếu/không đủ vị trí POG |
 | `POG cần kiểm tra` | Vị trí cần review, gồm POG lệch/không rõ tháng khi áp dụng |
-| `Tong hop` | Monthly CTKM ↔ POG matched reconciliation |
-| `POG không có CTKM` | **Monthly reconciliation audit**: POG không có CTKM Monthly phù hợp |
+| `Tong hop` | **Monthly + Clearance ↔ POG** reconciliation cho toàn bộ KM trong scope |
+| `POG không có KM` | POG không có bất kỳ Monthly/Clearance KM phù hợp trong scope |
+| `POG không có Monthly CTKM` | Audit lịch sử Monthly-only, tên explicit để không bị hiểu là all-KM |
+| `POG không có CTKM` | Compatibility sheet hidden; cùng nghĩa all-KM gap như `POG không có KM` |
 | `POG cần review` | Dòng POG business thiếu mã/khóa cần review |
 | `Canh bao trung thoi gian` | Blocking và non-blocking overlap diagnostics |
 | `Xác nhận CTKM Clearance` | So sánh Monthly và Clearance |
@@ -175,15 +177,23 @@ subtotal/Grand Total đã được chứng minh structurally, chúng không đi 
 nhưng vẫn được giữ nguyên lineage/value trong các sheet hidden `POG metadata` và
 `KM metadata`.
 
-### Monthly reconciliation vs all-KM POG coverage
+### All-KM POG coverage và Monthly audit
 
-Không dùng sheet `POG không có CTKM` để suy ra coverage của toàn bộ promotion.
-Sheet này cố ý là **Monthly-only reconciliation**. Các metric canonical cho coverage
-Monthly + Clearance dùng tên `... KM ...`, ví dụ:
+`Tong hop` là coverage người dùng nhìn thấy và phải phản ánh **toàn bộ KM trong
+scope (Monthly ∪ Clearance) có POG**. Một SKU Clearance-only có POG không được bị
+loại khỏi `Tong hop` chỉ vì Monthly reconciliation không match.
 
-- `So dong POG khong co KM phu hop`;
-- `So item POG khong co KM phu hop`;
-- `So item POG co KM phu hop`.
+`POG không có KM` là audit user-facing cho POG thực sự không có bất kỳ KM nào
+trong scope. Audit Monthly-only vẫn được giữ riêng ở `POG không có Monthly CTKM`.
+Sheet legacy `POG không có CTKM` chỉ còn cho compatibility, bị hidden và mang cùng
+nghĩa all-KM gap với `POG không có KM` để không tái tạo cách hiểu sai cũ.
+
+Pipeline enforce invariant cuối export:
+
+- mọi SKU thuộc `(Monthly ∪ Clearance) ∩ POG` phải có coverage trong `Tong hop`;
+- metric `So item KM+POG thieu trong Tong hop` phải bằng `0`;
+- metric canonical cho gap all-KM vẫn dùng tên `... KM ...`, ví dụ:
+  `So dong POG khong co KM phu hop`, `So item POG khong co KM phu hop`.
 
 Legacy key `... CTKM ...` còn tồn tại cho frontend compatibility nhưng phải bằng
 canonical alias và bị ẩn trong `Tom tat` khi tên cũ gây hiểu nhầm.
