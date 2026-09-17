@@ -43,6 +43,11 @@ _SLIM_REQUIRED_CTKM_SHEETS = {
     "Cần review",
     "CTKM thieu vi tri ke",
     "POG cần kiểm tra",
+    "Tong hop",
+    "POG không có KM",
+    "POG không có Monthly CTKM",
+    "POG không có CTKM",
+    "POG cần review",
     "Audit hành động",
 }
 
@@ -74,6 +79,7 @@ _SUMMARY_SHEET_COUNT_PAIRS = (
     ("So dong can kiem tra vi tri", "POG cần kiểm tra"),
     ("So dong cho gan", "Chờ gắn"),
     ("So dong can review", "Cần review"),
+    ("So dong POG khong co KM phu hop", "POG không có KM"),
 )
 
 _FULL_GUIDE_TARGETS = {
@@ -92,7 +98,7 @@ _SLIM_GUIDE_TARGETS = {
     key: value for key, value in _FULL_GUIDE_TARGETS.items()
     if value in {
         "Gắn tem", "Tháo tem", "Chờ gắn", "Cần review",
-        "CTKM thieu vi tri ke", "POG cần kiểm tra",
+        "CTKM thieu vi tri ke", "POG cần kiểm tra", "POG cần review",
     }
 }
 _GUIDE_TARGETS = _FULL_GUIDE_TARGETS
@@ -162,6 +168,11 @@ def validate_ctkm_workbook(path: str | Path, summary: dict | None) -> None:
 
         if profile == "full" and workbook["Mapping log"].sheet_state != "hidden":
             raise RuntimeError("Mapping log phải được ẩn trong workbook kết quả.")
+        if "POG không có CTKM" in workbook.sheetnames:
+            if workbook["POG không có CTKM"].sheet_state != "hidden":
+                raise RuntimeError(
+                    "POG không có CTKM là compatibility sheet và phải được ẩn."
+                )
         for metadata_name in ("POG metadata", "KM metadata"):
             if metadata_name in workbook.sheetnames and workbook[metadata_name].sheet_state != "hidden":
                 raise RuntimeError(f"{metadata_name} phải được ẩn trong workbook kết quả.")
@@ -197,7 +208,7 @@ def validate_ctkm_workbook(path: str | Path, summary: dict | None) -> None:
                     )
 
         for summary_key, sheet_name in _SUMMARY_SHEET_COUNT_PAIRS:
-            if summary_key not in summary_dict:
+            if summary_key not in summary_dict or sheet_name not in workbook.sheetnames:
                 continue
             sheet_count = visible_data_row_count(workbook[sheet_name])
             if not _same_value(summary_dict[summary_key], sheet_count):
