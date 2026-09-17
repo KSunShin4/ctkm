@@ -2,6 +2,7 @@ from openpyxl import load_workbook
 import pandas as pd
 
 import main
+from modules.all_km_reconciliation import build_all_km_reconciliation_frames
 
 
 def _action(item_id, source, *, in_scope=True):
@@ -11,12 +12,14 @@ def _action(item_id, source, *, in_scope=True):
         "pog_position_id": f"POGPOS-{item_id}",
         "item_id": item_id,
         "item_key": item_id,
+        "item_name": f"NAME-{item_id}",
         "program_source": source,
         "scheduled_action": "gắn tem",
         "action": "gắn tem",
         "in_report_scope": in_scope,
         "location_completeness": "Đủ vị trí",
         "location_status": "Đủ vị trí",
+        "campaign_name": f"CAMPAIGN-{source}-{item_id}",
     }
 
 
@@ -54,6 +57,23 @@ def _summary():
     }
 
 
+def test_clearance_only_pog_item_is_added_to_all_km_tong_hop():
+    matched, pog_only_monthly, actions = _frames()
+
+    matched_all, missing_all_km, added_keys = build_all_km_reconciliation_frames(
+        main._core, matched, pog_only_monthly, actions
+    )
+
+    assert set(matched_all["item_id"]) == {"P1001", "P2001"}
+    assert set(missing_all_km["item_id"]) == {"P3001"}
+    assert len(missing_all_km) == 2
+    assert added_keys == {"P2001"}
+
+    clearance_row = matched_all[matched_all["item_id"].eq("P2001")].iloc[0]
+    assert clearance_row["program_source"] == "CLEARANCE"
+    assert clearance_row["reconciliation_basis"] == "KM + POG"
+
+
 def test_clearance_only_pog_item_is_not_missing_from_all_promotion_coverage():
     matched, pog_only_monthly, actions = _frames()
     summary = _summary()
@@ -77,22 +97,8 @@ def test_clearance_only_pog_item_is_not_missing_from_all_promotion_coverage():
     assert summary["So dong POG khong co CTKM phu hop"] == 2
     assert summary["So item POG khong co CTKM phu hop"] == 1
 
-    # Monthly matched semantics are intentionally untouched.
-    assert summary["So dong khop (Matched)"] == 1
-    assert summary["So item duy nhat khop"] == 1
 
-    # Re-running alignment must not mistake the legacy all-KM alias for the
-    # original Monthly reconciliation values.
-    main._align_pog_promotion_coverage_summary(
-        summary, matched, pog_only_monthly, actions
-    )
-    assert summary["So dong POG khong co CTKM Monthly phu hop"] == 3
-    assert summary["So item POG khong co CTKM Monthly phu hop"] == 2
-    assert summary["So dong POG khong co KM phu hop"] == 2
-    assert summary["So item POG khong co KM phu hop"] == 1
-
-
-def test_export_keeps_monthly_pog_audit_rows_but_summary_exposes_all_km_coverage(tmp_path):
+def test_export_tong_hop_is_all_km_and_monthly_audit_remains_explicit(tmp_path):
     matched, pog_only_monthly, actions = _frames()
     summary = _summary()
     output = tmp_path / "pog-promotion-coverage.xlsx"
@@ -110,15 +116,36 @@ def test_export_keeps_monthly_pog_audit_rows_but_summary_exposes_all_km_coverage
 
     workbook = load_workbook(output, data_only=True)
 
-    # The historical worksheet remains a Monthly reconciliation audit surface:
-    # Clearance-only P2001 must still be visible there rather than silently lost.
-    monthly_sheet = workbook["POG không có CTKM"]
+    # Tong hop is now the actual Monthly + Clearance reconciliation surface.
+    tong_hop_values = [cell.value for row in workbook["Tong hop"].iter_rows() for cell in row]
+    assert "P1001" in tong_hop_values
+    assert "P2001" in tong_hop_values
+    assert "P3001" not in tong_hop_values
+
+    # User-facing all-KM missing audit no longer falsely lists the Clearance SKU.
+    all_km_sheet = workbook["POG không có KM"]
+    all_km_values = [cell.value for row in all_km_sheet.iter_rows() for cell in row]
+    assert "P2001" not in all_km_values
+    assert "P3001" in all_km_values
+
+    # Historical Monthly-only evidence remains available under an explicit name.
+    monthly_sheet = workbook["POG không có Monthly CTKM"]
     monthly_values = [cell.value for row in monthly_sheet.iter_rows() for cell in row]
-    assert monthly_sheet.max_row == 4  # header + 3 physical POG rows
     assert "P2001" in monthly_values
     assert "P3001" in monthly_values
 
-    # Summary/API semantics separately expose the real operational all-KM gap.
+    # Compatibility sheet remains for old clients/contracts but is hidden and
+    # carries all-KM missing semantics, not the misleading Monthly-only rows.
+    compat = workbook["POG không có CTKM"]
+    compat_values = [cell.value for row in compat.iter_rows() for cell in row]
+    assert compat.sheet_state == "hidden"
+    assert "P2001" not in compat_values
+    assert "P3001" in compat_values
+
+    assert summary["So dong khop (Matched)"] == 2
+    assert summary["So item duy nhat khop"] == 2
+    assert summary["So item Clearance bo sung vao Tong hop"] == 1
+    assert summary["So item KM+POG thieu trong Tong hop"] == 0
     assert summary["So dong POG khong co KM phu hop"] == 2
     assert summary["So item POG khong co KM phu hop"] == 1
     assert summary["So dong POG khong co CTKM Monthly phu hop"] == 3
@@ -129,9 +156,8 @@ def test_export_keeps_monthly_pog_audit_rows_but_summary_exposes_all_km_coverage
         tom_tat.cell(row=row, column=1).value: (tom_tat.cell(row=row, column=2).value, row)
         for row in range(2, tom_tat.max_row + 1)
     }
-    assert rows["So dong POG khong co KM phu hop"][0] == 2
-    assert rows["So item POG khong co KM phu hop"][0] == 1
-    assert rows["So dong POG khong co CTKM Monthly phu hop"][0] == 3
+    assert rows["So item KM+POG thieu trong Tong hop"][0] == 0
+    assert rows["So item Clearance bo sung vao Tong hop"][0] == 1
 
     # Misleading legacy labels are hidden from the normal workbook summary view.
     legacy_row = rows["So dong POG khong co CTKM phu hop"][1]
