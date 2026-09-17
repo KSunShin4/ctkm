@@ -39,15 +39,11 @@ def register_post_facade_hook(core_module, name: str, hook: Callable) -> None:
     hooks[key] = hook
 
 
-def _register_builtin_hooks(core_module) -> None:
-    """Install correctness hooks that must exist for every public facade load."""
+def _apply_builtin_contracts(core_module, facade_module=None) -> None:
+    """Apply built-in correctness contracts without changing the public registry."""
     from modules.all_km_reconciliation import apply_all_km_reconciliation_hook
 
-    register_post_facade_hook(
-        core_module,
-        "all-km-reconciliation-v1",
-        apply_all_km_reconciliation_hook,
-    )
+    apply_all_km_reconciliation_hook(core_module, facade_module)
 
 
 def run_post_facade_hooks(core_module, facade_module=None) -> tuple[str, ...]:
@@ -57,7 +53,7 @@ def run_post_facade_hooks(core_module, facade_module=None) -> tuple[str, ...]:
     first restores its own raw wrapper and then this function reapplies runtime
     hardening exactly once.
     """
-    _register_builtin_hooks(core_module)
+    _apply_builtin_contracts(core_module, facade_module)
     applied: list[str] = []
     for name, hook in tuple(_registry(core_module).items()):
         hook(core_module, facade_module)
