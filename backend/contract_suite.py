@@ -18,6 +18,7 @@ from backend.input_contract import install_input_contract
 from backend.mapping_result_contract import install_mapping_result_contract
 from backend.gemini_availability_contract import install_gemini_availability_contract
 from backend.tem_r_resource_contract import install_tem_r_resource_contract
+from backend.tem_r_source_fidelity_contract import install_tem_r_source_fidelity_contract
 from backend.auxiliary_workflows_contract import install_auxiliary_workflows_contract
 from backend.expiration_api_contract import install_expiration_api_contract
 from backend.slim_output_contract import install_slim_output_contract
@@ -32,6 +33,7 @@ CONTRACT_ORDER = (
     "mapping-result",
     "gemini-availability",
     "tem-r-resource",
+    "tem-r-source-fidelity",
     "auxiliary-workflows",
     "expiration-api",
     "slim-output",
@@ -46,6 +48,7 @@ _STATE_FLAGS = {
     "mapping-result": "mapping_result_contract_v1",
     "gemini-availability": "gemini_availability_contract_v1",
     "tem-r-resource": "tem_r_resource_contract_v1",
+    "tem-r-source-fidelity": "tem_r_source_fidelity_contract_v1",
     "auxiliary-workflows": "auxiliary_workflows_contract_v1",
     "expiration-api": "expiration_api_contract_v1",
     "slim-output": "slim_output_contract_v1",
@@ -184,6 +187,7 @@ def install_contract_suite(core_module) -> None:
     install_mapping_result_contract(core_module, validate_manual_mapping)
     install_gemini_availability_contract(core_module)
     install_tem_r_resource_contract(core_module)
+    install_tem_r_source_fidelity_contract(core_module)
     install_auxiliary_workflows_contract(core_module)
     install_expiration_api_contract(core_module)
     install_slim_output_contract(core_module)
