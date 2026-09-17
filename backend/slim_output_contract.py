@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Render-only slim workbook export for heavy CTKM jobs.
+"""Render-oriented CTKM workbook export without sacrificing source auditability.
 
-The normal CLI/library exporter remains unchanged and can still emit the full
-technical workbook. The backend installs this contract so production jobs write
-only the sheets needed for store operations and action audit, avoiding the cost
-of creating/styling diagnostic sheets that are not used at the counter.
+The production profile avoids expensive diagnostic styling, but it must not
+silently remove reconciliation/source evidence.  Operational sheets stay compact;
+raw passthrough columns remain available in ``Audit hành động`` and source/control
+metadata remains hidden for audit.
 """
 from __future__ import annotations
 
@@ -13,6 +13,11 @@ from pathlib import Path
 import pandas as pd
 from openpyxl.styles import Alignment, Font, PatternFill
 
+from modules.all_km_reconciliation import (
+    _frame_keys,
+    _identity,
+    build_all_km_reconciliation_frames,
+)
 from modules.ctkm_performance import align_task_summary_with_work_rows
 
 
@@ -25,7 +30,14 @@ SLIM_SHEET_ORDER = [
     "Cần review",
     "CTKM thieu vi tri ke",
     "POG cần kiểm tra",
+    "Tong hop",
+    "POG không có KM",
+    "POG không có Monthly CTKM",
+    "POG cần review",
     "Audit hành động",
+    "POG không có CTKM",
+    "POG metadata",
+    "KM metadata",
 ]
 
 
@@ -104,7 +116,7 @@ def _prepare_frames(exporter, df_fefo_actions: pd.DataFrame | None):
 
 
 def _lightweight_audit_style(ws, exporter) -> None:
-    """Keep Audit useful without the expensive per-cell body styling pass."""
+    """Keep audit/reconciliation usable without expensive per-cell body styling."""
     ws.freeze_panes = "A2"
     ws.sheet_view.showGridLines = False
     if ws.max_row >= 1 and ws.max_column >= 1:
@@ -117,21 +129,91 @@ def _lightweight_audit_style(ws, exporter) -> None:
         cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
     for index, cell in enumerate(ws[1], start=1):
         header = str(cell.value or "")
-        width = getattr(exporter, "_COLUMN_WIDTHS", {}).get(header, min(30, max(12, len(header) + 2)))
+        width = getattr(exporter, "_COLUMN_WIDTHS", {}).get(
+            header, min(30, max(12, len(header) + 2))
+        )
         ws.column_dimensions[exporter.get_column_letter(index)].width = width
     exporter._apply_bilingual_headers(ws)
 
 
 def _trim_guide_to_slim_profile(workbook) -> None:
-    """Remove cards linking to diagnostic sheets omitted by the slim profile."""
+    """Remove only cards for user-facing sheets still omitted by slim profile."""
     ws = workbook["HƯỚNG DẪN"]
     rows_to_delete = []
     for row_idx in range(1, ws.max_row + 1):
-        if ws.cell(row_idx, 1).value in {"POG cần review", "Xác nhận CTKM / Clearance"}:
+        if ws.cell(row_idx, 1).value in {"Xác nhận CTKM / Clearance"}:
             rows_to_delete.append(row_idx)
     for row_idx in reversed(rows_to_delete):
         ws.delete_rows(row_idx, 1)
-    ws["D10"] = "Bản production slim: các sheet diagnostic không được tạo để giảm thời gian và RAM khi chạy trên Render."
+    ws["D10"] = (
+        "Bản production slim: giảm styling/diagnostic nặng nhưng vẫn giữ "
+        "reconciliation và source audit để không mất dữ liệu nguồn."
+    )
+
+
+def _safe_frame(exporter, frame: pd.DataFrame | None, message: str) -> pd.DataFrame:
+    source = frame if frame is not None else pd.DataFrame()
+    return exporter._safe(source, message)
+
+
+def _metadata_from(frame: pd.DataFrame | None, attr_name: str) -> pd.DataFrame | None:
+    if frame is None:
+        return None
+    metadata = getattr(frame, "attrs", {}).get(attr_name)
+    return metadata.copy() if isinstance(metadata, pd.DataFrame) and not metadata.empty else None
+
+
+def _write_hidden_metadata(writer, sheet_name: str, frame: pd.DataFrame | None) -> None:
+    if frame is None or frame.empty:
+        return
+    frame.to_excel(writer, sheet_name=sheet_name, index=False)
+    ws = writer.sheets[sheet_name]
+    ws.freeze_panes = "A2"
+    if ws.max_row >= 1 and ws.max_column >= 1:
+        ws.auto_filter.ref = ws.dimensions
+    ws.sheet_state = "hidden"
+
+
+def _update_all_km_summary(
+    main_core,
+    summary: dict | None,
+    matched_all: pd.DataFrame,
+    monthly_pog_only: pd.DataFrame | None,
+    missing_all_km: pd.DataFrame,
+    actions: pd.DataFrame | None,
+    added_keys: set[str],
+) -> None:
+    if not isinstance(summary, dict):
+        return
+
+    scoped_actions = actions.copy() if actions is not None else pd.DataFrame()
+    if not scoped_actions.empty and "in_report_scope" in scoped_actions.columns:
+        scoped_actions = scoped_actions[
+            scoped_actions["in_report_scope"].fillna(False).astype(bool)
+        ].copy()
+    identity_input = scoped_actions if not scoped_actions.empty else matched_all
+    identity = _identity(main_core, identity_input)
+
+    monthly_keys = set(_frame_keys(main_core, identity, monthly_pog_only).dropna())
+    matched_keys = set(_frame_keys(main_core, identity, matched_all).dropna())
+    missing_keys = set(_frame_keys(main_core, identity, missing_all_km).dropna())
+
+    summary["So dong khop (Matched)"] = len(matched_all)
+    summary["So item duy nhat khop"] = len(matched_keys)
+    summary["So dong POG khong co CTKM Monthly phu hop"] = (
+        0 if monthly_pog_only is None else len(monthly_pog_only)
+    )
+    summary["So item POG khong co CTKM Monthly phu hop"] = len(monthly_keys)
+    summary["So dong POG khong co KM phu hop"] = len(missing_all_km)
+    summary["So item POG khong co KM phu hop"] = len(missing_keys)
+    summary["So item Clearance bo sung vao Tong hop"] = len(added_keys)
+    summary["So item KM+POG thieu trong Tong hop"] = 0
+
+    # Legacy API aliases stay aligned with the canonical all-KM meaning.
+    if "So dong POG khong co CTKM phu hop" in summary:
+        summary["So dong POG khong co CTKM phu hop"] = len(missing_all_km)
+    if "So item POG khong co CTKM phu hop" in summary:
+        summary["So item POG khong co CTKM phu hop"] = len(missing_keys)
 
 
 def install_slim_output_contract(core_module) -> None:
@@ -139,6 +221,7 @@ def install_slim_output_contract(core_module) -> None:
         return
 
     main_mod = core_module._main_mod
+    main_core = getattr(main_mod, "_core", main_mod)
     exporter = main_mod.EX
 
     def export_final_report_slim(
@@ -155,9 +238,23 @@ def install_slim_output_contract(core_module) -> None:
         df_ctkm_clearance_confirmation=None,
         df_pog_review=None,
     ) -> str:
-        del df_matched, df_ctkm_only, df_pog_only, overlap_warnings, mapping_logs
+        # These are intentionally unused in slim presentation, but do not discard
+        # df_matched/df_pog_only: they are required for all-KM reconciliation.
+        del df_ctkm_only, overlap_warnings, mapping_logs
         del snapshot_alignment_warning, selected_output_columns
-        del df_ctkm_clearance_confirmation, df_pog_review
+
+        matched_all, missing_all_km, added_keys = build_all_km_reconciliation_frames(
+            main_core, df_matched, df_pog_only, df_fefo_actions
+        )
+        _update_all_km_summary(
+            main_core,
+            reconciliation_summary,
+            matched_all,
+            df_pog_only,
+            missing_all_km,
+            df_fefo_actions,
+            added_keys,
+        )
 
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         align_task_summary_with_work_rows(reconciliation_summary, df_fefo_actions)
@@ -165,29 +262,56 @@ def install_slim_output_contract(core_module) -> None:
             exporter, df_fefo_actions
         )
 
+        pog_review = df_pog_review.copy() if df_pog_review is not None else pd.DataFrame()
+        pog_metadata = _metadata_from(df_pog_review, "pog_metadata")
+        km_metadata = _metadata_from(df_ctkm_clearance_confirmation, "fact_metadata")
+
         with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
             total.to_excel(writer, sheet_name="TỔNG HỢP - TEM", index=False)
-            exporter._safe(gan, "Không có CTKM cần gắn tem.").to_excel(
+            _safe_frame(exporter, gan, "Không có CTKM cần gắn tem.").to_excel(
                 writer, sheet_name="Gắn tem", index=False
             )
-            exporter._safe(thao, "Không có CTKM cần tháo tem.").to_excel(
+            _safe_frame(exporter, thao, "Không có CTKM cần tháo tem.").to_excel(
                 writer, sheet_name="Tháo tem", index=False
             )
-            exporter._safe(wait, "Không có CTKM đang chờ đến ngày gắn.").to_excel(
+            _safe_frame(exporter, wait, "Không có CTKM đang chờ đến ngày gắn.").to_excel(
                 writer, sheet_name="Chờ gắn", index=False
             )
-            exporter._safe(review, "Không có CTKM cần review.").to_excel(
+            _safe_frame(exporter, review, "Không có CTKM cần review.").to_excel(
                 writer, sheet_name="Cần review", index=False
             )
-            exporter._safe(
-                location_issues, "Không có công việc nào cần kiểm tra vị trí POG."
+            _safe_frame(
+                exporter, location_issues, "Không có công việc nào cần kiểm tra vị trí POG."
             ).to_excel(writer, sheet_name="CTKM thieu vi tri ke", index=False)
-            exporter._safe(
-                location_review, "Không có vị trí POG nào cần review."
+            _safe_frame(
+                exporter, location_review, "Không có vị trí POG nào cần review."
             ).to_excel(writer, sheet_name="POG cần kiểm tra", index=False)
-            exporter._safe(audit, "Không có dữ liệu hành động để audit.").to_excel(
+
+            _safe_frame(
+                exporter, matched_all, "Không có KM nào khớp POG."
+            ).to_excel(writer, sheet_name="Tong hop", index=False)
+            _safe_frame(
+                exporter, missing_all_km, "Không có POG nào thiếu KM."
+            ).to_excel(writer, sheet_name="POG không có KM", index=False)
+            _safe_frame(
+                exporter, df_pog_only, "Không có POG nào thiếu Monthly CTKM."
+            ).to_excel(writer, sheet_name="POG không có Monthly CTKM", index=False)
+            _safe_frame(
+                exporter, pog_review, "Không có dòng POG business nào cần review."
+            ).to_excel(writer, sheet_name="POG cần review", index=False)
+
+            _safe_frame(exporter, audit, "Không có dữ liệu hành động để audit.").to_excel(
                 writer, sheet_name="Audit hành động", index=False
             )
+
+            # Compatibility only: same true all-KM gap, never Monthly-only.
+            _safe_frame(
+                exporter, missing_all_km, "Không có POG nào thiếu KM."
+            ).to_excel(writer, sheet_name="POG không có CTKM", index=False)
+            writer.sheets["POG không có CTKM"].sheet_state = "hidden"
+
+            _write_hidden_metadata(writer, "POG metadata", pog_metadata)
+            _write_hidden_metadata(writer, "KM metadata", km_metadata)
 
             business_date = (
                 reconciliation_summary.get("Ngay nghiep vu")
@@ -203,7 +327,7 @@ def install_slim_output_contract(core_module) -> None:
 
             exporter._create_guide_sheet(
                 writer.book, gan, thao, wait, review, location_issues,
-                reconciliation_summary, None, location_review, None,
+                reconciliation_summary, None, location_review, pog_review,
             )
             _trim_guide_to_slim_profile(writer.book)
 
@@ -223,6 +347,12 @@ def install_slim_output_contract(core_module) -> None:
                     ws, action_sheet=sheet_name in {"Gắn tem", "Tháo tem", "Chờ gắn", "Cần review"}
                 )
                 exporter._apply_bilingual_headers(ws)
+
+            for sheet_name in (
+                "Tong hop", "POG không có KM", "POG không có Monthly CTKM",
+                "POG cần review", "POG không có CTKM",
+            ):
+                _lightweight_audit_style(writer.sheets[sheet_name], exporter)
 
             for sheet_name in ("Gắn tem", "Tháo tem", "Chờ gắn", "Cần review"):
                 exporter._configure_action_inputs(writer.sheets[sheet_name])
