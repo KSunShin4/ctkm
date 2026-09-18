@@ -167,3 +167,115 @@ def test_soft_pairing_receiving_day_rule_warns_but_does_not_become_hard():
     # The important contract is that SOFT relationship remains solvable; validator
     # can warn if the optimizer still needs the pair together on receiving day.
     assert result["options"][0]["status"] in {"VALID", "VALID_WITH_WARNINGS"}
+
+def _same_shift_count(assignments, employee_a, employee_b):
+    rows = lookup(assignments)
+    dates = sorted({date for _, date in rows})
+    return sum(
+        rows[(employee_a, day)]["shift"] in {"MORNING", "AFTERNOON"}
+        and rows[(employee_a, day)]["shift"] == rows[(employee_b, day)]["shift"]
+        for day in dates
+    )
+
+
+def test_pairing_legacy_shape_round_trips_to_explicit_relation_contract():
+    payload = config()
+    payload["pairing_rules"] = [{
+        "employee_a": "phuong",
+        "employee_b": "nhan",
+        "max_same_shifts_per_week": 1,
+        "receiving_day_allowed": False,
+        "level": "SOFT",
+    }]
+
+    normalized = normalize_config(payload)
+    rule = normalized["pairing_rules"][0]
+
+    assert rule == {
+        "employee_a": "phuong",
+        "employee_b": "nhan",
+        "relation_type": "MAX",
+        "count": 1,
+        "level": "SOFT",
+        "receiving_relation": "AVOID",
+    }
+
+
+def test_hard_never_pairing_is_not_broken_by_solver():
+    payload = config()
+    payload["pairing_rules"] = [{
+        "employee_a": "phuong",
+        "employee_b": "nhan",
+        "relation_type": "NEVER",
+        "count": 0,
+        "level": "HARD",
+        "receiving_relation": "NORMAL",
+    }]
+
+    result = generate_schedule(payload)
+
+    assert result["options"]
+    for option in result["options"]:
+        assert _same_shift_count(option["assignments"], "phuong", "nhan") == 0
+
+
+def test_hard_min_and_exact_pairing_counts_are_enforced():
+    for relation_type, count in (("MIN", 2), ("EXACT", 2)):
+        payload = config()
+        payload["employee_rules"] = []
+        payload["pairing_rules"] = [{
+            "employee_a": "mi",
+            "employee_b": "nhan",
+            "relation_type": relation_type,
+            "count": count,
+            "level": "HARD",
+            "receiving_relation": "NORMAL",
+        }]
+
+        result = generate_schedule(payload)
+        assert result["options"], relation_type
+        actual = _same_shift_count(result["options"][0]["assignments"], "mi", "nhan")
+        if relation_type == "MIN":
+            assert actual >= count
+        else:
+            assert actual == count
+
+
+def test_receiving_relation_never_blocks_same_afternoon_on_receiving_days():
+    payload = config()
+    payload["employee_rules"] = []
+    payload["pairing_rules"] = [{
+        "employee_a": "phuong",
+        "employee_b": "nhan",
+        "relation_type": "UNLIMITED",
+        "count": None,
+        "level": "SOFT",
+        "receiving_relation": "NEVER",
+    }]
+
+    option = generate_schedule(payload)["options"][0]
+    rows = lookup(option["assignments"])
+    for day in {"2026-09-15", "2026-09-17", "2026-09-19"}:
+        assert not (
+            rows[("phuong", day)]["shift"] == "AFTERNOON"
+            and rows[("nhan", day)]["shift"] == "AFTERNOON"
+        )
+
+
+def test_soft_prefer_apart_remains_a_warning_not_invalid_after_manual_edit():
+    payload = config()
+    payload["pairing_rules"] = [{
+        "employee_a": "phuong",
+        "employee_b": "nhan",
+        "relation_type": "PREFER_APART",
+        "count": None,
+        "level": "SOFT",
+        "receiving_relation": "NORMAL",
+    }]
+    assignments = generate_schedule(config())["options"][0]["assignments"]
+
+    validation = validate_schedule(payload, assignments)
+
+    assert validation["status"] in {"VALID", "VALID_WITH_WARNINGS"}
+    assert not validation["errors"]
+
