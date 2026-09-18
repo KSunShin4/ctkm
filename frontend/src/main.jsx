@@ -166,12 +166,25 @@ const ensureTagAuditNav = root => {
   }
 
   const existing = nav.querySelector('[data-ctkm-tag-audit-link="v1"]')
+  let scheduleButton = nav.querySelector('[data-ctkm-schedule-link="v1"]')
   const isAdmin = Array.from(root.querySelectorAll?.('.auth-actions span') || [])
     .some(node => node.textContent?.trim() === 'ADMIN')
 
   if (!isAdmin) {
     existing?.remove()
+    scheduleButton?.remove()
     return
+  }
+  if (!scheduleButton) {
+    scheduleButton = document.createElement('button')
+    scheduleButton.type = 'button'
+    scheduleButton.dataset.ctkmScheduleLink = 'v1'
+    scheduleButton.textContent = 'Xếp lịch'
+    scheduleButton.title = 'Xếp lịch nhân viên và xuất Excel'
+    scheduleButton.addEventListener('click', () => {
+      window.location.assign('/schedule')
+    })
+    nav.appendChild(scheduleButton)
   }
   if (existing) return
 
