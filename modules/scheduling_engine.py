@@ -31,6 +31,7 @@ VARIANT_WEIGHTS = {
         "fairness": 16,
         "pairing": 30,
         "off_receiving_compensation": 160,
+        "manager_trend": 1,
     },
     "stable": {
         "shortage": 1200,
@@ -41,6 +42,7 @@ VARIANT_WEIGHTS = {
         "fairness": 18,
         "pairing": 25,
         "off_receiving_compensation": 160,
+        "manager_trend": 1,
     },
     "preferences": {
         "shortage": 1200,
@@ -51,6 +53,7 @@ VARIANT_WEIGHTS = {
         "fairness": 14,
         "pairing": 35,
         "off_receiving_compensation": 160,
+        "manager_trend": 1,
     },
 }
 VARIANT_LABELS = {
@@ -228,6 +231,20 @@ def normalize_config(payload: dict[str, Any]) -> dict[str, Any]:
             )
         receiving_by_date[key] = count
 
+    raw_trend = payload.get("manager_trend") or {}
+    trend_enabled = bool(raw_trend.get("enabled", True))
+    trend_rows = raw_trend.get("scores") or []
+    trend_scores: dict[int, dict[str, int]] = {}
+    for raw in trend_rows:
+        if not isinstance(raw, dict):
+            raise SchedulingError("manager_trend.scores chứa phần tử không hợp lệ")
+        weekday = _as_int(raw.get("weekday"), field="manager_trend.weekday", maximum=6)
+        morning_score = _as_int(raw.get("morning", 0), field="manager_trend.morning", maximum=10000)
+        afternoon_score = _as_int(raw.get("afternoon", 0), field="manager_trend.afternoon", maximum=10000)
+        trend_scores[weekday] = {"morning": morning_score, "afternoon": afternoon_score}
+    for weekday in range(7):
+        trend_scores.setdefault(weekday, {"morning": 0, "afternoon": 0})
+
     pairings = []
     for position, raw in enumerate(payload.get("pairing_rules") or []):
         if not isinstance(raw, dict):
@@ -299,6 +316,13 @@ def normalize_config(payload: dict[str, Any]) -> dict[str, Any]:
         "requests": requests,
         "fixed_weekday_rules": fixed_rules,
         "employee_rules": employee_rules,
+        "manager_trend": {
+            "enabled": trend_enabled,
+            "scores": [
+                {"weekday": weekday, **trend_scores[weekday]}
+                for weekday in range(7)
+            ],
+        },
         "receiving_by_date": receiving_by_date,
         "pairing_rules": pairings,
         "morning_time_overrides": morning_time_overrides,
@@ -543,6 +567,31 @@ def _build_and_solve(config: dict[str, Any], variant: str) -> dict[str, Any] | N
             model.Add(switch >= afternoon[e, previous] + morning[e, current] - 1)
             switch_vars[e, index] = switch
             objective_terms.append((switch, weights["switch"]))
+
+    # Store-manager trend is a SOFT tie-breaker after HARD rules and staffing.
+    # Shift targets remain stronger (90-ish per deviation vs <= observed trend gap per day),
+    # so trend chooses *which days* are morning/afternoon without rewriting the weekly target.
+    if config.get("manager_trend", {}).get("enabled", True):
+        trend_by_weekday = {
+            int(item["weekday"]): item
+            for item in config["manager_trend"]["scores"]
+        }
+        manager_ids = [
+            e for e in employee_ids
+            if employee_by_id[e]["role"] == "STORE_MANAGER"
+        ]
+        for e in manager_ids:
+            for day_index, d in enumerate(day_keys):
+                score = trend_by_weekday.get(day_index, {"morning": 0, "afternoon": 0})
+                morning_score = int(score.get("morning", 0))
+                afternoon_score = int(score.get("afternoon", 0))
+                best = max(morning_score, afternoon_score)
+                if best > morning_score:
+                    gap = min(best - morning_score, 40)
+                    objective_terms.append((morning[e, d], gap * weights["manager_trend"]))
+                if best > afternoon_score:
+                    gap = min(best - afternoon_score, 40)
+                    objective_terms.append((afternoon[e, d], gap * weights["manager_trend"]))
 
     # Fairness spread among non-managers, so the CHT role target is not flattened away.
     staff_ids = [e for e in employee_ids if employee_by_id[e]["role"] != "STORE_MANAGER" and hard_off_counts.get(e, 0) == 0]
