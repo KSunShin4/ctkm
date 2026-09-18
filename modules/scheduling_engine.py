@@ -19,6 +19,8 @@ REQUEST_TYPES = {
 }
 SHIFTS = {"MORNING", "AFTERNOON", "OFF"}
 LEVELS = {"HARD", "SOFT"}
+RELATION_TYPES = {"UNLIMITED", "MAX", "MIN", "EXACT", "NEVER", "PREFER_TOGETHER", "PREFER_APART"}
+RECEIVING_RELATIONS = {"NORMAL", "PREFER_TOGETHER", "AVOID", "NEVER"}
 VARIANT_WEIGHTS = {
     "balanced": {
         "shortage": 1200,
@@ -230,20 +232,45 @@ def normalize_config(payload: dict[str, Any]) -> dict[str, Any]:
         employee_b = str(raw.get("employee_b") or "").strip()
         if employee_a not in employee_ids or employee_b not in employee_ids or employee_a == employee_b:
             raise SchedulingError("pairing_rules phải chọn 2 nhân viên khác nhau đang hoạt động")
-        max_same = raw.get("max_same_shifts_per_week")
-        if max_same in (None, ""):
-            max_same = None
-        else:
-            max_same = _as_int(max_same, field="pairing_rules.max_same_shifts_per_week", maximum=7)
+
+        legacy_max = raw.get("max_same_shifts_per_week")
+        relation_type = str(raw.get("relation_type") or ("MAX" if legacy_max not in (None, "") else "UNLIMITED")).strip().upper()
+        if relation_type not in RELATION_TYPES:
+            raise SchedulingError("pairing_rules.relation_type không hợp lệ")
+
+        raw_count = raw.get("count", legacy_max)
+        count = None if raw_count in (None, "") else _as_int(raw_count, field="pairing_rules.count", maximum=7)
+        if relation_type in {"MAX", "MIN", "EXACT", "PREFER_TOGETHER"} and count is None:
+            raise SchedulingError(f"pairing_rules loại {relation_type} cần số ca/tuần")
+        if relation_type == "NEVER":
+            count = 0
+
         level = str(raw.get("level") or "SOFT").strip().upper()
         if level not in LEVELS:
             raise SchedulingError("pairing_rules.level không hợp lệ")
+        if relation_type in {"PREFER_TOGETHER", "PREFER_APART"}:
+            level = "SOFT"
+        elif relation_type == "NEVER":
+            level = "HARD"
+
+        receiving_relation = raw.get("receiving_relation")
+        if receiving_relation is None:
+            legacy_allowed = bool(raw.get("receiving_day_allowed", True))
+            if legacy_allowed:
+                receiving_relation = "NORMAL"
+            else:
+                receiving_relation = "NEVER" if level == "HARD" else "AVOID"
+        receiving_relation = str(receiving_relation).strip().upper()
+        if receiving_relation not in RECEIVING_RELATIONS:
+            raise SchedulingError("pairing_rules.receiving_relation không hợp lệ")
+
         pairings.append({
             "employee_a": employee_a,
             "employee_b": employee_b,
-            "max_same_shifts_per_week": max_same,
-            "receiving_day_allowed": bool(raw.get("receiving_day_allowed", True)),
+            "relation_type": relation_type,
+            "count": count,
             "level": level,
+            "receiving_relation": receiving_relation,
         })
 
     morning_time_overrides = []
@@ -460,26 +487,64 @@ def _build_and_solve(config: dict[str, Any], variant: str) -> dict[str, Any] | N
     for p_index, rule in enumerate(config["pairing_rules"]):
         a, b = rule["employee_a"], rule["employee_b"]
         same_vars = []
+        receiving_same_vars = []
         for d in day_keys:
             same_m = model.NewBoolVar(f"pair_m_{p_index}_{d}")
             same_a = model.NewBoolVar(f"pair_a_{p_index}_{d}")
             model.Add(same_m <= morning[a, d]); model.Add(same_m <= morning[b, d]); model.Add(same_m >= morning[a, d] + morning[b, d] - 1)
             model.Add(same_a <= afternoon[a, d]); model.Add(same_a <= afternoon[b, d]); model.Add(same_a >= afternoon[a, d] + afternoon[b, d] - 1)
             same_vars.extend([same_m, same_a])
-            if not rule["receiving_day_allowed"] and d in config["receiving_by_date"]:
-                if rule["level"] == "HARD":
-                    model.Add(same_a == 0)
-                else:
-                    objective_terms.append((same_a, weights["pairing"]))
-        max_same = rule["max_same_shifts_per_week"]
-        if max_same is not None:
-            total_same = sum(same_vars)
-            if rule["level"] == "HARD":
-                model.Add(total_same <= max_same)
+            if d in config["receiving_by_date"]:
+                receiving_same_vars.append(same_a)
+
+        total_same = sum(same_vars)
+        relation_type = rule["relation_type"]
+        count = rule["count"]
+        level = rule["level"]
+
+        if relation_type == "MAX":
+            if level == "HARD":
+                model.Add(total_same <= count)
             else:
-                excess = model.NewIntVar(0, 14, f"pair_excess_{p_index}")
-                model.Add(excess >= total_same - max_same)
+                excess = model.NewIntVar(0, 7, f"pair_max_excess_{p_index}")
+                model.Add(excess >= total_same - count)
                 objective_terms.append((excess, weights["pairing"]))
+        elif relation_type == "MIN":
+            if level == "HARD":
+                model.Add(total_same >= count)
+            else:
+                shortfall = model.NewIntVar(0, 7, f"pair_min_shortfall_{p_index}")
+                model.Add(shortfall >= count - total_same)
+                objective_terms.append((shortfall, weights["pairing"]))
+        elif relation_type == "EXACT":
+            if level == "HARD":
+                model.Add(total_same == count)
+            else:
+                over = model.NewIntVar(0, 7, f"pair_exact_over_{p_index}")
+                under = model.NewIntVar(0, 7, f"pair_exact_under_{p_index}")
+                model.Add(over >= total_same - count)
+                model.Add(under >= count - total_same)
+                objective_terms.append((over, weights["pairing"]))
+                objective_terms.append((under, weights["pairing"]))
+        elif relation_type == "NEVER":
+            model.Add(total_same == 0)
+        elif relation_type == "PREFER_TOGETHER":
+            shortfall = model.NewIntVar(0, 7, f"pair_together_shortfall_{p_index}")
+            model.Add(shortfall >= count - total_same)
+            objective_terms.append((shortfall, weights["pairing"]))
+        elif relation_type == "PREFER_APART":
+            objective_terms.append((total_same, weights["pairing"]))
+
+        receiving_relation = rule["receiving_relation"]
+        for r_index, same_a in enumerate(receiving_same_vars):
+            if receiving_relation == "NEVER":
+                model.Add(same_a == 0)
+            elif receiving_relation == "AVOID":
+                objective_terms.append((same_a, weights["pairing"]))
+            elif receiving_relation == "PREFER_TOGETHER":
+                miss = model.NewBoolVar(f"pair_receiving_miss_{p_index}_{r_index}")
+                model.Add(miss + same_a == 1)
+                objective_terms.append((miss, weights["pairing"]))
 
     model.Minimize(sum(var * weight for var, weight in objective_terms))
     solver = cp_model.CpSolver()
@@ -748,17 +813,42 @@ def validate_schedule(config_or_payload: dict[str, Any], assignments: list[dict[
     for rule in config["pairing_rules"]:
         a, b = rule["employee_a"], rule["employee_b"]
         same = 0
+        receiving_same = 0
+        receiving_days = len(config["receiving_by_date"])
         for d in day_keys:
             left, right = lookup.get((a, d)), lookup.get((b, d))
             if left and right and left["shift"] in {"MORNING", "AFTERNOON"} and left["shift"] == right["shift"]:
                 same += 1
-                if not rule["receiving_day_allowed"] and d in config["receiving_by_date"] and left["shift"] == "AFTERNOON":
-                    message = f"{employee_by_id[a]['name']} và {employee_by_id[b]['name']} chung ca Chiều ngày nhận hàng {d}"
-                    (errors if rule["level"] == "HARD" else warnings).append(message)
-        max_same = rule["max_same_shifts_per_week"]
-        if max_same is not None and same > max_same:
-            message = f"{employee_by_id[a]['name']} và {employee_by_id[b]['name']} chung {same} ca, vượt giới hạn {max_same}"
-            (errors if rule["level"] == "HARD" else warnings).append(message)
+                if d in config["receiving_by_date"] and left["shift"] == "AFTERNOON":
+                    receiving_same += 1
+
+        left_name = employee_by_id[a]["name"]
+        right_name = employee_by_id[b]["name"]
+        relation_type = rule["relation_type"]
+        count = rule["count"]
+        level = rule["level"]
+        severity = errors if level == "HARD" else warnings
+
+        if relation_type == "MAX" and same > count:
+            severity.append(f"{left_name} và {right_name} chung {same} ca, vượt tối đa {count}")
+        elif relation_type == "MIN" and same < count:
+            severity.append(f"{left_name} và {right_name} chỉ chung {same} ca, dưới tối thiểu {count}")
+        elif relation_type == "EXACT" and same != count:
+            severity.append(f"{left_name} và {right_name} chung {same} ca, cần chính xác {count}")
+        elif relation_type == "NEVER" and same:
+            errors.append(f"{left_name} và {right_name} không được chung ca nhưng đang chung {same} ca")
+        elif relation_type == "PREFER_TOGETHER" and same < count:
+            warnings.append(f"{left_name} và {right_name} chỉ chung {same}/{count} ca theo ưu tiên")
+        elif relation_type == "PREFER_APART" and same:
+            warnings.append(f"{left_name} và {right_name} vẫn chung {same} ca dù ưu tiên tránh chung")
+
+        receiving_relation = rule["receiving_relation"]
+        if receiving_relation == "NEVER" and receiving_same:
+            errors.append(f"{left_name} và {right_name} không được chung ca Chiều ngày nhận hàng nhưng đang chung {receiving_same} ngày")
+        elif receiving_relation == "AVOID" and receiving_same:
+            warnings.append(f"{left_name} và {right_name} chung ca Chiều {receiving_same} ngày nhận hàng dù ưu tiên tránh")
+        elif receiving_relation == "PREFER_TOGETHER" and receiving_days and receiving_same < receiving_days:
+            warnings.append(f"{left_name} và {right_name} chung ca Chiều {receiving_same}/{receiving_days} ngày nhận hàng theo ưu tiên")
 
     metrics = calculate_metrics(config, list(lookup.values())) if not missing else {"employees": [], "total_switches": 0, "soft_requests_missed": 0, "afternoon_spread": 0, "receiving_spread": 0}
     metric_by_employee = {item["employee_id"]: item for item in metrics.get("employees", [])}
