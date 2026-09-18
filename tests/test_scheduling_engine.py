@@ -357,3 +357,88 @@ def test_soft_prefer_apart_remains_a_warning_not_invalid_after_manual_edit():
     assert validation["status"] in {"VALID", "VALID_WITH_WARNINGS"}
     assert not validation["errors"]
 
+def _manager_trend_payload(enabled=True):
+    # Deliberately extreme scores: solver caps each daily trend gap so weekly
+    # target counts remain stronger than trend magnitude.
+    return {
+        "enabled": enabled,
+        "scores": [
+            {"weekday": 0, "morning": 0, "afternoon": 10000},  # T2: HARD morning must still win
+            {"weekday": 1, "morning": 10000, "afternoon": 0},  # T3: HARD afternoon must still win
+            {"weekday": 2, "morning": 10000, "afternoon": 0},
+            {"weekday": 3, "morning": 10000, "afternoon": 0},
+            {"weekday": 4, "morning": 0, "afternoon": 10000},
+            {"weekday": 5, "morning": 0, "afternoon": 10000},
+            {"weekday": 6, "morning": 0, "afternoon": 10000},
+        ],
+    }
+
+
+def test_manager_trend_chooses_free_days_without_breaking_regional_hard_rules_or_weekly_target():
+    payload = config()
+    payload["manager_trend"] = _manager_trend_payload()
+    # Isolate trend choice from receiving constraints; receiving has its own
+    # regression below and must outrank trend when configured.
+    payload["receiving_days"] = []
+
+    option = generate_schedule(payload)["options"][0]
+    rows = lookup(option["assignments"])
+
+    assert rows[("phuong", "2026-09-14")]["shift"] == "MORNING"    # regional HARD T2
+    assert rows[("phuong", "2026-09-15")]["shift"] == "AFTERNOON"  # regional HARD T3
+    assert rows[("phuong", "2026-09-16")]["shift"] == "MORNING"
+    assert rows[("phuong", "2026-09-17")]["shift"] == "MORNING"
+    assert rows[("phuong", "2026-09-18")]["shift"] == "AFTERNOON"
+    assert rows[("phuong", "2026-09-19")]["shift"] == "AFTERNOON"
+    assert rows[("phuong", "2026-09-20")]["shift"] == "AFTERNOON"
+
+    manager = next(item for item in option["metrics"]["employees"] if item["employee_id"] == "phuong")
+    assert manager["morning"] == 3
+    assert manager["afternoon"] == 4
+
+
+def test_user_hard_request_beats_manager_trend():
+    payload = config()
+    payload["manager_trend"] = _manager_trend_payload()
+    payload["requests"] = [
+        {"employee_id": "phuong", "date": "2026-09-18", "type": "MUST_MORNING"},
+    ]
+
+    result = generate_schedule(payload)
+
+    assert result["options"]
+    rows = lookup(result["options"][0]["assignments"])
+    assert rows[("phuong", "2026-09-18")]["shift"] == "MORNING"
+
+
+def test_manager_trend_round_trips_public_config():
+    payload = config()
+    payload["manager_trend"] = {
+        "enabled": True,
+        "scores": [
+            {"weekday": i, "morning": 10 + i, "afternoon": 20 + i}
+            for i in range(7)
+        ],
+    }
+
+    normalized = normalize_config(payload)
+    public = public_config(normalized)
+    again = normalize_config(public)
+
+    assert again["manager_trend"] == normalized["manager_trend"]
+
+def test_manager_trend_does_not_break_receiving_max_constraint():
+    payload = config()
+    payload["manager_trend"] = {
+        "enabled": True,
+        "scores": [
+            {"weekday": i, "morning": 0, "afternoon": 10000}
+            for i in range(7)
+        ],
+    }
+
+    option = generate_schedule(payload)["options"][0]
+    manager = next(item for item in option["metrics"]["employees"] if item["employee_id"] == "phuong")
+
+    assert manager["receiving"] <= 1
+
