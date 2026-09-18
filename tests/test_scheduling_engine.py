@@ -128,17 +128,95 @@ def test_manual_edit_cannot_break_off_or_hard_morning_hour_lock():
     assert any("Vi phạm HARD giờ ca" in error for error in validation["errors"])
 
 
-def test_off_shortage_stays_one_shift_per_day_and_is_reported_as_warning():
+def test_off_rebalances_daily_staffing_instead_of_creating_three_to_one_split():
+    for off_date, expected_morning, expected_afternoon in (
+        ("2026-09-14", 2, 2),  # nominal Monday 3S/2C
+        ("2026-09-16", 2, 2),  # nominal weekday 2S/3C
+    ):
+        payload = config()
+        payload["requests"] = [{"employee_id": "mi", "date": off_date, "type": "OFF"}]
+
+        option = generate_schedule(payload)["options"][0]
+        rows = lookup(option["assignments"])
+        morning = [row for row in rows.values() if row["date"] == off_date and row["shift"] == "MORNING"]
+        afternoon = [row for row in rows.values() if row["date"] == off_date and row["shift"] == "AFTERNOON"]
+
+        assert rows[("mi", off_date)]["shift"] == "OFF"
+        assert len(morning) == expected_morning
+        assert len(afternoon) == expected_afternoon
+        assert not any(off_date in warning and "thiếu" in warning.lower() for warning in option["warnings"])
+
+
+def test_manual_three_to_one_after_off_is_warning_not_invalid():
+    payload = config()
+    payload["requests"] = [{"employee_id": "mi", "date": "2026-09-14", "type": "OFF"}]
+    assignments = deepcopy(generate_schedule(payload)["options"][0]["assignments"])
+    monday = [row for row in assignments if row["date"] == "2026-09-14"]
+    afternoon = next(row for row in monday if row["shift"] == "AFTERNOON")
+    afternoon.update(shift="MORNING", start_time="06:00", receiving=False)
+    for row in monday:
+        if row["employee_id"] == "phuong":
+            row["start_time"] = "07:00"
+
+    validation = validate_schedule(payload, assignments)
+
+    assert validation["status"] == "VALID_WITH_WARNINGS"
+    assert not validation["errors"]
+    assert any("phân bổ cân bằng sau OFF" in warning for warning in validation["warnings"])
+
+
+def test_employee_with_explicit_off_is_not_warned_against_full_week_shift_targets():
     payload = config()
     payload["requests"] = [{"employee_id": "mi", "date": "2026-09-16", "type": "OFF"}]
 
     option = generate_schedule(payload)["options"][0]
+
+    assert not any(warning.startswith("Mi: ca Sáng") for warning in option["warnings"])
+    assert not any(warning.startswith("Mi: ca Chiều") for warning in option["warnings"])
+
+
+def test_off_receiving_compensation_prefers_employee_with_more_off_days():
+    payload = config()
+    payload["receiving_days"] = [{"date": "2026-09-15", "count": 1}]
+    payload["employee_rules"] = [
+        {
+            "employee_id": employee["id"],
+            "target_morning": None,
+            "target_afternoon": None,
+            "receiving_min": 0,
+            "receiving_target": None,
+            "receiving_max": 3,
+            "off_receiving_compensation": employee["id"] in {"mi", "ly"},
+        }
+        for employee in payload["employees"]
+    ]
+    payload["requests"] = [
+        {"employee_id": "mi", "date": "2026-09-15", "type": "MUST_AFTERNOON"},
+        {"employee_id": "ly", "date": "2026-09-15", "type": "MUST_AFTERNOON"},
+        {"employee_id": "mi", "date": "2026-09-16", "type": "OFF"},
+        {"employee_id": "ly", "date": "2026-09-16", "type": "OFF"},
+        {"employee_id": "ly", "date": "2026-09-18", "type": "OFF"},
+    ]
+
+    option = generate_schedule(payload)["options"][0]
     rows = lookup(option["assignments"])
 
-    assert len(rows) == 35
-    assert rows[("mi", "2026-09-16")]["shift"] == "OFF"
-    assert option["status"] == "VALID_WITH_WARNINGS"
-    assert any("thiếu" in warning.lower() for warning in option["warnings"])
+    assert rows[("ly", "2026-09-15")]["receiving"] is True
+    assert rows[("mi", "2026-09-15")]["receiving"] is False
+
+
+def test_off_receiving_compensation_flag_round_trips_public_config():
+    payload = config()
+    for rule in payload["employee_rules"]:
+        if rule["employee_id"] == "nhan":
+            rule["off_receiving_compensation"] = True
+
+    normalized = normalize_config(payload)
+    public = public_config(normalized)
+    again = normalize_config(public)
+
+    assert normalized["employee_rules"]["nhan"]["off_receiving_compensation"] is True
+    assert again["employee_rules"]["nhan"]["off_receiving_compensation"] is True
 
 
 def test_receiving_assignment_only_exists_on_receiving_afternoon():
