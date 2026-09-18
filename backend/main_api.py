@@ -27,6 +27,7 @@ from backend.tag_audit_progress_contract import install_tag_audit_progress_contr
 from backend.tag_audit_promotion_disambiguation_contract import install_tag_audit_promotion_disambiguation_contract
 from backend.tag_audit_temporal_hint_contract import install_tag_audit_temporal_hint_contract
 from backend.tag_audit_business_date_contract import install_tag_audit_business_date_contract
+from backend.scheduling_contract import install_scheduling_contract
 
 _CORE_NAME = "backend.main_api_core"
 _CORE_PATH = Path(__file__).with_name("main_api_core.py")
@@ -245,6 +246,10 @@ install_tag_audit_progress_contract(_tag_audit_contract, _core)
 # The tag-audit feature is additive and deliberately installed after the verified
 # legacy suite so it cannot mutate existing CTKM/Tem-R route contracts.
 install_tag_audit_contract(_core)
+
+# Staff scheduling is an additive manager workflow. Keep it outside the legacy
+# CTKM contract suite so scheduling changes cannot mutate CTKM/Tem-R semantics.
+install_scheduling_contract(_core)
 
 # The root StaticFiles mount in main_api_core is intentionally last among core
 # routes, but Starlette StaticFiles(html=True) does not provide a generic SPA
