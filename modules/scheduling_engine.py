@@ -30,6 +30,7 @@ VARIANT_WEIGHTS = {
         "preference": 32,
         "fairness": 16,
         "pairing": 30,
+        "off_receiving_compensation": 160,
     },
     "stable": {
         "shortage": 1200,
@@ -39,6 +40,7 @@ VARIANT_WEIGHTS = {
         "preference": 25,
         "fairness": 18,
         "pairing": 25,
+        "off_receiving_compensation": 160,
     },
     "preferences": {
         "shortage": 1200,
@@ -48,6 +50,7 @@ VARIANT_WEIGHTS = {
         "preference": 95,
         "fairness": 14,
         "pairing": 35,
+        "off_receiving_compensation": 160,
     },
 }
 VARIANT_LABELS = {
@@ -183,7 +186,7 @@ def normalize_config(payload: dict[str, Any]) -> dict[str, Any]:
             raise SchedulingError("fixed_weekday_rules.level không hợp lệ")
         fixed_rules.append({"employee_id": employee_id, "weekday": weekday, "shift": shift, "level": level})
 
-    employee_rules: dict[str, dict[str, int | None]] = {}
+    employee_rules: dict[str, dict[str, Any]] = {}
     for raw in payload.get("employee_rules") or []:
         if not isinstance(raw, dict):
             continue
@@ -204,6 +207,7 @@ def normalize_config(payload: dict[str, Any]) -> dict[str, Any]:
             "receiving_min": minimum,
             "receiving_target": target,
             "receiving_max": maximum,
+            "off_receiving_compensation": bool(raw.get("off_receiving_compensation", False)),
         }
 
     receiving_by_date: dict[str, int] = {}
@@ -301,15 +305,15 @@ def normalize_config(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _hard_precheck(config: dict[str, Any]) -> list[str]:
-    errors: list[str] = []
-    # Count unique people, not rule rows: a weekly fixed rule and a week-specific
-    # request are allowed to reinforce the same assignment without double-counting.
-    hard_by_day: dict[str, dict[str, set[str]]] = defaultdict(
-        lambda: {"MORNING": set(), "AFTERNOON": set(), "OFF": set()}
-    )
-    requests = list(config["requests"])
+
+def _hard_day_sets(config: dict[str, Any]) -> tuple[dict[str, dict[str, set[str]]], dict[str, int]]:
+    """Collect explicit HARD availability/shift requests without inferring OFF from under-filled days."""
+    day_keys = [item.isoformat() for item in _week_dates(_parse_date(config["week_start"]))]
+    hard_by_day: dict[str, dict[str, set[str]]] = {
+        key: {"MORNING": set(), "AFTERNOON": set(), "OFF": set()} for key in day_keys
+    }
     start = _parse_date(config["week_start"])
+    requests = list(config["requests"])
     for rule in config["fixed_weekday_rules"]:
         if rule["level"] != "HARD":
             continue
@@ -319,29 +323,91 @@ def _hard_precheck(config: dict[str, Any]) -> list[str]:
             "date": key,
             "type": {"MORNING": "MUST_MORNING", "AFTERNOON": "MUST_AFTERNOON", "OFF": "OFF"}[rule["shift"]],
         })
+
     hard_kind = {"MUST_MORNING": "MORNING", "MUST_AFTERNOON": "AFTERNOON", "OFF": "OFF"}
-    by_employee_day: dict[tuple[str, str], set[str]] = defaultdict(set)
     for request in requests:
         kind = hard_kind.get(request["type"])
-        if not kind:
-            continue
-        employee_id, key = request["employee_id"], request["date"]
-        hard_by_day[key][kind].add(employee_id)
-        by_employee_day[(employee_id, key)].add(kind)
+        if kind and request["date"] in hard_by_day:
+            hard_by_day[request["date"]][kind].add(request["employee_id"])
+
+    off_counts = {item["id"]: 0 for item in config["active_employees"]}
+    for day in hard_by_day.values():
+        for employee_id in day["OFF"]:
+            off_counts[employee_id] = off_counts.get(employee_id, 0) + 1
+    return hard_by_day, off_counts
+
+
+def _effective_staffing_by_date(config: dict[str, Any]) -> dict[str, dict[str, int]]:
+    """Rebalance nominal daily staffing when explicit OFF reduces available people.
+
+    Example: nominal 3 morning + 2 afternoon with one OFF becomes 2 + 2,
+    while nominal 2 + 3 becomes 2 + 2. The split stays as close as possible
+    to the nominal ratio instead of leaving one shift at 3 and the other at 1.
+    """
+    hard_by_day, _ = _hard_day_sets(config)
+    active_count = len(config["active_employees"])
+    result: dict[str, dict[str, int]] = {}
+    for key, nominal in config["staffing_by_date"].items():
+        nominal_morning = int(nominal["morning"])
+        nominal_afternoon = int(nominal["afternoon"])
+        nominal_total = nominal_morning + nominal_afternoon
+        off_count = len(hard_by_day[key]["OFF"])
+        available = max(0, active_count - off_count)
+        effective_total = min(available, nominal_total)
+
+        candidates = []
+        for morning in range(0, min(nominal_morning, effective_total) + 1):
+            afternoon = effective_total - morning
+            if afternoon < 0 or afternoon > nominal_afternoon:
+                continue
+            ratio_distance = abs(morning * nominal_total - nominal_morning * effective_total)
+            balance_distance = abs(morning - afternoon)
+            candidates.append((ratio_distance, balance_distance, morning, afternoon))
+        if not candidates:
+            effective_morning, effective_afternoon = 0, 0
+        else:
+            _, _, effective_morning, effective_afternoon = min(candidates)
+
+        result[key] = {
+            "morning": effective_morning,
+            "afternoon": effective_afternoon,
+            "available": available,
+            "off_count": off_count,
+            "nominal_morning": nominal_morning,
+            "nominal_afternoon": nominal_afternoon,
+        }
+    return result
+
+
+def _hard_precheck(config: dict[str, Any]) -> list[str]:
+    errors: list[str] = []
+    hard_by_day, _ = _hard_day_sets(config)
+    effective_staffing = _effective_staffing_by_date(config)
     employee_names = {item["id"]: item["name"] for item in config["active_employees"]}
+
+    by_employee_day: dict[tuple[str, str], set[str]] = defaultdict(set)
+    for key, people in hard_by_day.items():
+        for kind in ("MORNING", "AFTERNOON", "OFF"):
+            for employee_id in people[kind]:
+                by_employee_day[(employee_id, key)].add(kind)
+
     for (employee_id, key), kinds in by_employee_day.items():
         if len(kinds) > 1:
             errors.append(
                 f"Xung đột HARD: {employee_names.get(employee_id, employee_id)} ngày {key} có nhiều yêu cầu {', '.join(sorted(kinds))}"
             )
-    for key, people in hard_by_day.items():
-        target = config["staffing_by_date"][key]
-        if len(people["MORNING"]) > target["morning"]:
-            errors.append(f"{key}: số người bắt buộc Sáng ({len(people['MORNING'])}) vượt giới hạn {target['morning']}")
-        if len(people["AFTERNOON"]) > target["afternoon"]:
-            errors.append(f"{key}: số người bắt buộc Chiều ({len(people['AFTERNOON'])}) vượt giới hạn {target['afternoon']}")
-    return errors
 
+    for key, people in hard_by_day.items():
+        target = effective_staffing[key]
+        if len(people["MORNING"]) > target["morning"]:
+            errors.append(
+                f"{key}: số người bắt buộc Sáng ({len(people['MORNING'])}) vượt phân bổ sau OFF {target['morning']}"
+            )
+        if len(people["AFTERNOON"]) > target["afternoon"]:
+            errors.append(
+                f"{key}: số người bắt buộc Chiều ({len(people['AFTERNOON'])}) vượt phân bổ sau OFF {target['afternoon']}"
+            )
+    return errors
 
 def _build_and_solve(config: dict[str, Any], variant: str) -> dict[str, Any] | None:
     weights = VARIANT_WEIGHTS[variant]
@@ -350,6 +416,8 @@ def _build_and_solve(config: dict[str, Any], variant: str) -> dict[str, Any] | N
     employee_by_id = {item["id"]: item for item in employees}
     days = _week_dates(_parse_date(config["week_start"]))
     day_keys = [item.isoformat() for item in days]
+    effective_staffing = _effective_staffing_by_date(config)
+    _, hard_off_counts = _hard_day_sets(config)
 
     model = cp_model.CpModel()
     morning = {(e, d): model.NewBoolVar(f"m_{e}_{d}") for e in employee_ids for d in day_keys}
@@ -398,10 +466,11 @@ def _build_and_solve(config: dict[str, Any], variant: str) -> dict[str, Any] | N
             model.Add(miss + target == 1)
             objective_terms.append((miss, weights["preference"]))
 
-    # Staffing target is a maximum; under-fill is allowed but very expensive and reported.
+    # Generate against the effective staffing target after explicit OFF.
+    # This prevents 3S/1C when 2S/2C is the balanced four-person split.
     shortage_vars: dict[tuple[str, str], cp_model.IntVar] = {}
     for d in day_keys:
-        target = config["staffing_by_date"][d]
+        target = effective_staffing[d]
         for shift_name, variables, wanted in (
             ("MORNING", morning, target["morning"]),
             ("AFTERNOON", afternoon, target["afternoon"]),
@@ -414,7 +483,8 @@ def _build_and_solve(config: dict[str, Any], variant: str) -> dict[str, Any] | N
             objective_terms.append((shortage, weights["shortage"]))
 
     receiving_shortage: dict[str, cp_model.IntVar] = {}
-    for d, wanted in config["receiving_by_date"].items():
+    for d, nominal_wanted in config["receiving_by_date"].items():
+        wanted = min(int(nominal_wanted), int(effective_staffing[d]["afternoon"]))
         total = sum(receiving[e, d] for e in employee_ids)
         model.Add(total <= wanted)
         shortage = model.NewIntVar(0, wanted, f"recv_short_{d}")
@@ -436,12 +506,22 @@ def _build_and_solve(config: dict[str, Any], variant: str) -> dict[str, Any] | N
         morning_counts[e], afternoon_counts[e], receiving_counts[e] = morning_count, afternoon_count, receiving_count
 
         rule = config["employee_rules"].get(e, {})
-        for field, count_var in (("target_morning", morning_count), ("target_afternoon", afternoon_count)):
-            target = rule.get(field)
-            if target is not None:
-                delta = model.NewIntVar(0, 7, f"delta_{field}_{e}")
-                model.AddAbsEquality(delta, count_var - int(target))
-                objective_terms.append((delta, weights["shift_target"]))
+        # An employee with explicit OFF is not compared against a full 7-day S/C target.
+        # Full-availability employees keep their targets and therefore get balancing priority.
+        if hard_off_counts.get(e, 0) == 0:
+            for field, count_var in (("target_morning", morning_count), ("target_afternoon", afternoon_count)):
+                target = rule.get(field)
+                if target is not None:
+                    delta = model.NewIntVar(0, 7, f"delta_{field}_{e}")
+                    model.AddAbsEquality(delta, count_var - int(target))
+                    objective_terms.append((delta, weights["shift_target"]))
+
+        if rule.get("off_receiving_compensation") and hard_off_counts.get(e, 0) > 0:
+            objective_terms.append((
+                receiving_count,
+                -weights["off_receiving_compensation"] * int(hard_off_counts[e]),
+            ))
+
         recv_min = rule.get("receiving_min")
         recv_max = rule.get("receiving_max")
         recv_target = rule.get("receiving_target")
@@ -465,7 +545,7 @@ def _build_and_solve(config: dict[str, Any], variant: str) -> dict[str, Any] | N
             objective_terms.append((switch, weights["switch"]))
 
     # Fairness spread among non-managers, so the CHT role target is not flattened away.
-    staff_ids = [e for e in employee_ids if employee_by_id[e]["role"] != "STORE_MANAGER"]
+    staff_ids = [e for e in employee_ids if employee_by_id[e]["role"] != "STORE_MANAGER" and hard_off_counts.get(e, 0) == 0]
     if len(staff_ids) >= 2:
         max_a = model.NewIntVar(0, 7, "max_staff_afternoon")
         min_a = model.NewIntVar(0, 7, "min_staff_afternoon")
@@ -632,6 +712,7 @@ def assign_morning_times(config: dict[str, Any], assignments: list[dict[str, Any
 
 def calculate_metrics(config: dict[str, Any], assignments: list[dict[str, Any]]) -> dict[str, Any]:
     active = config["active_employees"]
+    _, hard_off_counts = _hard_day_sets(config)
     by_employee: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in assignments:
         by_employee[row["employee_id"]].append(row)
@@ -664,6 +745,10 @@ def calculate_metrics(config: dict[str, Any], assignments: list[dict[str, Any]])
             "receiving": receiving,
             "switches": switches,
             "morning_0700": late,
+            "requested_off": hard_off_counts.get(employee["id"], 0),
+            "off_receiving_compensation": bool(
+                config["employee_rules"].get(employee["id"], {}).get("off_receiving_compensation", False)
+            ),
         })
 
     lookup = {(row["employee_id"], row["date"]): row for row in assignments}
@@ -676,8 +761,16 @@ def calculate_metrics(config: dict[str, Any], assignments: list[dict[str, Any]])
         if request["type"] == "PREFER_AFTERNOON" and row["shift"] != "AFTERNOON":
             total_soft_misses += 1
 
-    afternoons = [item["afternoon"] for item in employee_metrics if next(e for e in active if e["id"] == item["employee_id"])["role"] != "STORE_MANAGER"]
-    receivings = [item["receiving"] for item in employee_metrics if next(e for e in active if e["id"] == item["employee_id"])["role"] != "STORE_MANAGER"]
+    afternoons = [
+        item["afternoon"] for item in employee_metrics
+        if next(e for e in active if e["id"] == item["employee_id"])["role"] != "STORE_MANAGER"
+        and hard_off_counts.get(item["employee_id"], 0) == 0
+    ]
+    receivings = [
+        item["receiving"] for item in employee_metrics
+        if next(e for e in active if e["id"] == item["employee_id"])["role"] != "STORE_MANAGER"
+        and hard_off_counts.get(item["employee_id"], 0) == 0
+    ]
     return {
         "employees": employee_metrics,
         "total_switches": total_switches,
@@ -692,6 +785,8 @@ def validate_schedule(config_or_payload: dict[str, Any], assignments: list[dict[
     active_ids = {item["id"] for item in config["active_employees"]}
     employee_by_id = {item["id"]: item for item in config["active_employees"]}
     day_keys = [item.isoformat() for item in _week_dates(_parse_date(config["week_start"]))]
+    effective_staffing = _effective_staffing_by_date(config)
+    _, hard_off_counts = _hard_day_sets(config)
     expected = {(e, d) for e in active_ids for d in day_keys}
     lookup: dict[tuple[str, str], dict[str, Any]] = {}
     errors: list[str] = []
@@ -761,15 +856,20 @@ def validate_schedule(config_or_payload: dict[str, Any], assignments: list[dict[
         rows = [row for row in lookup.values() if row["date"] == d]
         morning_rows = [row for row in rows if row["shift"] == "MORNING"]
         afternoon_rows = [row for row in rows if row["shift"] == "AFTERNOON"]
-        target = config["staffing_by_date"][d]
-        if len(morning_rows) > target["morning"]:
-            errors.append(f"{d}: ca Sáng có {len(morning_rows)} người, vượt giới hạn {target['morning']}")
+        nominal = config["staffing_by_date"][d]
+        target = effective_staffing[d]
+        if len(morning_rows) > nominal["morning"]:
+            errors.append(f"{d}: ca Sáng có {len(morning_rows)} người, vượt giới hạn {nominal['morning']}")
         elif len(morning_rows) < target["morning"]:
-            warnings.append(f"{d}: ca Sáng thiếu {target['morning'] - len(morning_rows)} người")
-        if len(afternoon_rows) > target["afternoon"]:
-            errors.append(f"{d}: ca Chiều có {len(afternoon_rows)} người, vượt giới hạn {target['afternoon']}")
+            warnings.append(f"{d}: ca Sáng thiếu {target['morning'] - len(morning_rows)} người so với phân bổ sau OFF")
+        elif len(morning_rows) > target["morning"]:
+            warnings.append(f"{d}: ca Sáng cao hơn phân bổ cân bằng sau OFF ({len(morning_rows)}/{target['morning']})")
+        if len(afternoon_rows) > nominal["afternoon"]:
+            errors.append(f"{d}: ca Chiều có {len(afternoon_rows)} người, vượt giới hạn {nominal['afternoon']}")
         elif len(afternoon_rows) < target["afternoon"]:
-            warnings.append(f"{d}: ca Chiều thiếu {target['afternoon'] - len(afternoon_rows)} người")
+            warnings.append(f"{d}: ca Chiều thiếu {target['afternoon'] - len(afternoon_rows)} người so với phân bổ sau OFF")
+        elif len(afternoon_rows) > target["afternoon"]:
+            warnings.append(f"{d}: ca Chiều cao hơn phân bổ cân bằng sau OFF ({len(afternoon_rows)}/{target['afternoon']})")
 
         if len(morning_rows) <= 2:
             for row in morning_rows:
@@ -804,11 +904,11 @@ def validate_schedule(config_or_payload: dict[str, Any], assignments: list[dict[
         if d not in config["receiving_by_date"] and receiving_rows:
             errors.append(f"{d}: không phải ngày nhận hàng nhưng có người được đánh dấu nhận hàng")
         if d in config["receiving_by_date"]:
-            wanted = config["receiving_by_date"][d]
+            wanted = min(int(config["receiving_by_date"][d]), int(target["afternoon"]))
             if len(receiving_rows) < wanted:
-                warnings.append(f"{d}: nhận hàng thiếu {wanted - len(receiving_rows)} người so với target {wanted}")
+                warnings.append(f"{d}: nhận hàng thiếu {wanted - len(receiving_rows)} người so với target sau OFF {wanted}")
             if len(receiving_rows) > wanted:
-                warnings.append(f"{d}: nhận hàng vượt target {wanted}")
+                warnings.append(f"{d}: nhận hàng vượt target sau OFF {wanted}")
 
     for rule in config["pairing_rules"]:
         a, b = rule["employee_a"], rule["employee_b"]
@@ -866,15 +966,24 @@ def validate_schedule(config_or_payload: dict[str, Any], assignments: list[dict[
             warnings.append(
                 f"{employee_by_id[employee_id]['name']}: nhận hàng {metric['receiving']} dưới mục tiêu tối thiểu {receiving_min}"
             )
-        for field, metric_field, label in (
-            ("target_morning", "morning", "ca Sáng"),
-            ("target_afternoon", "afternoon", "ca Chiều"),
-            ("receiving_target", "receiving", "buổi nhận hàng"),
-        ):
-            target = rule.get(field)
-            if target is not None and metric[metric_field] != int(target):
+        if hard_off_counts.get(employee_id, 0) == 0:
+            for field, metric_field, label in (
+                ("target_morning", "morning", "ca Sáng"),
+                ("target_afternoon", "afternoon", "ca Chiều"),
+            ):
+                target = rule.get(field)
+                if target is not None and metric[metric_field] != int(target):
+                    warnings.append(
+                        f"{employee_by_id[employee_id]['name']}: {label} {metric[metric_field]}/{target} so với target"
+                    )
+
+        receiving_target = rule.get("receiving_target")
+        if receiving_target is not None:
+            compensation = bool(rule.get("off_receiving_compensation")) and hard_off_counts.get(employee_id, 0) > 0
+            misses_target = metric["receiving"] < int(receiving_target) if compensation else metric["receiving"] != int(receiving_target)
+            if misses_target:
                 warnings.append(
-                    f"{employee_by_id[employee_id]['name']}: {label} {metric[metric_field]}/{target} so với target"
+                    f"{employee_by_id[employee_id]['name']}: buổi nhận hàng {metric['receiving']}/{receiving_target} so với target"
                 )
     status = "INVALID" if errors else ("VALID_WITH_WARNINGS" if warnings else "VALID")
     return {"status": status, "errors": errors, "warnings": warnings, "metrics": metrics, "assignments": list(lookup.values())}
