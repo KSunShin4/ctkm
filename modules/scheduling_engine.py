@@ -21,6 +21,20 @@ SHIFTS = {"MORNING", "AFTERNOON", "OFF"}
 LEVELS = {"HARD", "SOFT"}
 RELATION_TYPES = {"UNLIMITED", "MAX", "MIN", "EXACT", "NEVER", "PREFER_TOGETHER", "PREFER_APART"}
 RECEIVING_RELATIONS = {"NORMAL", "PREFER_TOGETHER", "AVOID", "NEVER"}
+EMPLOYEE_ROLES = {"STORE_MANAGER", "EMPLOYEE"}
+DEFAULT_MANAGER_TREND = [
+    {"weekday": 0, "morning": 57, "afternoon": 66},
+    {"weekday": 1, "morning": 42, "afternoon": 83},
+    {"weekday": 2, "morning": 57, "afternoon": 65},
+    {"weekday": 3, "morning": 56, "afternoon": 51},
+    {"weekday": 4, "morning": 53, "afternoon": 59},
+    {"weekday": 5, "morning": 48, "afternoon": 69},
+    {"weekday": 6, "morning": 63, "afternoon": 73},
+]
+REGIONAL_MANAGER_RULES = (
+    {"weekday": 0, "shift": "MORNING", "level": "HARD", "source": "REGIONAL"},
+    {"weekday": 1, "shift": "AFTERNOON", "level": "HARD", "source": "REGIONAL"},
+)
 VARIANT_WEIGHTS = {
     "balanced": {
         "shortage": 1200,
@@ -105,6 +119,8 @@ def _normalize_employee(raw: dict[str, Any], position: int) -> dict[str, Any]:
     if not isinstance(code, str):
         code = str(code)
     role = str(raw.get("role") or "EMPLOYEE").strip().upper()
+    if role not in EMPLOYEE_ROLES:
+        raise SchedulingError(f"employees[{position}].role không hợp lệ")
     return {
         "id": employee_id,
         "name": name,
@@ -127,6 +143,10 @@ def normalize_config(payload: dict[str, Any]) -> dict[str, Any]:
     active = [item for item in employees if item["active"]]
     if not active:
         raise SchedulingError("Cần ít nhất 1 nhân viên đang hoạt động")
+    active_managers = [item for item in active if item["role"] == "STORE_MANAGER"]
+    if len(active_managers) != 1:
+        raise SchedulingError("Phải có đúng 1 CHT đang hoạt động")
+    manager_id = active_managers[0]["id"]
     ids = [item["id"] for item in active]
     if len(ids) != len(set(ids)):
         raise SchedulingError("employee.id phải duy nhất")
@@ -190,7 +210,24 @@ def normalize_config(payload: dict[str, Any]) -> dict[str, Any]:
         level = str(raw.get("level") or "HARD").strip().upper()
         if level not in LEVELS:
             raise SchedulingError("fixed_weekday_rules.level không hợp lệ")
-        fixed_rules.append({"employee_id": employee_id, "weekday": weekday, "shift": shift, "level": level})
+        source = str(raw.get("source") or "USER").strip().upper()
+        # Legacy default rows are migrated into the canonical regional rules below.
+        if source == "REGIONAL":
+            continue
+        if employee_id == manager_id and level == "HARD" and (
+            (weekday == 0 and shift == "MORNING") or
+            (weekday == 1 and shift == "AFTERNOON")
+        ):
+            continue
+        fixed_rules.append({
+            "employee_id": employee_id,
+            "weekday": weekday,
+            "shift": shift,
+            "level": level,
+            "source": "USER",
+        })
+    for regional in REGIONAL_MANAGER_RULES:
+        fixed_rules.append({"employee_id": manager_id, **regional})
 
     employee_rules: dict[str, dict[str, Any]] = {}
     for raw in payload.get("employee_rules") or []:
@@ -234,9 +271,13 @@ def normalize_config(payload: dict[str, Any]) -> dict[str, Any]:
             )
         receiving_by_date[key] = count
 
-    raw_trend = payload.get("manager_trend") or {}
+    raw_trend = payload.get("manager_trend")
+    if not isinstance(raw_trend, dict):
+        raw_trend = {}
     trend_enabled = bool(raw_trend.get("enabled", True))
-    trend_rows = raw_trend.get("scores") or []
+    trend_rows = raw_trend.get("scores")
+    if not isinstance(trend_rows, list) or not trend_rows:
+        trend_rows = deepcopy(DEFAULT_MANAGER_TREND)
     trend_scores: dict[int, dict[str, int]] = {}
     for raw in trend_rows:
         if not isinstance(raw, dict):
@@ -245,8 +286,10 @@ def normalize_config(payload: dict[str, Any]) -> dict[str, Any]:
         morning_score = _as_int(raw.get("morning", 0), field="manager_trend.morning", maximum=10000)
         afternoon_score = _as_int(raw.get("afternoon", 0), field="manager_trend.afternoon", maximum=10000)
         trend_scores[weekday] = {"morning": morning_score, "afternoon": afternoon_score}
+    defaults_by_weekday = {item["weekday"]: item for item in DEFAULT_MANAGER_TREND}
     for weekday in range(7):
-        trend_scores.setdefault(weekday, {"morning": 0, "afternoon": 0})
+        default = defaults_by_weekday[weekday]
+        trend_scores.setdefault(weekday, {"morning": default["morning"], "afternoon": default["afternoon"]})
 
     pairings = []
     for position, raw in enumerate(payload.get("pairing_rules") or []):
@@ -450,7 +493,10 @@ def _build_and_solve(config: dict[str, Any], variant: str) -> dict[str, Any] | N
     morning = {(e, d): model.NewBoolVar(f"m_{e}_{d}") for e in employee_ids for d in day_keys}
     afternoon = {(e, d): model.NewBoolVar(f"a_{e}_{d}") for e in employee_ids for d in day_keys}
     receiving = {(e, d): model.NewBoolVar(f"r_{e}_{d}") for e in employee_ids for d in day_keys}
-    objective_terms = []
+    staffing_terms = []
+    manager_target_terms = []
+    manager_trend_terms = []
+    soft_terms = []
 
     for e in employee_ids:
         for d in day_keys:
@@ -469,14 +515,14 @@ def _build_and_solve(config: dict[str, Any], variant: str) -> dict[str, Any] | N
                 model.Add(morning[rule["employee_id"], d] == 0)
                 model.Add(afternoon[rule["employee_id"], d] == 0)
             else:
-                objective_terms.append((morning[rule["employee_id"], d], weights["preference"]))
-                objective_terms.append((afternoon[rule["employee_id"], d], weights["preference"]))
+                soft_terms.append((morning[rule["employee_id"], d], weights["preference"]))
+                soft_terms.append((afternoon[rule["employee_id"], d], weights["preference"]))
         elif rule["level"] == "HARD":
             model.Add(variable == 1)
         else:
             miss = model.NewBoolVar(f"fixed_soft_{rule['employee_id']}_{d}")
             model.Add(miss + variable == 1)
-            objective_terms.append((miss, weights["preference"]))
+            soft_terms.append((miss, weights["preference"]))
 
     for request in config["requests"]:
         e, d, kind = request["employee_id"], request["date"], request["type"]
@@ -491,7 +537,7 @@ def _build_and_solve(config: dict[str, Any], variant: str) -> dict[str, Any] | N
             target = morning[e, d] if kind == "PREFER_MORNING" else afternoon[e, d]
             miss = model.NewBoolVar(f"pref_{e}_{d}_{kind}")
             model.Add(miss + target == 1)
-            objective_terms.append((miss, weights["preference"]))
+            soft_terms.append((miss, weights["preference"]))
 
     # Generate against the effective staffing target after explicit OFF.
     # This prevents 3S/1C when 2S/2C is the balanced four-person split.
@@ -507,7 +553,7 @@ def _build_and_solve(config: dict[str, Any], variant: str) -> dict[str, Any] | N
             shortage = model.NewIntVar(0, wanted, f"short_{shift_name}_{d}")
             model.Add(total + shortage == wanted)
             shortage_vars[d, shift_name] = shortage
-            objective_terms.append((shortage, weights["shortage"]))
+            staffing_terms.append((shortage, 1))
 
     receiving_shortage: dict[str, cp_model.IntVar] = {}
     for d, nominal_wanted in config["receiving_by_date"].items():
@@ -517,7 +563,7 @@ def _build_and_solve(config: dict[str, Any], variant: str) -> dict[str, Any] | N
         shortage = model.NewIntVar(0, wanted, f"recv_short_{d}")
         model.Add(total + shortage == wanted)
         receiving_shortage[d] = shortage
-        objective_terms.append((shortage, weights["shortage"]))
+        staffing_terms.append((shortage, 1))
 
     morning_counts = {}
     afternoon_counts = {}
@@ -541,11 +587,13 @@ def _build_and_solve(config: dict[str, Any], variant: str) -> dict[str, Any] | N
                 if target is not None:
                     delta = model.NewIntVar(0, 7, f"delta_{field}_{e}")
                     model.AddAbsEquality(delta, count_var - int(target))
-                    target_weight = weights["manager_shift_target"] if employee_by_id[e]["role"] == "STORE_MANAGER" else weights["shift_target"]
-                    objective_terms.append((delta, target_weight))
+                    if employee_by_id[e]["role"] == "STORE_MANAGER":
+                        manager_target_terms.append((delta, 1))
+                    else:
+                        soft_terms.append((delta, weights["shift_target"]))
 
         if rule.get("off_receiving_compensation") and hard_off_counts.get(e, 0) > 0:
-            objective_terms.append((
+            soft_terms.append((
                 receiving_count,
                 -weights["off_receiving_compensation"] * int(hard_off_counts[e]),
             ))
@@ -558,11 +606,11 @@ def _build_and_solve(config: dict[str, Any], variant: str) -> dict[str, Any] | N
         if recv_min is not None:
             miss_min = model.NewIntVar(0, len(config["receiving_by_date"]), f"recv_min_miss_{e}")
             model.Add(receiving_count + miss_min >= int(recv_min))
-            objective_terms.append((miss_min, weights["receiving_target"]))
+            soft_terms.append((miss_min, weights["receiving_target"]))
         if recv_target is not None:
             delta = model.NewIntVar(0, len(config["receiving_by_date"]), f"recv_delta_{e}")
             model.AddAbsEquality(delta, receiving_count - int(recv_target))
-            objective_terms.append((delta, weights["receiving_target"]))
+            soft_terms.append((delta, weights["receiving_target"]))
 
         for index in range(1, len(day_keys)):
             previous, current = day_keys[index - 1], day_keys[index]
@@ -570,11 +618,10 @@ def _build_and_solve(config: dict[str, Any], variant: str) -> dict[str, Any] | N
             model.Add(switch >= morning[e, previous] + afternoon[e, current] - 1)
             model.Add(switch >= afternoon[e, previous] + morning[e, current] - 1)
             switch_vars[e, index] = switch
-            objective_terms.append((switch, weights["switch"]))
+            soft_terms.append((switch, weights["switch"]))
 
-    # Store-manager trend is a SOFT priority after HARD rules, staffing and the manager weekly S/C target.
-    # It intentionally outranks ordinary SOFT goals such as switch minimization/fairness/preferences,
-    # so it chooses *which free days* are morning/afternoon without rewriting the weekly target.
+    # Store-manager trend is optimized lexicographically after staffing and the manager weekly S/C target,
+    # then ordinary SOFT goals run last. This enforces priority instead of relying on fragile weight sums.
     if config.get("manager_trend", {}).get("enabled", True):
         trend_by_weekday = {
             int(item["weekday"]): item
@@ -591,11 +638,9 @@ def _build_and_solve(config: dict[str, Any], variant: str) -> dict[str, Any] | N
                 afternoon_score = int(score.get("afternoon", 0))
                 best = max(morning_score, afternoon_score)
                 if best > morning_score:
-                    gap = min(best - morning_score, 40)
-                    objective_terms.append((morning[e, d], gap * weights["manager_trend"]))
+                    manager_trend_terms.append((morning[e, d], best - morning_score))
                 if best > afternoon_score:
-                    gap = min(best - afternoon_score, 40)
-                    objective_terms.append((afternoon[e, d], gap * weights["manager_trend"]))
+                    manager_trend_terms.append((afternoon[e, d], best - afternoon_score))
 
     # Fairness spread among non-managers, so the CHT role target is not flattened away.
     staff_ids = [e for e in employee_ids if employee_by_id[e]["role"] != "STORE_MANAGER" and hard_off_counts.get(e, 0) == 0]
@@ -606,7 +651,7 @@ def _build_and_solve(config: dict[str, Any], variant: str) -> dict[str, Any] | N
         model.AddMinEquality(min_a, [afternoon_counts[e] for e in staff_ids])
         spread = model.NewIntVar(0, 7, "staff_afternoon_spread")
         model.Add(spread == max_a - min_a)
-        objective_terms.append((spread, weights["fairness"]))
+        soft_terms.append((spread, weights["fairness"]))
         if config["receiving_by_date"]:
             max_r = model.NewIntVar(0, 7, "max_staff_receiving")
             min_r = model.NewIntVar(0, 7, "min_staff_receiving")
@@ -614,7 +659,7 @@ def _build_and_solve(config: dict[str, Any], variant: str) -> dict[str, Any] | N
             model.AddMinEquality(min_r, [receiving_counts[e] for e in staff_ids])
             recv_spread = model.NewIntVar(0, 7, "staff_receiving_spread")
             model.Add(recv_spread == max_r - min_r)
-            objective_terms.append((recv_spread, weights["fairness"]))
+            soft_terms.append((recv_spread, weights["fairness"]))
 
     # Pairing rules count being in the same actual shift, not merely working on the same day.
     for p_index, rule in enumerate(config["pairing_rules"]):
@@ -641,14 +686,14 @@ def _build_and_solve(config: dict[str, Any], variant: str) -> dict[str, Any] | N
             else:
                 excess = model.NewIntVar(0, 7, f"pair_max_excess_{p_index}")
                 model.Add(excess >= total_same - count)
-                objective_terms.append((excess, weights["pairing"]))
+                soft_terms.append((excess, weights["pairing"]))
         elif relation_type == "MIN":
             if level == "HARD":
                 model.Add(total_same >= count)
             else:
                 shortfall = model.NewIntVar(0, 7, f"pair_min_shortfall_{p_index}")
                 model.Add(shortfall >= count - total_same)
-                objective_terms.append((shortfall, weights["pairing"]))
+                soft_terms.append((shortfall, weights["pairing"]))
         elif relation_type == "EXACT":
             if level == "HARD":
                 model.Add(total_same == count)
@@ -657,36 +702,58 @@ def _build_and_solve(config: dict[str, Any], variant: str) -> dict[str, Any] | N
                 under = model.NewIntVar(0, 7, f"pair_exact_under_{p_index}")
                 model.Add(over >= total_same - count)
                 model.Add(under >= count - total_same)
-                objective_terms.append((over, weights["pairing"]))
-                objective_terms.append((under, weights["pairing"]))
+                soft_terms.append((over, weights["pairing"]))
+                soft_terms.append((under, weights["pairing"]))
         elif relation_type == "NEVER":
             model.Add(total_same == 0)
         elif relation_type == "PREFER_TOGETHER":
             shortfall = model.NewIntVar(0, 7, f"pair_together_shortfall_{p_index}")
             model.Add(shortfall >= count - total_same)
-            objective_terms.append((shortfall, weights["pairing"]))
+            soft_terms.append((shortfall, weights["pairing"]))
         elif relation_type == "PREFER_APART":
-            objective_terms.append((total_same, weights["pairing"]))
+            soft_terms.append((total_same, weights["pairing"]))
 
         receiving_relation = rule["receiving_relation"]
         for r_index, same_a in enumerate(receiving_same_vars):
             if receiving_relation == "NEVER":
                 model.Add(same_a == 0)
             elif receiving_relation == "AVOID":
-                objective_terms.append((same_a, weights["pairing"]))
+                soft_terms.append((same_a, weights["pairing"]))
             elif receiving_relation == "PREFER_TOGETHER":
                 miss = model.NewBoolVar(f"pair_receiving_miss_{p_index}_{r_index}")
                 model.Add(miss + same_a == 1)
-                objective_terms.append((miss, weights["pairing"]))
+                soft_terms.append((miss, weights["pairing"]))
 
-    model.Minimize(sum(var * weight for var, weight in objective_terms))
     solver = cp_model.CpSolver()
     solver.parameters.max_time_in_seconds = 4.0
     solver.parameters.num_search_workers = 1
     solver.parameters.random_seed = 0
-    status = solver.Solve(model)
-    if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-        return None
+
+    objective_levels = [
+        ("staffing", staffing_terms),
+        ("manager_target", manager_target_terms),
+        ("manager_trend", manager_trend_terms),
+        ("soft", soft_terms),
+    ]
+    objective_breakdown: dict[str, int] = {}
+    status = cp_model.UNKNOWN
+    for level_name, terms in objective_levels:
+        if not terms:
+            objective_breakdown[level_name] = 0
+            continue
+        expr = sum(var * weight for var, weight in terms)
+        model.Minimize(expr)
+        status = solver.Solve(model)
+        if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+            return None
+        optimum = int(round(solver.ObjectiveValue()))
+        objective_breakdown[level_name] = optimum
+        model.Add(expr == optimum)
+
+    if status == cp_model.UNKNOWN:
+        status = solver.Solve(model)
+        if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+            return None
 
     assignments = []
     for employee in employees:
@@ -711,7 +778,7 @@ def _build_and_solve(config: dict[str, Any], variant: str) -> dict[str, Any] | N
     return {
         "variant": variant,
         "label": VARIANT_LABELS[variant],
-        "objective": int(round(solver.ObjectiveValue())),
+        "objective": objective_breakdown,
         "assignments": assignments,
         "metrics": validation["metrics"],
         "warnings": validation["warnings"],
