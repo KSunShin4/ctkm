@@ -96,6 +96,17 @@ chỉ cần nếu muốn hỗ trợ mapping AI fallback. `/api/health` trả th�
 Nếu contract bắt buộc bị route khác ghi đè, backend fail ở startup/reload thay vì
 âm thầm chạy implementation legacy.
 
+### Persistence lịch nhân viên
+
+Module xếp lịch không coi filesystem container là durable. Production nên cấu hình
+`SCHEDULE_GCS_BUCKET` (và tùy chọn `SCHEDULE_GCS_OBJECT`) để lưu schedule JSON
+trên Google Cloud Storage. Cloud Run service account phải có quyền đọc/ghi object.
+API `GET /api/schedules/storage` cho biết mode hiện tại và cờ `durable`; giao
+diện sẽ cảnh báo khi đang fallback về local/ephemeral storage.
+
+Local/dev có thể dùng `SCHEDULE_STORE_PATH`. Chỉ đặt
+`SCHEDULE_STORE_DURABLE=true` khi đường dẫn đó thực sự nằm trên persistent mount.
+
 ### Lưu ý persistence trên Render Free
 
 `render.yaml` hiện dùng plan `free`. Workflow preset và mapping cache đang lưu file

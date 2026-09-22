@@ -1,3 +1,4 @@
+import pytest
 from copy import deepcopy
 
 from modules.scheduling_engine import generate_schedule, normalize_config, public_config, validate_schedule
@@ -449,4 +450,61 @@ def test_manager_trend_does_not_break_receiving_max_constraint():
     manager = next(item for item in option["metrics"]["employees"] if item["employee_id"] == "phuong")
 
     assert manager["receiving"] <= 1
+
+def test_normalize_requires_exactly_one_active_store_manager():
+    payload = config()
+    payload["employees"] = [{**employee, "role": "EMPLOYEE"} for employee in payload["employees"]]
+    with pytest.raises(Exception, match="đúng 1 CHT"):
+        normalize_config(payload)
+
+    payload = config()
+    payload["employees"][1]["role"] = "STORE_MANAGER"
+    with pytest.raises(Exception, match="đúng 1 CHT"):
+        normalize_config(payload)
+
+
+def test_regional_manager_rules_are_canonical_and_cannot_be_removed_from_payload():
+    payload = config()
+    payload["fixed_weekday_rules"] = []
+
+    normalized = normalize_config(payload)
+    regional = [rule for rule in normalized["fixed_weekday_rules"] if rule.get("source") == "REGIONAL"]
+
+    assert regional == [
+        {"employee_id": "phuong", "weekday": 0, "shift": "MORNING", "level": "HARD", "source": "REGIONAL"},
+        {"employee_id": "phuong", "weekday": 1, "shift": "AFTERNOON", "level": "HARD", "source": "REGIONAL"},
+    ]
+
+
+def test_missing_manager_trend_migrates_to_real_default_scores():
+    payload = config()
+    payload.pop("manager_trend", None)
+
+    normalized = normalize_config(payload)
+    monday = next(item for item in normalized["manager_trend"]["scores"] if item["weekday"] == 0)
+
+    assert normalized["manager_trend"]["enabled"] is True
+    assert monday == {"weekday": 0, "morning": 57, "afternoon": 66}
+
+
+def test_manager_trend_objective_is_lexicographic_before_ordinary_soft_goals():
+    payload = config()
+    payload["receiving_days"] = []
+    payload["employee_rules"] = [{
+        "employee_id": "phuong",
+        "target_morning": 3,
+        "target_afternoon": 4,
+        "receiving_min": 0,
+        "receiving_target": None,
+        "receiving_max": None,
+    }]
+    payload["manager_trend"] = _manager_trend_payload()
+
+    option = generate_schedule(payload)["options"][0]
+
+    assert isinstance(option["objective"], dict)
+    assert set(option["objective"]) == {"staffing", "manager_target", "manager_trend", "soft"}
+    rows = lookup(option["assignments"])
+    assert rows[("phuong", "2026-09-16")]["shift"] == "MORNING"
+    assert rows[("phuong", "2026-09-18")]["shift"] == "AFTERNOON"
 

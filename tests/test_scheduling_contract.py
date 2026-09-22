@@ -1,8 +1,11 @@
 from copy import deepcopy
+import asyncio
 import math
+import pytest
 from pathlib import Path
 
 from openpyxl import load_workbook
+from fastapi import HTTPException
 
 from backend import main_api
 from backend.scheduling_contract import export_schedule_to_template
@@ -109,6 +112,7 @@ def test_scheduling_routes_are_installed_before_static_frontend_and_require_admi
         ("/api/schedules/validate", "POST"),
         ("/api/schedules", "POST"),
         ("/api/schedules", "GET"),
+        ("/api/schedules/storage", "GET"),
         ("/api/schedules/{schedule_id}", "GET"),
         ("/api/schedules/{schedule_id}", "PATCH"),
         ("/api/schedules/{schedule_id}/finalize", "POST"),
@@ -192,3 +196,68 @@ def test_export_uses_saved_assignments_without_rerunning_optimizer(tmp_path, mon
         assert "Phương - 800603" in sunday_afternoon
     finally:
         workbook.close()
+
+def test_schedule_storage_reports_local_ephemeral_by_default(tmp_path, monkeypatch):
+    monkeypatch.setattr(main_api, "_ROOT", tmp_path)
+    monkeypatch.delenv("SCHEDULE_GCS_BUCKET", raising=False)
+    monkeypatch.delenv("SCHEDULE_STORE_PATH", raising=False)
+    monkeypatch.delenv("SCHEDULE_STORE_DURABLE", raising=False)
+
+    info = asyncio.run(main_api.schedule_storage("admin"))
+
+    assert info["mode"] == "local"
+    assert info["durable"] is False
+    assert "ephemeral" in info["warning"]
+
+
+def test_schedule_update_rejects_stale_version_and_final_requires_explicit_reopen(tmp_path, monkeypatch):
+    monkeypatch.setattr(main_api, "_ROOT", tmp_path)
+    monkeypatch.delenv("SCHEDULE_GCS_BUCKET", raising=False)
+    monkeypatch.setenv("SCHEDULE_STORE_PATH", str(tmp_path / "schedules.json"))
+
+    created = asyncio.run(main_api.schedule_create({
+        "config": _config(),
+        "assignments": _assignments(),
+        "variant": "manual",
+    }, "admin"))
+    schedule_id = created["id"]
+    assert created["version"] == 1
+
+    updated = asyncio.run(main_api.schedule_update(schedule_id, {
+        "config": _config(),
+        "assignments": _assignments(),
+        "variant": "manual",
+        "expected_version": 1,
+    }, "admin"))
+    assert updated["version"] == 2
+
+    with pytest.raises(HTTPException) as stale:
+        asyncio.run(main_api.schedule_update(schedule_id, {
+            "config": _config(),
+            "assignments": _assignments(),
+            "expected_version": 1,
+        }, "admin"))
+    assert stale.value.status_code == 409
+
+    final = asyncio.run(main_api.schedule_finalize(schedule_id, {"expected_version": 2}, "admin"))
+    assert final["status"] == "FINAL"
+    assert final["version"] == 3
+
+    with pytest.raises(HTTPException) as locked:
+        asyncio.run(main_api.schedule_update(schedule_id, {
+            "config": _config(),
+            "assignments": _assignments(),
+            "expected_version": 3,
+        }, "admin"))
+    assert locked.value.status_code == 409
+    assert "FINAL" in str(locked.value.detail)
+
+    reopened = asyncio.run(main_api.schedule_update(schedule_id, {
+        "config": _config(),
+        "assignments": _assignments(),
+        "expected_version": 3,
+        "reopen": True,
+    }, "admin"))
+    assert reopened["status"] == "DRAFT"
+    assert reopened["version"] == 4
+

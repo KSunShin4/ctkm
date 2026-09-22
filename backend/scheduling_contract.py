@@ -26,7 +26,8 @@ from modules.scheduling_engine import (
 
 
 _STORE_LOCK = threading.RLock()
-_STORE_VERSION = 1
+_STORE_VERSION = 2
+_GCS_OBJECT_DEFAULT = "ctkm/schedules.json"
 _TEMPLATE_NAME = "1885_Lich_lam_viec_template.xlsx"
 _SAFE_FILENAME = re.compile(r"[^0-9A-Za-zÀ-ỹ._-]+")
 
@@ -35,8 +36,31 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _storage_info(core_module) -> dict:
+    bucket = os.getenv("SCHEDULE_GCS_BUCKET", "").strip()
+    if bucket:
+        return {
+            "mode": "gcs",
+            "durable": True,
+            "bucket": bucket,
+            "object": os.getenv("SCHEDULE_GCS_OBJECT", _GCS_OBJECT_DEFAULT).strip() or _GCS_OBJECT_DEFAULT,
+        }
+    configured_path = os.getenv("SCHEDULE_STORE_PATH", "").strip()
+    path = Path(configured_path) if configured_path else Path(core_module._ROOT) / "logs" / "schedules.json"
+    durable = os.getenv("SCHEDULE_STORE_DURABLE", "").strip().lower() in {"1", "true", "yes"}
+    return {
+        "mode": "local",
+        "durable": durable,
+        "path": str(path),
+        "warning": None if durable else "Schedule storage đang dùng filesystem local/ephemeral; restart hoặc redeploy có thể làm mất lịch.",
+    }
+
+
 def _store_path(core_module) -> Path:
-    path = Path(core_module._ROOT) / "logs" / "schedules.json"
+    info = _storage_info(core_module)
+    if info["mode"] != "local":
+        raise RuntimeError("_store_path chỉ dùng cho local schedule storage")
+    path = Path(info["path"])
     path.parent.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -51,21 +75,66 @@ def _template_path() -> Path:
     return Path(__file__).resolve().parent / "templates" / _TEMPLATE_NAME
 
 
-def _load_store(core_module) -> dict:
-    path = _store_path(core_module)
-    if not path.exists():
-        return {"version": _STORE_VERSION, "schedules": {}}
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, TypeError):
-        return {"version": _STORE_VERSION, "schedules": {}}
+def _empty_store() -> dict:
+    return {"version": _STORE_VERSION, "schedules": {}}
+
+
+def _normalize_store(raw: object) -> dict:
     schedules = raw.get("schedules") if isinstance(raw, dict) else None
     return {"version": _STORE_VERSION, "schedules": schedules if isinstance(schedules, dict) else {}}
 
 
-def _save_store(core_module, data: dict) -> None:
+def _load_store_with_generation(core_module) -> tuple[dict, int | None]:
+    info = _storage_info(core_module)
+    if info["mode"] == "gcs":
+        try:
+            from google.cloud import storage
+            from google.api_core.exceptions import NotFound
+        except ImportError as exc:
+            raise RuntimeError("Thiếu google-cloud-storage cho SCHEDULE_GCS_BUCKET") from exc
+        client = storage.Client()
+        blob = client.bucket(info["bucket"]).blob(info["object"])
+        try:
+            blob.reload()
+            generation = int(blob.generation or 0)
+            raw = json.loads(blob.download_as_text(encoding="utf-8"))
+            return _normalize_store(raw), generation
+        except NotFound:
+            return _empty_store(), 0
+        except (ValueError, TypeError, json.JSONDecodeError):
+            return _empty_store(), int(blob.generation or 0)
+
     path = _store_path(core_module)
+    if not path.exists():
+        return _empty_store(), None
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return _empty_store(), None
+    return _normalize_store(raw), None
+
+
+def _load_store(core_module) -> dict:
+    return _load_store_with_generation(core_module)[0]
+
+
+def _save_store(core_module, data: dict, *, expected_generation: int | None = None) -> None:
     payload = {"version": _STORE_VERSION, "schedules": data.get("schedules", {})}
+    info = _storage_info(core_module)
+    if info["mode"] == "gcs":
+        try:
+            from google.cloud import storage
+        except ImportError as exc:
+            raise RuntimeError("Thiếu google-cloud-storage cho SCHEDULE_GCS_BUCKET") from exc
+        blob = storage.Client().bucket(info["bucket"]).blob(info["object"])
+        blob.upload_from_string(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            content_type="application/json; charset=utf-8",
+            if_generation_match=0 if expected_generation in (None, 0) else expected_generation,
+        )
+        return
+
+    path = _store_path(core_module)
     fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
@@ -79,6 +148,31 @@ def _save_store(core_module, data: dict) -> None:
         except OSError:
             pass
         raise
+
+
+def _mutate_store(core_module, mutator):
+    info = _storage_info(core_module)
+    attempts = 4 if info["mode"] == "gcs" else 1
+    with _STORE_LOCK:
+        for attempt in range(attempts):
+            store, generation = _load_store_with_generation(core_module)
+            result = mutator(store)
+            try:
+                _save_store(core_module, store, expected_generation=generation)
+                return result
+            except Exception as exc:
+                if info["mode"] != "gcs":
+                    raise
+                try:
+                    from google.api_core.exceptions import PreconditionFailed
+                except ImportError:
+                    raise
+                if isinstance(exc, PreconditionFailed) and attempt + 1 < attempts:
+                    continue
+                if isinstance(exc, PreconditionFailed):
+                    raise HTTPException(status_code=409, detail="Lịch vừa được thay đổi ở phiên khác. Hãy tải lại rồi thử lại.") from exc
+                raise
+    raise HTTPException(status_code=409, detail="Không thể ghi lịch do xung đột cập nhật")
 
 
 def _get_schedule(core_module, schedule_id: str) -> dict:
@@ -255,48 +349,65 @@ def install_scheduling_contract(core_module) -> None:
             "created_at": now,
             "updated_at": now,
         }
-        with _STORE_LOCK:
-            store = _load_store(core_module)
+        def mutate(store):
             store["schedules"][schedule_id] = item
-            _save_store(core_module, store)
-        return item
+            return deepcopy(item)
+        return _mutate_store(core_module, mutate)
 
     async def schedule_update(schedule_id: str, payload: dict = Body(...), _admin: str = Depends(core_module.require_admin)):
-        current = _get_schedule(core_module, schedule_id)
-        config = payload.get("config") if isinstance(payload.get("config"), dict) else current.get("config")
-        assignments = payload.get("assignments") if isinstance(payload.get("assignments"), list) else current.get("assignments")
-        checked = _validate_or_422(config, assignments)
-        if checked["validation"]["status"] == "INVALID":
-            raise HTTPException(status_code=409, detail={"message": "Không thể lưu lịch INVALID", "errors": checked["validation"]["errors"]})
-        current["config"] = checked["config"]
-        current["assignments"] = checked["validation"]["assignments"]
-        current["validation"] = {key: checked["validation"][key] for key in ("status", "errors", "warnings", "metrics")}
-        current["variant"] = str(payload.get("variant") or current.get("variant") or "manual")
-        current["version"] = int(current.get("version", 1)) + 1
-        current["status"] = "DRAFT"
-        current["updated_at"] = _utc_now()
-        with _STORE_LOCK:
-            store = _load_store(core_module)
-            if schedule_id not in store["schedules"]:
-                raise HTTPException(status_code=404, detail="Không tìm thấy lịch")
-            store["schedules"][schedule_id] = current
-            _save_store(core_module, store)
-        return current
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=422, detail="Payload không hợp lệ")
 
-    async def schedule_finalize(schedule_id: str, _admin: str = Depends(core_module.require_admin)):
-        current = _get_schedule(core_module, schedule_id)
-        checked = _validate_or_422(current.get("config") or {}, current.get("assignments") or [])
-        if checked["validation"]["status"] == "INVALID":
-            raise HTTPException(status_code=409, detail={"message": "Lịch INVALID nên chưa thể chốt", "errors": checked["validation"]["errors"]})
-        current["validation"] = {key: checked["validation"][key] for key in ("status", "errors", "warnings", "metrics")}
-        current["status"] = "FINAL"
-        current["version"] = int(current.get("version", 1)) + 1
-        current["updated_at"] = _utc_now()
-        with _STORE_LOCK:
-            store = _load_store(core_module)
-            store["schedules"][schedule_id] = current
-            _save_store(core_module, store)
-        return current
+        def mutate(store):
+            current = store["schedules"].get(schedule_id)
+            if not isinstance(current, dict):
+                raise HTTPException(status_code=404, detail="Không tìm thấy lịch")
+            expected_version = payload.get("expected_version")
+            if expected_version is not None and int(expected_version) != int(current.get("version", 1)):
+                raise HTTPException(status_code=409, detail="Lịch đã được cập nhật ở phiên khác. Hãy tải lại trước khi lưu.")
+            if current.get("status") == "FINAL" and not bool(payload.get("reopen")):
+                raise HTTPException(status_code=409, detail="Lịch FINAL phải được mở lại rõ ràng trước khi chỉnh sửa.")
+
+            config = payload.get("config") if isinstance(payload.get("config"), dict) else current.get("config")
+            assignments = payload.get("assignments") if isinstance(payload.get("assignments"), list) else current.get("assignments")
+            checked = _validate_or_422(config, assignments)
+            if checked["validation"]["status"] == "INVALID":
+                raise HTTPException(status_code=409, detail={"message": "Không thể lưu lịch INVALID", "errors": checked["validation"]["errors"]})
+            updated = deepcopy(current)
+            updated["config"] = checked["config"]
+            updated["assignments"] = checked["validation"]["assignments"]
+            updated["validation"] = {key: checked["validation"][key] for key in ("status", "errors", "warnings", "metrics")}
+            updated["variant"] = str(payload.get("variant") or current.get("variant") or "manual")
+            updated["version"] = int(current.get("version", 1)) + 1
+            updated["status"] = "DRAFT"
+            updated["updated_at"] = _utc_now()
+            store["schedules"][schedule_id] = updated
+            return deepcopy(updated)
+
+        return _mutate_store(core_module, mutate)
+
+    async def schedule_finalize(schedule_id: str, payload: dict = Body(default={}), _admin: str = Depends(core_module.require_admin)):
+        payload = payload if isinstance(payload, dict) else {}
+
+        def mutate(store):
+            current = store["schedules"].get(schedule_id)
+            if not isinstance(current, dict):
+                raise HTTPException(status_code=404, detail="Không tìm thấy lịch")
+            expected_version = payload.get("expected_version")
+            if expected_version is not None and int(expected_version) != int(current.get("version", 1)):
+                raise HTTPException(status_code=409, detail="Lịch đã được cập nhật ở phiên khác. Hãy tải lại trước khi chốt.")
+            checked = _validate_or_422(current.get("config") or {}, current.get("assignments") or [])
+            if checked["validation"]["status"] == "INVALID":
+                raise HTTPException(status_code=409, detail={"message": "Lịch INVALID nên chưa thể chốt", "errors": checked["validation"]["errors"]})
+            updated = deepcopy(current)
+            updated["validation"] = {key: checked["validation"][key] for key in ("status", "errors", "warnings", "metrics")}
+            updated["status"] = "FINAL"
+            updated["version"] = int(current.get("version", 1)) + 1
+            updated["updated_at"] = _utc_now()
+            store["schedules"][schedule_id] = updated
+            return deepcopy(updated)
+
+        return _mutate_store(core_module, mutate)
 
     async def schedule_get(schedule_id: str, _admin: str = Depends(core_module.require_admin)):
         return _get_schedule(core_module, schedule_id)
@@ -305,6 +416,9 @@ def install_scheduling_contract(core_module) -> None:
         with _STORE_LOCK:
             values = list(_load_store(core_module)["schedules"].values())
         return sorted((_schedule_summary(item) for item in values), key=lambda item: item.get("updated_at") or "", reverse=True)
+
+    async def schedule_storage(_admin: str = Depends(core_module.require_admin)):
+        return _storage_info(core_module)
 
     async def schedule_export(schedule_id: str, _admin: str = Depends(core_module.require_admin)):
         item = _get_schedule(core_module, schedule_id)
@@ -321,6 +435,7 @@ def install_scheduling_contract(core_module) -> None:
         ("/api/schedules/validate", schedule_validate, ["POST"], {}),
         ("/api/schedules", schedule_create, ["POST"], {}),
         ("/api/schedules", schedule_list, ["GET"], {}),
+        ("/api/schedules/storage", schedule_storage, ["GET"], {}),
         ("/api/schedules/{schedule_id}", schedule_get, ["GET"], {}),
         ("/api/schedules/{schedule_id}", schedule_update, ["PATCH"], {}),
         ("/api/schedules/{schedule_id}/finalize", schedule_finalize, ["POST"], {}),
@@ -338,6 +453,7 @@ def install_scheduling_contract(core_module) -> None:
         "schedule_finalize": schedule_finalize,
         "schedule_get": schedule_get,
         "schedule_list": schedule_list,
+        "schedule_storage": schedule_storage,
         "schedule_export": schedule_export,
     }.items():
         setattr(core_module, name, value)
