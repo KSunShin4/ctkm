@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react"
+import ProductNav from "./ProductNav.jsx"
 import { applySmartSuggestion, buildLockedOptimizationConfig, buildSmartSuggestions, getExportDockState, rebalanceManualMorningTimes, restoreTouchedReceiving, summarizeCurrentSchedule } from "./scheduling-manual-utils.js"
 
 const API = import.meta.env.VITE_API_BASE_URL || ""
@@ -306,11 +307,11 @@ export default function SchedulingApp(){
     finally{setBusy(false)}
   }
 
-  if(!token)return <><style>{styles}</style><div className="sched-shell"><div className="sched-top"><button className="top-back" onClick={()=>location.href="/"}>←</button><div className="brand">Pharma<span>Ops</span></div><div className="top-title">Xếp lịch nhân viên</div></div><div className="login-wrap"><h1>Xếp lịch làm việc</h1><p>Đăng nhập quản trị để tạo, chỉnh và xuất lịch.</p><form className="login-card" onSubmit={login}><div className="field"><label>Tài khoản</label><input className="input" value={username} onChange={e=>setUsername(e.target.value)}/></div><div className="field"><label>Mật khẩu</label><input className="input" type="password" value={password} onChange={e=>setPassword(e.target.value)}/></div>{authError&&<div className="notice error">{authError}</div>}<button className="top-btn primary" style={{width:"100%",marginTop:8}}>Đăng nhập</button></form></div></div></>
+  if(!token)return <><style>{styles}</style><ProductNav current="schedule"/><div className="sched-shell"><div className="sched-top"><button className="top-back" onClick={()=>location.href="/"}>←</button><div className="brand">Pharma<span>Ops</span></div><div className="top-title">Xếp lịch nhân viên</div></div><div className="login-wrap"><h1>Xếp lịch làm việc</h1><p>Đăng nhập quản trị để tạo, chỉnh và xuất lịch.</p><form className="login-card" onSubmit={login}><div className="field"><label>Tài khoản</label><input className="input" value={username} onChange={e=>setUsername(e.target.value)}/></div><div className="field"><label>Mật khẩu</label><input className="input" type="password" value={password} onChange={e=>setPassword(e.target.value)}/></div>{authError&&<div className="notice error">{authError}</div>}<button className="top-btn primary" style={{width:"100%",marginTop:8}}>Đăng nhập</button></form></div></div></>
 
   const metrics=validation?.metrics?.employees||[]
   const exportDock=getExportDockState({validation,dirty,message})
-  return <><style>{styles}</style><div className={`sched-shell ${busy?"loading":""}`}>
+  return <><style>{styles}</style><ProductNav current="schedule"/><div className={`sched-shell ${busy?"loading":""}`}>
     <header className="sched-top"><button className="top-back" onClick={()=>location.href="/"}>← Vận hành</button><div className="brand">Pharma<span>Ops</span></div><div className="top-title">Xếp lịch nhân viên</div><div className="top-spacer"/><span className="top-chip">{assignments.length?(dirty?"Đang chỉnh · chưa xuất":"Đã xuất Excel"):"Chưa tạo lịch"}</span><button className="top-btn" onClick={logout}>Đăng xuất</button></header>
     <main className={`sched-main ${assignments.length?"with-export-dock":""}`}>
       <div className="hero"><div><h1>Xếp lịch làm việc</h1><p>Tạo phương án, chỉnh trực tiếp, kiểm tra và xuất Excel. Lịch không được lưu trên server.</p></div></div>

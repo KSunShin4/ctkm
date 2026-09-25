@@ -29,6 +29,7 @@ from backend.tag_audit_temporal_hint_contract import install_tag_audit_temporal_
 from backend.tag_audit_business_date_contract import install_tag_audit_business_date_contract
 from backend.scheduling_contract import install_scheduling_contract
 from backend.store_access_contract import install_store_access_contract
+from backend.portal_frontend_contract import install_portal_frontend_contract
 
 _CORE_NAME = "backend.main_api_core"
 _CORE_PATH = Path(__file__).with_name("main_api_core.py")
@@ -251,6 +252,9 @@ install_tag_audit_contract(_core)
 # CTKM/Tem are store-facing workflows. Remove only their historical admin dependency;
 # presets, queue administration and system configuration remain admin-only.
 install_store_access_contract(_core)
+
+# Shared portal routes are UI-only entrypoints and stay independent from CTKM/scheduling logic.
+install_portal_frontend_contract(_core)
 
 # Staff scheduling is an additive manager workflow. Keep it outside the legacy
 # CTKM contract suite so scheduling changes cannot mutate CTKM/Tem-R semantics.

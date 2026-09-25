@@ -1,4 +1,5 @@
 import { useState, useCallback, useRef, useEffect } from "react"
+import ProductNav from "./ProductNav.jsx"
 
 const API = import.meta.env.VITE_API_BASE_URL || ""  // relative /api by default; override in production if needed
 
@@ -1219,6 +1220,7 @@ export default function App() {
   return (
     <>
       <style>{css}</style>
+      <ProductNav current="ops"/>
       <div className="shell">
 
         {/* Topbar */}
