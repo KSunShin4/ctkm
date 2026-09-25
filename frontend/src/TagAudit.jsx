@@ -66,7 +66,7 @@ export default function TagAudit() {
   const [manualFrom,setManualFrom] = useState(""), [manualTo,setManualTo] = useState(""), [manualPromoText,setManualPromoText] = useState("")
   const [checking,setChecking] = useState(false), [result,setResult] = useState(null), [checkError,setCheckError] = useState("")
 
-  const ready = Boolean(token && context?.ready)
+  const ready = Boolean(context?.ready)
   const contextLabel = useMemo(() => !context?.ready ? "Chưa có dữ liệu CTKM" : context.source === "latest-job" ? `Job ${context.job_id || "gần nhất"}${context.month ? ` · ${context.month}` : ""}` : `Workbook đã tải · ${context.item_count || 0} SKU`, [context])
   const completedKeys = useMemo(() => new Set(Object.keys(progress).filter(key => checklist.some(item => item.check_key === key))), [progress,checklist])
   const checked = completedKeys.size, total = checklist.length, remaining = Math.max(0,total-checked), percent = total ? Math.round(checked*100/total) : 0
@@ -82,13 +82,11 @@ export default function TagAudit() {
   useEffect(() => { if (context?.context_id) setProgress(readProgress(context.context_id)); else setProgress({}) }, [context?.context_id])
 
   const loadChecklist = async () => {
-    if (!token) return
     const data = await apiJson("/api/tag-audit/checklist", { headers: authHeaders(token) })
     setChecklist(Array.isArray(data.items) ? data.items : [])
     if (data.context) setContext(data.context)
   }
   const loadContext = async () => {
-    if (!token) return
     setContextLoading(true); setContextError("")
     try { const data = await apiJson("/api/tag-audit/context", { headers: authHeaders(token) }); setContext(data); await loadChecklist() }
     catch (error) { if (error.status === 401) { sessionStorage.removeItem("ctkm.admin.token"); setToken("") } else setContextError(error.message) }
@@ -103,7 +101,7 @@ export default function TagAudit() {
     catch (error) { setAuthError(error.message) }
   }
   const uploadContext = async file => {
-    if (!file || !token) return
+    if (!file) return
     setContextLoading(true); setContextError("")
     const form = new FormData(); form.append("workbook",file)
     try { const data = await apiJson("/api/tag-audit/context", {method:"POST",headers:authHeaders(token),body:form}); setContext(data); const checklistData = await apiJson("/api/tag-audit/checklist", {headers:authHeaders(token)}); setChecklist(checklistData.items || []) }
@@ -132,8 +130,6 @@ export default function TagAudit() {
     if (imageUrl) URL.revokeObjectURL(imageUrl)
     setImageFile(null); setImageUrl(""); setBarcodeHint(""); setManualItemId(""); setManualPrice(""); setManualNormalPrice(""); setManualFrom(""); setManualTo(""); setManualPromoText(""); setResult(null); setCheckError("")
   }
-
-  if (!token) return <><style>{styles}</style><div className="tag-shell"><div className="tag-top"><button className="tag-back" onClick={()=>location.href="/"}>←</button><div><div className="tag-brand">CTKM <span>Kiểm tem</span></div><div className="tag-sub">Kiểm tới đâu · biết còn bao nhiêu</div></div></div><main className="login"><div className="panel"><div className="panel-title">Đăng nhập quản trị</div><form onSubmit={login}><div className="field"><label>Tài khoản</label><input value={username} onChange={e=>setUsername(e.target.value)}/></div><div className="field"><label>Mật khẩu</label><input type="password" value={password} onChange={e=>setPassword(e.target.value)}/></div>{authError&&<div className="error-text">{authError}</div>}<button className="btn primary" style={{marginTop:12}}>Đăng nhập</button></form></div></main></div></>
 
   return <><style>{styles}</style><div className="tag-shell"><header className="tag-top"><button className="tag-back" onClick={()=>location.href="/"}>←</button><div><div className="tag-brand">CTKM <span>Kiểm tem</span></div><div className="tag-sub">ITEMID ưu tiên · barcode chỉ hỗ trợ</div></div></header><main className="tag-main">
     <section className="panel"><div className="context-row"><div><div className="panel-title">1. Dữ liệu chuẩn</div><div className="muted">{contextLabel}</div></div>{context?.ready?<span className="pill ok">● Sẵn sàng</span>:<span className="pill warn">● Cần dữ liệu</span>}</div>{contextError&&<div className="error-text">{contextError}</div>}{!context?.ready&&<div className="field"><label>Tải workbook kết quả CTKM</label><input type="file" accept=".xlsx" onChange={e=>uploadContext(e.target.files?.[0])}/></div>}<div className="small-actions"><button className="btn secondary" disabled={contextLoading} onClick={loadContext}>{contextLoading?"Đang nạp…":"Dùng job CTKM gần nhất"}</button>{context?.ready&&<label className="btn secondary" style={{cursor:"pointer"}}>Đổi workbook<input type="file" accept=".xlsx" hidden onChange={e=>uploadContext(e.target.files?.[0])}/></label>}</div></section>
