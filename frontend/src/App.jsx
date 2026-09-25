@@ -486,8 +486,8 @@ const TEM_R_FIELD_LABELS = {
   LOCATIONID:"Vị trí trên kệ", ITEMID:"Mã sản phẩm", ITEMNAME:"Tên sản phẩm",
 }
 
-export default function App() {
-  const [activeModule, setActiveModule] = useState("expiration")
+export default function App({ initialModule = "expiration" }) {
+  const [activeModule, setActiveModule] = useState(initialModule)
   const [adminToken, setAdminToken] = useState(() => sessionStorage.getItem("ctkm.admin.token") || "")
   const [adminUsername, setAdminUsername] = useState("admin")
   const [adminPassword, setAdminPassword] = useState("")
@@ -1226,6 +1226,7 @@ export default function App() {
           <div className="topbar-logo">Pharma<span>Ops</span></div>
           <div className="topbar-sub">Kiểm tra hạn dùng và vận hành khuyến mãi</div>
           <nav className="module-nav" aria-label="Chọn chức năng">
+            <button onClick={() => { stopCamera(); window.location.href="/" }}>Tổng quan</button>
             <button
               className={activeModule === "expiration" ? "active" : ""}
               onClick={() => setActiveModule("expiration")}

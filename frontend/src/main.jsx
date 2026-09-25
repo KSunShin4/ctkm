@@ -1,6 +1,8 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import App from './App.jsx'
+import OpsHub from './OpsHub.jsx'
+import { resolveRootView } from './ops-modules.js'
 
 // Compatibility patches must stay flat across Vite HMR/module re-execution.
 // Keep only native browser primitives and the React root globally; recreate the
@@ -148,30 +150,32 @@ const ensureTagAuditNav = root => {
   const nav = root?.querySelector?.('.module-nav')
   if (!nav) return
 
-  // Store-facing shelf checking is a first-class module. Keep it immediately
-  // beside “Kiểm tra hạn dùng” and never gate it behind Admin.
+  let tagButton = nav.querySelector('[data-ctkm-tag-audit-link="v1"]')
+  if (!tagButton) {
+    tagButton = document.createElement('button')
+    tagButton.type = 'button'
+    tagButton.dataset.ctkmTagAuditLink = 'v1'
+    tagButton.textContent = 'Kiểm tem'
+    tagButton.title = 'Mở công cụ quét và đối chiếu tem khuyến mãi'
+    tagButton.addEventListener('click', () => window.location.assign('/scan-tem'))
+    nav.appendChild(tagButton)
+  }
+
   let shelfButton = nav.querySelector('[data-ctkm-shelf-link="v1"]')
   if (!shelfButton) {
     shelfButton = document.createElement('button')
     shelfButton.type = 'button'
     shelfButton.dataset.ctkmShelfLink = 'v1'
-    shelfButton.textContent = 'Kiểm tra kệ'
+    shelfButton.textContent = 'Kiểm kệ'
     shelfButton.title = 'Mở chế độ kiểm Đúng/Sai từng action theo kệ'
-    shelfButton.addEventListener('click', () => {
-      window.location.assign('/scan-tem?mode=shelf')
-    })
-    const expirationButton = nav.firstElementChild
-    if (expirationButton) expirationButton.after(shelfButton)
-    else nav.appendChild(shelfButton)
+    shelfButton.addEventListener('click', () => window.location.assign('/scan-tem?mode=shelf'))
+    nav.appendChild(shelfButton)
   }
 
-  const existing = nav.querySelector('[data-ctkm-tag-audit-link="v1"]')
   let scheduleButton = nav.querySelector('[data-ctkm-schedule-link="v1"]')
   const isAdmin = Array.from(root.querySelectorAll?.('.auth-actions span') || [])
     .some(node => node.textContent?.trim() === 'ADMIN')
-
   if (!isAdmin) {
-    existing?.remove()
     scheduleButton?.remove()
     return
   }
@@ -181,22 +185,9 @@ const ensureTagAuditNav = root => {
     scheduleButton.dataset.ctkmScheduleLink = 'v1'
     scheduleButton.textContent = 'Xếp lịch'
     scheduleButton.title = 'Xếp lịch nhân viên và xuất Excel'
-    scheduleButton.addEventListener('click', () => {
-      window.location.assign('/schedule')
-    })
+    scheduleButton.addEventListener('click', () => window.location.assign('/schedule'))
     nav.appendChild(scheduleButton)
   }
-  if (existing) return
-
-  const button = document.createElement('button')
-  button.type = 'button'
-  button.dataset.ctkmTagAuditLink = 'v1'
-  button.textContent = 'Kiểm tem CTKM'
-  button.title = 'Mở công cụ quét và đối chiếu một tem khuyến mãi mỗi lần'
-  button.addEventListener('click', () => {
-    window.location.assign('/scan-tem')
-  })
-  nav.appendChild(button)
 }
 
 const rewriteLegacyUiText = root => {
@@ -235,5 +226,11 @@ labelObserver.observe(rootElement, { childList: true, subtree: true, characterDa
 compat.labelObserver = labelObserver
 
 if (!compat.reactRoot) compat.reactRoot = ReactDOM.createRoot(rootElement)
-compat.reactRoot.render(<App />)
+const rootView = resolveRootView(window.location.search)
+const legacyViews = new Set(["ctkm","temr","expiration"])
+compat.reactRoot.render(
+  legacyViews.has(rootView)
+    ? <App initialModule={rootView} />
+    : <OpsHub view={rootView} />
+)
 queueMicrotask(() => rewriteLegacyUiText(rootElement))
