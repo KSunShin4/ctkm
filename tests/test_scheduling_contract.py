@@ -205,3 +205,29 @@ def test_stateless_export_endpoint_returns_current_workbook_without_schedule_sto
     assert not hasattr(main_api, "schedule_list")
     assert not hasattr(main_api, "schedule_storage")
 
+def test_validate_metrics_follow_current_manual_assignments():
+    original = _assignments()
+    edited = deepcopy(original)
+    for row in edited:
+        if row["date"] != "2026-09-20":
+            continue
+        if row["employee_id"] == "mi":
+            row.update(shift="MORNING", start_time="06:00", receiving=False)
+        elif row["employee_id"] == "phuong":
+            row.update(shift="AFTERNOON", start_time="14:00", receiving=False)
+
+    before = __import__("asyncio").run(
+        main_api.schedule_validate({"config": _config(), "assignments": original}, "admin")
+    )
+    after = __import__("asyncio").run(
+        main_api.schedule_validate({"config": _config(), "assignments": edited}, "admin")
+    )
+
+    before_metrics = {item["employee_id"]: item for item in before["metrics"]["employees"]}
+    after_metrics = {item["employee_id"]: item for item in after["metrics"]["employees"]}
+
+    assert after_metrics["phuong"]["morning"] == before_metrics["phuong"]["morning"] - 1
+    assert after_metrics["phuong"]["afternoon"] == before_metrics["phuong"]["afternoon"] + 1
+    assert after_metrics["mi"]["morning"] == before_metrics["mi"]["morning"] + 1
+    assert after_metrics["mi"]["afternoon"] == before_metrics["mi"]["afternoon"] - 1
+
