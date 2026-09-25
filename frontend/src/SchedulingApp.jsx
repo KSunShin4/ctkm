@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
+import { rebalanceManualMorningTimes } from "./scheduling-manual-utils.js"
 
 const API = import.meta.env.VITE_API_BASE_URL || ""
 const REQUEST_OPTIONS = [
@@ -112,6 +113,7 @@ export default function SchedulingApp(){
   const [dirty,setDirty]=useState(false)
   const [mobileRequestEmployee,setMobileRequestEmployee]=useState("")
   const [mobileScheduleDay,setMobileScheduleDay]=useState(0)
+  const validationSeq=useRef(0)
 
   const days=useMemo(()=>Array.from({length:7},(_,i)=>addDays(config.week_start,i)),[config.week_start])
   const activeEmployees=useMemo(()=>config.employees.filter(e=>e.active),[config.employees])
@@ -126,8 +128,23 @@ export default function SchedulingApp(){
 
   useEffect(()=>{
     if(!token||!assignments.length)return
-    const timer=setTimeout(async()=>{try{const data=await apiJson("/api/schedules/validate",{method:"POST",headers:authHeaders(token,true),body:JSON.stringify({config,assignments})});setValidation(data)}catch(err){setValidation({status:"INVALID",errors:[err.message],warnings:[],metrics:{employees:[]}})}},350)
-    return()=>clearTimeout(timer)
+    const seq=++validationSeq.current
+    const controller=new AbortController()
+    const timer=setTimeout(async()=>{
+      try{
+        const data=await apiJson("/api/schedules/validate",{
+          method:"POST",
+          headers:authHeaders(token,true),
+          body:JSON.stringify({config,assignments}),
+          signal:controller.signal,
+        })
+        if(seq===validationSeq.current)setValidation(data)
+      }catch(err){
+        if(err?.name==="AbortError")return
+        if(seq===validationSeq.current)setValidation({status:"INVALID",errors:[err.message],warnings:[],metrics:{employees:[]}})
+      }
+    },180)
+    return()=>{clearTimeout(timer);controller.abort()}
   },[token,config,assignments])
 
   const changeWeek=weekStart=>{
@@ -205,7 +222,10 @@ export default function SchedulingApp(){
       setConfig(current=>({...current,requests:current.requests.filter(r=>!(r.employee_id===employeeId&&r.date===date&&r.type===hardReq.type))}))
     }
     const newStart=code==="M06"?"06:00":code==="M07"?"07:00":null
-    setAssignments(current=>current.map(row=>{if(row.employee_id!==employeeId||row.date!==date)return row;if(code==="M06")return {...row,shift:"MORNING",start_time:"06:00",receiving:false};if(code==="M07")return {...row,shift:"MORNING",start_time:"07:00",receiving:false};if(code==="A")return {...row,shift:"AFTERNOON",start_time:"14:00",receiving:false};return {...row,shift:"OFF",start_time:null,receiving:false}}))
+    setAssignments(current=>{
+      const edited=current.map(row=>{if(row.employee_id!==employeeId||row.date!==date)return row;if(code==="M06")return {...row,shift:"MORNING",start_time:"06:00",receiving:false};if(code==="M07")return {...row,shift:"MORNING",start_time:"07:00",receiving:false};if(code==="A")return {...row,shift:"AFTERNOON",start_time:"14:00",receiving:false};return {...row,shift:"OFF",start_time:null,receiving:false}})
+      return rebalanceManualMorningTimes(config,edited,date)
+    })
     setConfig(current=>({...current,morning_time_overrides:current.morning_time_overrides.flatMap(r=>r.employee_id===employeeId&&r.date===date?(newStart?[{...r,start:newStart}]:[]):[r])}))
     setDirty(true);setSelectedOption(-1);setVariant("manual")
   }
@@ -215,10 +235,21 @@ export default function SchedulingApp(){
     setBusy(true);setMessage("")
     try{
       if(!assignments.length)throw new Error("Chưa có lịch để xuất")
+      const snapshot={config,assignments,variant}
+      const checked=await apiJson("/api/schedules/validate",{
+        method:"POST",
+        headers:authHeaders(token,true),
+        body:JSON.stringify(snapshot),
+      })
+      setValidation(checked)
+      if(checked.status==="INVALID"){
+        throw new Error(checked.errors?.[0]||"Lịch hiện tại chưa hợp lệ để xuất Excel")
+      }
+      const exportAssignments=checked.assignments||assignments
       const res=await fetch(`${API}/api/schedules/export.xlsx`,{
         method:"POST",
         headers:authHeaders(token,true),
-        body:JSON.stringify({config,assignments,variant}),
+        body:JSON.stringify({config,assignments:exportAssignments,variant}),
       })
       if(!res.ok){
         let msg=`HTTP ${res.status}`
@@ -233,7 +264,7 @@ export default function SchedulingApp(){
       const a=document.createElement("a")
       a.href=url;a.download=name;document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url)
       setDirty(false)
-      setMessage("Đã xuất Excel đúng lịch hiện tại theo template 1885.")
+      setMessage("Đã xuất Excel theo đúng lịch người dùng đang chỉnh.")
     }catch(err){setMessage(`Lỗi xuất Excel: ${err.message}`)}
     finally{setBusy(false)}
   }
@@ -244,7 +275,7 @@ export default function SchedulingApp(){
   return <><style>{styles}</style><div className={`sched-shell ${busy?"loading":""}`}>
     <header className="sched-top"><button className="top-back" onClick={()=>location.href="/"}>← Vận hành</button><div className="brand">Pharma<span>Ops</span></div><div className="top-title">Xếp lịch nhân viên</div><div className="top-spacer"/><span className="top-chip">{assignments.length?(dirty?"Đang chỉnh · chưa xuất":"Đã xuất Excel"):"Chưa tạo lịch"}</span><button className="top-btn" onClick={logout}>Đăng xuất</button></header>
     <main className="sched-main">
-      <div className="hero"><div><h1>Xếp lịch làm việc</h1><p>Tạo phương án, chỉnh trực tiếp, kiểm tra và xuất Excel. Lịch không được lưu trên server.</p></div><div className="hero-actions"><button className="top-btn primary" disabled={!assignments.length||validation?.status==="INVALID"||busy} onClick={exportExcel}>Xuất Excel</button></div></div>
+      <div className="hero"><div><h1>Xếp lịch làm việc</h1><p>Tạo phương án, chỉnh trực tiếp, kiểm tra và xuất Excel. Lịch không được lưu trên server.</p></div><div className="hero-actions"><button className="top-btn primary" disabled={!assignments.length||busy} onClick={exportExcel}>Xuất Excel</button></div></div>
       {message&&<div className={`notice ${message.startsWith("Lỗi")?"error":"ok"}`} style={{marginBottom:12}}>{message}</div>}
       <div className="grid-top">
         <section className="panel"><h2>1. Chọn tuần</h2><div className="week-row"><input className="input" type="date" value={config.week_start} onChange={e=>changeWeek(mondayOf(parseLocal(e.target.value)))}/><input className="input" value={config.store_label||"1885"} onChange={e=>markConfig(c=>({...c,store_label:e.target.value}))} aria-label="Mã cửa hàng"/></div><div className="week-card"><strong>{fmtDate(config.week_start)} → {fmtDate(addDays(config.week_start,6))}</strong><span>Thứ 2 đến Chủ nhật · Excel dùng template cửa hàng {config.store_label||"1885"}</span></div></section>
@@ -261,7 +292,7 @@ export default function SchedulingApp(){
       <section className="panel section"><h2>Ca cố định hàng tuần</h2><div className="panel-sub">Hai rule có nhãn QLKV là yêu cầu mặc định bắt buộc: CHT Thứ 2 Sáng và Thứ 3 Chiều. Các rule khác do người dùng tự thêm.</div>{config.fixed_weekday_rules.map((r,i)=>{const locked=r.source==="REGIONAL";return <div className="pair-row" key={i}><select className="select" disabled={locked} value={r.employee_id} onChange={e=>updateFixedRule(i,"employee_id",e.target.value)}>{config.employees.filter(e=>e.active).map(e=><option key={e.id} value={e.id}>{e.name}</option>)}</select><select className="select" disabled={locked} value={r.weekday} onChange={e=>updateFixedRule(i,"weekday",e.target.value)}>{WEEKDAY_LONG.map((x,idx)=><option key={x} value={idx}>{x}</option>)}</select><select className="select" disabled={locked} value={r.shift} onChange={e=>updateFixedRule(i,"shift",e.target.value)}><option value="MORNING">Sáng</option><option value="AFTERNOON">Chiều</option><option value="OFF">OFF</option></select><select className="select" disabled={locked} value={r.level} onChange={e=>updateFixedRule(i,"level",e.target.value)}><option value="HARD">Bắt buộc</option><option value="SOFT">Ưu tiên</option></select><span className="muted">{locked?"QLKV":"hàng tuần"}</span>{locked?<span className="muted">🔒</span>:<button className="icon-btn" onClick={()=>markConfig(c=>({...c,fixed_weekday_rules:c.fixed_weekday_rules.filter((_,x)=>x!==i)}))}>×</button>}</div>})}<button className="small-btn" onClick={addFixedRule}>+ Thêm ca cố định</button></section>
       <section className="panel section"><h2>4. OFF và nguyện vọng</h2><div className="panel-sub">OFF/Sáng bắt buộc/Chiều bắt buộc là HARD. “Ưu tiên” là SOFT và có thể nới khi cần.</div><div className="requests-desktop requests-wrap"><table className="mini-table requests-table"><thead><tr><th>Nhân viên</th>{days.map((d,i)=><th key={d}>{WEEKDAY_SHORT[i]}<br/><span className="muted">{fmtDate(d)}</span></th>)}</tr></thead><tbody>{activeEmployees.map(e=><tr key={e.id}><td><b>{e.name}</b></td>{days.map(d=>{const v=requestValue(e.id,d);return <td key={d}><select className={`req-select ${requestClass(v)}`} value={v} onChange={x=>setRequest(e.id,d,x.target.value)}>{REQUEST_OPTIONS.map(([value,label])=><option value={value} key={value}>{label}</option>)}</select></td>})}</tr>)}</tbody></table></div><div className="requests-mobile"><label className="mobile-field"><span>Chọn nhân viên</span><select className="select" value={mobileRequestId} onChange={e=>setMobileRequestEmployee(e.target.value)}>{activeEmployees.map(e=><option key={e.id} value={e.id}>{e.name}</option>)}</select></label><div className="mobile-request-list">{days.map((d,i)=>{const v=requestValue(mobileRequestId,d);return <div className="mobile-request-row" key={d}><div><div className="mobile-row-name">{WEEKDAY_LONG[i]}</div><div className="mobile-row-meta">{fmtDate(d)}</div></div><select className={`req-select ${requestClass(v)}`} value={v} onChange={x=>setRequest(mobileRequestId,d,x.target.value)}>{REQUEST_OPTIONS.map(([value,label])=><option value={value} key={value}>{label}</option>)}</select></div>})}</div></div></section>
       <section className="panel section"><div style={{display:"flex",justifyContent:"space-between",gap:10,alignItems:"center"}}><div><h2>5. Tạo phương án</h2><div className="panel-sub" style={{marginBottom:0}}>Solver không phá HARD constraint; nếu vô nghiệm sẽ báo điều kiện xung đột.</div></div><button className="small-btn primary" onClick={generate} disabled={busy}>Tạo tối đa 3 phương án</button></div>{options.length>0&&<div className="plans" style={{marginTop:12}}>{options.map((o,i)=><div className={`plan ${selectedOption===i?"active":""}`} key={o.variant} onClick={()=>selectOption(i)}><div className="plan-head"><i className="radio"/>{String.fromCharCode(65+i)}. {o.label}</div><div className="metric"><span>Thiếu ca/cảnh báo</span><strong>{o.warnings?.length||0}</strong></div><div className="metric"><span>Nguyện vọng soft chưa đạt</span><strong>{o.metrics?.soft_requests_missed??0}</strong></div><div className="metric"><span>Tổng lần đổi S/C</span><strong>{o.metrics?.total_switches??0}</strong></div><div className="metric"><span>Chênh ca chiều NV</span><strong>{o.metrics?.afternoon_spread??0}</strong></div><div className="metric"><span>Chênh nhận hàng NV</span><strong>{o.metrics?.receiving_spread??0}</strong></div></div>)}</div>}</section>
-      {assignments.length>0&&<div className="work-grid"><section className="panel"><h2>6. Lịch làm việc</h2><div className="panel-sub">Chỉnh tay tại ô; hệ thống tự Validate, không chạy optimizer lại.</div><div className="schedule-desktop schedule-wrap"><table className="schedule-table"><thead><tr><th>Nhân viên</th>{days.map((d,i)=><th key={d}>{WEEKDAY_SHORT[i]}<br/><span className="muted">{fmtDate(d)}{receivingSet.has(d)?" · NH":""}</span></th>)}</tr></thead><tbody>{activeEmployees.map(e=><tr key={e.id}><td><b>{e.name}</b><div className="muted">{e.role==="STORE_MANAGER"?"CHT":e.staff_code}</div></td>{days.map(d=>{const row=assignmentMap[`${e.id}|${d}`];const code=shiftCode(row);const cls=code.startsWith("M")?"morning":code==="A"?"afternoon":"off";return <td key={d}><select className={`shift-select ${cls}`} value={code} onChange={x=>editShift(e.id,d,x.target.value)}><option value="M06">S · 6h</option><option value="M07">S · 7h</option><option value="A">C</option><option value="OFF">OFF</option></select>{row?.shift==="MORNING"&&<label className="receive-toggle"><input type="checkbox" checked={isTimeLocked(e.id,d)} onChange={()=>toggleTimeLock(e.id,d,row)}/> khóa giờ</label>}{row?.shift==="AFTERNOON"&&receivingSet.has(d)&&<label className="receive-toggle"><input type="checkbox" checked={!!row.receiving} onChange={()=>toggleAssignmentReceiving(e.id,d)}/> nhận hàng</label>}</td>})}</tr>)}</tbody></table></div><div className="schedule-mobile"><div className="mobile-day-tabs">{days.map((d,i)=><button className={`mobile-day-tab ${mobileScheduleDay===i?"active":""}`} key={d} onClick={()=>setMobileScheduleDay(i)}>{WEEKDAY_SHORT[i]}<br/>{fmtDate(d)}</button>)}</div><div className="mobile-schedule-list">{activeEmployees.map(e=>{const d=days[mobileScheduleDay];const row=assignmentMap[`${e.id}|${d}`];const code=shiftCode(row);const cls=code.startsWith("M")?"morning":code==="A"?"afternoon":"off";return <div className="mobile-schedule-row" key={e.id}><div><div className="mobile-row-name">{e.name}</div><div className="mobile-row-meta">{e.role==="STORE_MANAGER"?"CHT":e.staff_code}{receivingSet.has(d)?" · ngày NH":""}</div></div><div><select className={`shift-select ${cls}`} value={code} onChange={x=>editShift(e.id,d,x.target.value)}><option value="M06">Sáng · 6h</option><option value="M07">Sáng · 7h</option><option value="A">Chiều</option><option value="OFF">OFF</option></select>{row?.shift==="MORNING"&&<label className="receive-toggle"><input type="checkbox" checked={isTimeLocked(e.id,d)} onChange={()=>toggleTimeLock(e.id,d,row)}/> khóa giờ</label>}{row?.shift==="AFTERNOON"&&receivingSet.has(d)&&<label className="receive-toggle"><input type="checkbox" checked={!!row.receiving} onChange={()=>toggleAssignmentReceiving(e.id,d)}/> nhận hàng</label>}</div></div>})}</div></div></section><aside className="metrics-side"><section className="panel"><h2>Thống kê nhanh</h2><table className="mini-table"><thead><tr><th>NV</th><th>S</th><th>C</th><th>NH</th><th>Đổi</th></tr></thead><tbody>{metrics.map(m=><tr key={m.employee_id}><td>{m.name}</td><td>{m.morning}</td><td>{m.afternoon}</td><td>{m.receiving}</td><td>{m.switches}</td></tr>)}</tbody></table></section><section className="panel"><h2>Kiểm tra</h2>{validation?<><span className={`status-pill ${validation.status}`}>{validation.status}</span>{validation.errors?.length>0&&<div className="notice error" style={{marginTop:9}}>Vi phạm bắt buộc<ul className="notice-list">{validation.errors.map((x,i)=><li key={i}>{x}</li>)}</ul></div>}{validation.warnings?.length>0&&<div className="notice warn" style={{marginTop:9}}>Cảnh báo<ul className="notice-list">{validation.warnings.slice(0,8).map((x,i)=><li key={i}>{x}</li>)}</ul>{validation.warnings.length>8&&<div className="muted">+{validation.warnings.length-8} cảnh báo khác</div>}</div>}{!validation.errors?.length&&!validation.warnings?.length&&<div className="notice ok" style={{marginTop:9}}>Không có vi phạm hoặc cảnh báo.</div>}</>:<div className="muted">Chưa có kết quả validate.</div>}</section></aside></div>}
+      {assignments.length>0&&<div className="work-grid"><section className="panel"><h2>6. Lịch làm việc</h2><div className="panel-sub">Chỉnh tay tại ô; hệ thống tự Validate, không chạy optimizer lại.</div><div className="schedule-desktop schedule-wrap"><table className="schedule-table"><thead><tr><th>Nhân viên</th>{days.map((d,i)=><th key={d}>{WEEKDAY_SHORT[i]}<br/><span className="muted">{fmtDate(d)}{receivingSet.has(d)?" · NH":""}</span></th>)}</tr></thead><tbody>{activeEmployees.map(e=><tr key={e.id}><td><b>{e.name}</b><div className="muted">{e.role==="STORE_MANAGER"?"CHT":e.staff_code}</div></td>{days.map(d=>{const row=assignmentMap[`${e.id}|${d}`];const code=shiftCode(row);const cls=code.startsWith("M")?"morning":code==="A"?"afternoon":"off";return <td key={d}><select className={`shift-select ${cls}`} value={code} onChange={x=>editShift(e.id,d,x.target.value)}><option value="M06">S · 6h</option><option value="M07">S · 7h</option><option value="A">C</option><option value="OFF">OFF</option></select>{row?.shift==="MORNING"&&<label className="receive-toggle"><input type="checkbox" checked={isTimeLocked(e.id,d)} onChange={()=>toggleTimeLock(e.id,d,row)}/> khóa giờ</label>}{row?.shift==="AFTERNOON"&&receivingSet.has(d)&&<label className="receive-toggle"><input type="checkbox" checked={!!row.receiving} onChange={()=>toggleAssignmentReceiving(e.id,d)}/> nhận hàng</label>}</td>})}</tr>)}</tbody></table></div><div className="schedule-mobile"><div className="mobile-day-tabs">{days.map((d,i)=><button className={`mobile-day-tab ${mobileScheduleDay===i?"active":""}`} key={d} onClick={()=>setMobileScheduleDay(i)}>{WEEKDAY_SHORT[i]}<br/>{fmtDate(d)}</button>)}</div><div className="mobile-schedule-list">{activeEmployees.map(e=>{const d=days[mobileScheduleDay];const row=assignmentMap[`${e.id}|${d}`];const code=shiftCode(row);const cls=code.startsWith("M")?"morning":code==="A"?"afternoon":"off";return <div className="mobile-schedule-row" key={e.id}><div><div className="mobile-row-name">{e.name}</div><div className="mobile-row-meta">{e.role==="STORE_MANAGER"?"CHT":e.staff_code}{receivingSet.has(d)?" · ngày NH":""}</div></div><div><select className={`shift-select ${cls}`} value={code} onChange={x=>editShift(e.id,d,x.target.value)}><option value="M06">Sáng · 6h</option><option value="M07">Sáng · 7h</option><option value="A">Chiều</option><option value="OFF">OFF</option></select>{row?.shift==="MORNING"&&<label className="receive-toggle"><input type="checkbox" checked={isTimeLocked(e.id,d)} onChange={()=>toggleTimeLock(e.id,d,row)}/> khóa giờ</label>}{row?.shift==="AFTERNOON"&&receivingSet.has(d)&&<label className="receive-toggle"><input type="checkbox" checked={!!row.receiving} onChange={()=>toggleAssignmentReceiving(e.id,d)}/> nhận hàng</label>}</div></div>})}</div></div></section><aside className="metrics-side"><section className="panel"><h2>Thống kê theo lịch hiện tại</h2><div className="panel-sub">Tự cập nhật sau mỗi lần người dùng chỉnh ca hoặc nhận hàng.</div><table className="mini-table"><thead><tr><th>NV</th><th>S</th><th>C</th><th>OFF</th><th>NH</th><th>Đổi</th></tr></thead><tbody>{metrics.map(m=><tr key={m.employee_id}><td>{m.name}</td><td>{m.morning}</td><td>{m.afternoon}</td><td>{m.off}</td><td>{m.receiving}</td><td>{m.switches}</td></tr>)}</tbody></table></section><section className="panel"><h2>Kiểm tra</h2>{validation?<><span className={`status-pill ${validation.status}`}>{validation.status}</span>{validation.errors?.length>0&&<div className="notice error" style={{marginTop:9}}>Vi phạm bắt buộc<ul className="notice-list">{validation.errors.map((x,i)=><li key={i}>{x}</li>)}</ul></div>}{validation.warnings?.length>0&&<div className="notice warn" style={{marginTop:9}}>Cảnh báo<ul className="notice-list">{validation.warnings.slice(0,8).map((x,i)=><li key={i}>{x}</li>)}</ul>{validation.warnings.length>8&&<div className="muted">+{validation.warnings.length-8} cảnh báo khác</div>}</div>}{!validation.errors?.length&&!validation.warnings?.length&&<div className="notice ok" style={{marginTop:9}}>Không có vi phạm hoặc cảnh báo.</div>}</>:<div className="muted">Chưa có kết quả validate.</div>}</section></aside></div>}
     </main>
   </div></>
 }
