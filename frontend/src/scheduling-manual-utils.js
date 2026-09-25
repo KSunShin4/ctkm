@@ -285,7 +285,7 @@ export function summarizeCurrentSchedule(config,validation,suggestions){
   const critical=(validation?.errors||[]).length
   const important=suggestions.filter(s=>s.severity==="important").length
   const optimization=suggestions.filter(s=>s.severity==="optimization").length
-  if(critical)return {tone:"error",headline:`Lịch còn ${critical} lỗi bắt buộc`,detail:"Cần xử lý lỗi đỏ trước khi xuất Excel."}
+  if(critical)return {tone:"error",headline:`Lịch còn ${critical} lỗi bắt buộc`,detail:"Đây là cảnh báo nghiệp vụ; bạn vẫn có thể xuất Excel nếu muốn."}
   if(important)return {tone:"warn",headline:`Lịch hợp lệ nhưng còn ${important} điểm nên chỉnh`,detail:optimization?`Ngoài ra có ${optimization} gợi ý tối ưu thêm.`:"Các thay đổi đều cần người dùng đồng ý."}
   if(optimization)return {tone:"ok",headline:`Lịch hợp lệ · ${optimization} điểm có thể tối ưu`,detail:"Có thể xuất Excel ngay hoặc xem thêm gợi ý."}
   return {tone:"ok",headline:"Lịch hiện tại đã ổn",detail:"Không phát hiện điểm cần xử lý thêm từ các rule hiện có."}
@@ -339,8 +339,8 @@ export function getExportDockState({validation, dirty, message=""}={}){
     return {
       tone:"invalid",
       label:"Lịch còn lỗi bắt buộc",
-      detail:`${validation.errors?.length||0} lỗi cần xử lý trước khi Excel được tạo.`,
-      buttonLabel:"Kiểm tra lại & Xuất Excel",
+      detail:`${validation.errors?.length||0} lỗi đang được cảnh báo · vẫn có thể xuất đúng lịch hiện tại.`,
+      buttonLabel:"Vẫn xuất Excel",
     }
   }
   if(!dirty){

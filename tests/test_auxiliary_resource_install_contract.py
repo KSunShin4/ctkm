@@ -57,7 +57,7 @@ def test_auxiliary_routes_keep_expected_access_boundaries():
 
     for path in ("/api/inspect-tem-r", "/api/jobs/tem-r", "/api/tem-r"):
         dependency_calls = [getattr(dep, "call", None) for dep in route(path, "POST").dependant.dependencies]
-        assert main_api.require_admin in dependency_calls
+        assert main_api.require_admin not in dependency_calls
 
     expiration_dependencies = [
         getattr(dep, "call", None)

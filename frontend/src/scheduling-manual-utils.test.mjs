@@ -165,7 +165,7 @@ test("export dock communicates ready warning invalid and exported states",()=>{
   const invalid=getExportDockState({validation:{status:"INVALID",errors:["a","b"],warnings:[]},dirty:true})
   assert.equal(invalid.tone,"invalid")
   assert.match(invalid.detail,/2 lỗi/)
-  assert.match(invalid.buttonLabel,/Kiểm tra lại/)
+  assert.equal(invalid.buttonLabel,"Vẫn xuất Excel")\n  assert.match(invalid.detail,/vẫn có thể xuất/)
 
   const warning=getExportDockState({validation:{status:"VALID_WITH_WARNINGS",errors:[],warnings:["w"]},dirty:true})
   assert.equal(warning.tone,"warning")

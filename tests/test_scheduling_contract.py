@@ -231,3 +231,70 @@ def test_validate_metrics_follow_current_manual_assignments():
     assert after_metrics["mi"]["morning"] == before_metrics["mi"]["morning"] + 1
     assert after_metrics["mi"]["afternoon"] == before_metrics["mi"]["afternoon"] - 1
 
+def test_export_allows_business_invalid_schedule_and_keeps_current_edits():
+    config = _config()
+    edited = deepcopy(_assignments())
+    # Break both staffing and the CHT Monday HARD preference on purpose.
+    for row in edited:
+        if row["date"] == "2026-09-14" and row["employee_id"] == "phuong":
+            row.update(shift="AFTERNOON", start_time="14:00", receiving=False)
+
+    validation = __import__("asyncio").run(
+        main_api.schedule_validate({"config": config, "assignments": edited}, "admin")
+    )
+    assert validation["status"] == "INVALID"
+
+    content, _ = export_schedule_to_template(
+        main_api, {"config": config, "assignments": edited}
+    )
+    assert content[:2] == b"PK"
+    workbook = load_workbook(BytesIO(content), data_only=False)
+    try:
+        ws = workbook[workbook.sheetnames[0]]
+        afternoon_values = {ws["B7"].value, ws["B8"].value, ws["B9"].value}
+        assert "Phương - 800603" in afternoon_values
+    finally:
+        workbook.close()
+
+
+def test_export_overflow_is_joined_into_last_template_slot_instead_of_blocking():
+    config = _config()
+    edited = deepcopy(_assignments())
+    for row in edited:
+        if row["date"] == "2026-09-14":
+            row.update(shift="AFTERNOON", start_time="14:00", receiving=False)
+
+    content, _ = export_schedule_to_template(
+        main_api, {"config": config, "assignments": edited}
+    )
+    assert content[:2] == b"PK"
+    workbook = load_workbook(BytesIO(content), data_only=False)
+    try:
+        ws = workbook[workbook.sheetnames[0]]
+        assert ws["B7"].value
+        assert ws["B8"].value
+        assert "\n" in str(ws["B9"].value)
+        exported = "\n".join(str(ws.cell(row, 2).value or "") for row in (7, 8, 9))
+        for expected in ("Phương - 800603", "My - 825982", "Nhàn - 827370", "Vũ - 825433", "Ly - 827389"):
+            assert expected in exported
+    finally:
+        workbook.close()
+
+
+def test_stateless_export_endpoint_allows_invalid_business_schedule():
+    config = _config()
+    edited = deepcopy(_assignments())
+    for row in edited:
+        if row["date"] == "2026-09-14" and row["employee_id"] == "phuong":
+            row.update(shift="AFTERNOON", start_time="14:00", receiving=False)
+
+    response = __import__("asyncio").run(
+        main_api.schedule_export(
+            {"config": config, "assignments": edited, "variant": "manual"},
+            "admin",
+        )
+    )
+
+    assert response.status_code == 200
+    assert response.body[:2] == b"PK"
+

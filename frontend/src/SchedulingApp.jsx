@@ -280,9 +280,6 @@ export default function SchedulingApp(){
         body:JSON.stringify(snapshot),
       })
       setValidation(checked)
-      if(checked.status==="INVALID"){
-        throw new Error(checked.errors?.[0]||"Lịch hiện tại chưa hợp lệ để xuất Excel")
-      }
       const exportAssignments=checked.assignments||assignments
       const res=await fetch(`${API}/api/schedules/export.xlsx`,{
         method:"POST",
@@ -302,7 +299,9 @@ export default function SchedulingApp(){
       const a=document.createElement("a")
       a.href=url;a.download=name;document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url)
       setDirty(false)
-      setMessage("Đã xuất Excel theo đúng lịch người dùng đang chỉnh.")
+      setMessage(checked.status==="INVALID"
+        ? `Đã xuất Excel theo đúng lịch hiện tại dù còn ${checked.errors?.length||0} lỗi/cảnh báo bắt buộc.`
+        : "Đã xuất Excel theo đúng lịch người dùng đang chỉnh.")
     }catch(err){setMessage(`Lỗi xuất Excel: ${err.message}`)}
     finally{setBusy(false)}
   }

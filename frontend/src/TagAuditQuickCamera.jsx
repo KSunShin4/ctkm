@@ -82,7 +82,6 @@ export default function TagAuditQuickCamera() {
   }, [])
 
   useEffect(() => {
-    if (!token) return
     let cancelled = false
     ;(async () => {
       try {
@@ -101,7 +100,7 @@ export default function TagAuditQuickCamera() {
   }, [token])
 
   useEffect(() => {
-    if (!token || !context?.ready) return
+    if (!context?.ready) return
     let cancelled = false
     ;(async () => {
       try {
@@ -193,8 +192,6 @@ export default function TagAuditQuickCamera() {
       return next
     })
   }
-
-  if (!token) return <><style>{styles}</style><div className="quick"><div className="quick-login"><h2>Cần đăng nhập</h2><p>Quét nhanh dùng cùng phiên đăng nhập của Kiểm tem.</p><a className="quick-link" href="/scan-tem">← Về Kiểm tem để đăng nhập</a></div></div></>
 
   const autoText = autoEnabled ? autoCaptureStatusText(autoDecision) : "Auto-capture đang tắt · dùng nút QUÉT TEM NÀY"
   const frameClass = autoEnabled && autoDecision?.status === "move_next" ? "quick-frame locked" : autoEnabled && autoDecision && autoDecision.status !== "capture" && autoDecision.status !== "ready" ? "quick-frame wait" : "quick-frame"

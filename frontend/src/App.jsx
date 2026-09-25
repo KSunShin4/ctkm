@@ -639,7 +639,7 @@ export default function App() {
     if (isAdmin) refreshPresets()
   }, [isAdmin, refreshPresets])
 
-  const canRun = isAdmin && ctkmFile && pogFile && month && step !== STEPS.running
+  const canRun = ctkmFile && pogFile && month && step !== STEPS.running
     && backendStatus === "ok"
     && (!ctkmSheetOptions.length || !!ctkmSheetName)
     && (!pogSheetOptions.length || !!pogSheetName)
@@ -679,7 +679,7 @@ export default function App() {
   useEffect(() => {
     let cancelled = false
     const inspect = async () => {
-      if (!isAdmin || !ctkmFile) {
+      if (!ctkmFile) {
         setCtkmSheetOptions([])
         setCtkmSheetName("")
         setCtkmSheetError("")
@@ -711,12 +711,12 @@ export default function App() {
     }
     inspect()
     return () => { cancelled = true }
-  }, [ctkmFile, isAdmin, authFetch])
+  }, [ctkmFile, authFetch])
 
   useEffect(() => {
     let cancelled = false
     const inspect = async () => {
-      if (!isAdmin || !pogFile) {
+      if (!pogFile) {
         setPogSnapshotMonth("")
         setPogSheetOptions([])
         setPogSheetName("")
@@ -752,12 +752,12 @@ export default function App() {
     }
     inspect()
     return () => { cancelled = true }
-  }, [pogFile, pogSheetName, isAdmin, authFetch])
+  }, [pogFile, pogSheetName, authFetch])
 
   useEffect(() => {
     let cancelled = false
     const inspect = async () => {
-      if (!isAdmin || !temRFile) {
+      if (!temRFile) {
         setTemRColumns([])
         setTemRStockColumn("")
         setTemRItemColumn("")
@@ -792,7 +792,7 @@ export default function App() {
     }
     inspect()
     return () => { cancelled = true }
-  }, [temRFile, isAdmin, authFetch])
+  }, [temRFile, authFetch])
 
   useEffect(() => {
     setMappingPreview(null)
@@ -1175,7 +1175,7 @@ export default function App() {
   }
 
   const saveApprovedMapping = async () => {
-    if (!mappingPreview) return
+    if (!isAdmin || !mappingPreview) return
     setMappingSaving(true)
     setMappingError("")
     setMappingSaved("")
@@ -1232,20 +1232,18 @@ export default function App() {
             >
               Kiểm tra hạn dùng
             </button>
-            {isAdmin && <>
-              <button
-                className={activeModule === "ctkm" ? "active" : ""}
-                onClick={() => { stopCamera(); setActiveModule("ctkm") }}
-              >
-                Công cụ CTKM
-              </button>
-              <button
-                className={activeModule === "temr" ? "active" : ""}
-                onClick={() => { stopCamera(); setActiveModule("temr") }}
-              >
-                Phân bổ Tem R
-              </button>
-            </>}
+            <button
+              className={activeModule === "ctkm" ? "active" : ""}
+              onClick={() => { stopCamera(); setActiveModule("ctkm") }}
+            >
+              Công cụ CTKM
+            </button>
+            <button
+              className={activeModule === "temr" ? "active" : ""}
+              onClick={() => { stopCamera(); setActiveModule("temr") }}
+            >
+              Phân bổ Tem R
+            </button>
           </nav>
           <div className="backend-status">
             <span className={`status-dot ${
@@ -1263,11 +1261,11 @@ export default function App() {
           ) : (
             <form className="auth-actions" onSubmit={loginAdmin}>
               <input className="auth-input" value={adminUsername}
-                onChange={e => setAdminUsername(e.target.value)} placeholder="Tài khoản admin" />
+                onChange={e => setAdminUsername(e.target.value)} placeholder="Admin (preset/cấu hình)" />
               <input className="auth-input" type="password" value={adminPassword}
                 onChange={e => setAdminPassword(e.target.value)} placeholder="Mật khẩu" />
               <button className="auth-button" disabled={authLoading || !adminPassword}>
-                {authLoading ? "Đang vào…" : "Admin"}
+                {authLoading ? "Đang vào…" : "Quản trị"}
               </button>
               {authError && <span className="auth-error">{authError}</span>}
             </form>
@@ -1475,9 +1473,9 @@ export default function App() {
                   className="btn btn-primary"
                   style={{marginTop:16}}
                   onClick={saveApprovedMapping}
-                  disabled={mappingSaving}
+                  disabled={!isAdmin || mappingSaving}
                 >
-                  {mappingSaving ? <><div className="spinner" /> Đang lưu mapping…</> : "Lưu mapping đã xác nhận"}
+                  {!isAdmin ? "Đăng nhập admin để lưu preset chung" : mappingSaving ? <><div className="spinner" /> Đang lưu mapping…</> : "Lưu mapping đã xác nhận"}
                 </button>
                 {mappingSaved && <div className="sheet-hint" style={{color:"var(--green)"}}>{mappingSaved}</div>}
               </div>
@@ -1596,7 +1594,7 @@ export default function App() {
               <div className="sheet-hint">
                 Các mapping và output đã chốt sẽ được lưu ở backend theo signature workbook.
               </div>
-              <button className="btn btn-ghost" style={{marginTop:12}} onClick={refreshPresets} disabled={presetLoading}>
+              <button className="btn btn-ghost" style={{marginTop:12}} onClick={refreshPresets} disabled={!isAdmin || presetLoading}>
                 {presetLoading ? "Đang tải…" : "Làm mới preset"}
               </button>
               {presetError && (
@@ -1623,7 +1621,7 @@ export default function App() {
                     <button
                       className="btn btn-ghost"
                       style={{marginTop:8, padding:"8px 12px"}}
-                      onClick={() => deletePreset(item.key)}
+                      onClick={() => deletePreset(item.key)} disabled={!isAdmin}
                     >
                       Xoá preset
                     </button>
