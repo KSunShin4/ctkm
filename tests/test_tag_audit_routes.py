@@ -72,7 +72,7 @@ def test_tag_audit_route_helper_handles_starlette_root_mount_normalization(tmp_p
     assert routes.index(api_route) < frontend_mount_index
 
 
-def test_all_tag_audit_routes_require_admin():
+def test_all_tag_audit_routes_are_store_facing_not_admin_only():
     for path, method in (
         ("/api/tag-audit/context", "GET"),
         ("/api/tag-audit/context", "POST"),
@@ -83,7 +83,7 @@ def test_all_tag_audit_routes_require_admin():
         dependency_calls = [
             getattr(dep, "call", None) for dep in route.dependant.dependencies
         ]
-        assert main_api.require_admin in dependency_calls
+        assert main_api.require_admin not in dependency_calls
 
 
 def test_tag_audit_install_does_not_replace_existing_ctkm_route():

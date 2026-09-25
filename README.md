@@ -99,8 +99,9 @@ Nếu contract bắt buộc bị route khác ghi đè, backend fail ở startup/
 ### Xếp lịch nhân viên
 
 Module xếp lịch chạy stateless: tạo phương án, chỉnh tay, validate và xuất Excel trực tiếp.
-Lịch làm việc không được lưu trên server; Excel là đầu ra cần giữ. API xếp lịch chỉ gồm
-generate, validate và export workbook hiện tại.
+Lịch làm việc không được lưu trên server; Excel là đầu ra cần giữ. Validate chỉ cung cấp
+cảnh báo/gợi ý nghiệp vụ; nếu người dùng chủ động xuất thì workbook vẫn được tạo từ đúng
+lịch hiện tại. Chỉ lỗi kỹ thuật/dữ liệu cấu trúc không đủ để dựng workbook mới dừng export.
 
 ### Lưu ý persistence trên Render Free
 
@@ -111,6 +112,16 @@ spin-down, restart hoặc redeploy. Mapping deterministic cho file Pharmacity ch
 không phụ thuộc hai file này; nhưng nếu cần giữ custom preset/cache lâu dài thì phải
 chuyển chúng sang shared durable storage trước khi coi “mapping đã lưu” là dữ liệu
 bền vững qua vòng đời instance.
+
+### Quyền truy cập CTKM / Tem
+
+Các thao tác nghiệp vụ cửa hàng như inspect CTKM/POG, preview mapping, chạy pipeline,
+theo dõi đúng job vừa tạo, xem preview/tải kết quả, Tem R và kiểm tem là store-facing:
+không yêu cầu đăng nhập admin. Hệ thống hiện chưa có role user thường riêng nên các
+route này hoạt động không cần bearer admin.
+
+Các bề mặt quản trị dùng chung vẫn giữ admin: preset backend, queue status, job history,
+cấu hình quản trị và module xếp lịch hiện tại.
 
 ## CTKM / POG semantics
 
@@ -244,12 +255,12 @@ business rows và nằm trong giới hạn resource. Concurrency quá giới h�
 | `POST` | `/api/jobs/ctkm` | Preflight + queue CTKM/POG/Clearance |
 | `POST` | `/api/run` | Alias compatibility của CTKM queue |
 | `GET` | `/api/job/{job_id}/status` | Trạng thái job |
-| `GET` | `/api/queue/status` | Queue state |
+| `GET` | `/api/queue/status` | Queue state, admin |
 | `GET` | `/api/preview/{job_id}` | Visible workbook preview |
 | `GET` | `/api/download/{job_id}` | Download chỉ khi job completed + output hợp lệ |
-| `GET` | `/api/jobs` | Public-safe job history fields |
-| `POST` | `/api/inspect-tem-r` | Inspect Tem R, admin |
-| `POST` | `/api/jobs/tem-r` | Queued Tem R, admin |
+| `GET` | `/api/jobs` | Job history, admin |
+| `POST` | `/api/inspect-tem-r` | Inspect Tem R, store-facing |
+| `POST` | `/api/jobs/tem-r` | Queued Tem R, store-facing |
 | `POST` | `/api/check-expiration` | Kiểm tra hạn dùng, public |
 
 ## Kiểm tra trước merge/release

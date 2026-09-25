@@ -59,6 +59,26 @@ def _export_filename(config: dict) -> str:
     return f"{label}_Lich_lam_viec_{start}-{end}.xlsx"
 
 
+def _write_group_to_slots(ws, column: int, rows: list[dict], slot_rows: list[int], employee_by_id: dict) -> None:
+    """Write every employee into the fixed template without blocking export.
+
+    If the user intentionally puts more people into a shift than the template has
+    physical rows for, the overflow names are joined in the last slot instead of
+    rejecting the workbook.
+    """
+    names = [_display_name(employee_by_id[row["employee_id"]]) for row in rows]
+    if not names or not slot_rows:
+        return
+    for index, row_number in enumerate(slot_rows):
+        if index < len(slot_rows) - 1:
+            ws.cell(row_number, column).value = names[index] if index < len(names) else None
+            continue
+        remaining = names[index:]
+        ws.cell(row_number, column).value = "\n".join(remaining) if remaining else None
+        if len(remaining) > 1:
+            ws.cell(row_number, column).alignment = ws.cell(row_number, column).alignment.copy(wrapText=True)
+
+
 def export_schedule_to_template(core_module, item: dict) -> tuple[bytes, str]:
     """Render exactly the current submitted schedule; never save or re-optimize it."""
     del core_module  # Compatibility with the previous helper signature.
@@ -70,15 +90,6 @@ def export_schedule_to_template(core_module, item: dict) -> tuple[bytes, str]:
     assignments = item.get("assignments") or []
     checked = _validate_or_422(config, assignments)
     validation = checked["validation"]
-    if validation["status"] == "INVALID":
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "message": "Lịch đang INVALID, không thể xuất Excel",
-                "errors": validation["errors"],
-            },
-        )
-
     normalized = checked["normalized"]
     employee_by_id = {employee["id"]: employee for employee in normalized["employees"]}
     order = {employee["id"]: index for index, employee in enumerate(normalized["employees"])}
@@ -124,18 +135,9 @@ def export_schedule_to_template(core_module, item: dict) -> tuple[bytes, str]:
             afternoon = [row for row in day_rows if row["shift"] == "AFTERNOON"]
             off = [row for row in day_rows if row["shift"] == "OFF"]
 
-            if len(m06) > 2 or len(m07) > 1 or len(afternoon) > 3:
-                raise HTTPException(
-                    status_code=409,
-                    detail=f"Lịch {day_key} vượt số dòng ca của template 1885",
-                )
-
-            for index, row in enumerate(m06):
-                ws.cell(4 + index, column).value = _display_name(employee_by_id[row["employee_id"]])
-            if m07:
-                ws.cell(6, column).value = _display_name(employee_by_id[m07[0]["employee_id"]])
-            for index, row in enumerate(afternoon):
-                ws.cell(7 + index, column).value = _display_name(employee_by_id[row["employee_id"]])
+            _write_group_to_slots(ws, column, m06, [4, 5], employee_by_id)
+            _write_group_to_slots(ws, column, m07, [6], employee_by_id)
+            _write_group_to_slots(ws, column, afternoon, [7, 8, 9], employee_by_id)
             if off:
                 ws.cell(10, column).value = ", ".join(
                     f"{employee_by_id[row['employee_id']]['name']} off" for row in off
