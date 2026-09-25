@@ -1,6 +1,6 @@
 import test from "node:test"
 import assert from "node:assert/strict"
-import { applySmartSuggestion, buildLockedOptimizationConfig, buildSmartSuggestions, rebalanceManualMorningTimes, restoreTouchedReceiving, summarizeCurrentSchedule } from "./scheduling-manual-utils.js"
+import { applySmartSuggestion, buildLockedOptimizationConfig, buildSmartSuggestions, getExportDockState, rebalanceManualMorningTimes, restoreTouchedReceiving, summarizeCurrentSchedule } from "./scheduling-manual-utils.js"
 
 function baseConfig(){
   return {
@@ -155,5 +155,40 @@ test("restore touched receiving preserves user choice after optimizer rerun",()=
   const generated=[{employee_id:"mi",date:"2026-09-21",shift:"AFTERNOON",start_time:"14:00",receiving:false}]
   const out=restoreTouchedReceiving(generated,current,new Set(["mi|2026-09-21"]))
   assert.equal(out[0].receiving,true)
+})
+
+test("export dock communicates ready warning invalid and exported states",()=>{
+  const pending=getExportDockState({validation:null,dirty:true})
+  assert.equal(pending.tone,"pending")
+  assert.match(pending.buttonLabel,/Kiểm tra/)
+
+  const invalid=getExportDockState({validation:{status:"INVALID",errors:["a","b"],warnings:[]},dirty:true})
+  assert.equal(invalid.tone,"invalid")
+  assert.match(invalid.detail,/2 lỗi/)
+  assert.match(invalid.buttonLabel,/Kiểm tra lại/)
+
+  const warning=getExportDockState({validation:{status:"VALID_WITH_WARNINGS",errors:[],warnings:["w"]},dirty:true})
+  assert.equal(warning.tone,"warning")
+  assert.match(warning.detail,/1 cảnh báo/)
+
+  const ready=getExportDockState({validation:{status:"VALID",errors:[],warnings:[]},dirty:true})
+  assert.equal(ready.tone,"ready")
+  assert.match(ready.label,/sẵn sàng/)
+
+  const exported=getExportDockState({validation:{status:"VALID",errors:[],warnings:[]},dirty:false})
+  assert.equal(exported.tone,"ready")
+  assert.match(exported.label,/Đã xuất Excel/)
+  assert.equal(exported.buttonLabel,"Xuất lại Excel")
+})
+
+test("export dock surfaces the last export error next to the action button",()=>{
+  const state=getExportDockState({
+    validation:{status:"VALID",errors:[],warnings:[]},
+    dirty:true,
+    message:"Lỗi xuất Excel: workbook invalid",
+  })
+  assert.equal(state.tone,"invalid")
+  assert.equal(state.label,"Xuất Excel chưa thành công")
+  assert.match(state.detail,/workbook invalid/)
 })
 

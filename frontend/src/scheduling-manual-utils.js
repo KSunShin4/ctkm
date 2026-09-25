@@ -318,3 +318,52 @@ export function restoreTouchedReceiving(generated,current,manualTouched){
   })
 }
 
+export function getExportDockState({validation, dirty, message=""}={}){
+  if(String(message).startsWith("Lỗi xuất Excel")){
+    return {
+      tone:"invalid",
+      label:"Xuất Excel chưa thành công",
+      detail:String(message).replace(/^Lỗi xuất Excel:\s*/,"")||"Kiểm tra lại lịch rồi thử lại.",
+      buttonLabel:"Kiểm tra lại & Xuất Excel",
+    }
+  }
+  if(!validation){
+    return {
+      tone:"pending",
+      label:"Đang kiểm tra lịch",
+      detail:"Nút xuất sẽ kiểm tra lại đúng lịch hiện tại trước khi tạo file.",
+      buttonLabel:"Kiểm tra & Xuất Excel",
+    }
+  }
+  if(validation.status==="INVALID"){
+    return {
+      tone:"invalid",
+      label:"Lịch còn lỗi bắt buộc",
+      detail:`${validation.errors?.length||0} lỗi cần xử lý trước khi Excel được tạo.`,
+      buttonLabel:"Kiểm tra lại & Xuất Excel",
+    }
+  }
+  if(!dirty){
+    return {
+      tone:"ready",
+      label:"Đã xuất Excel bản hiện tại",
+      detail:"Nếu chỉnh lịch tiếp, hệ thống sẽ xuất một bản mới theo thay đổi mới nhất.",
+      buttonLabel:"Xuất lại Excel",
+    }
+  }
+  if(validation.status==="VALID_WITH_WARNINGS"||(validation.warnings?.length||0)>0){
+    return {
+      tone:"warning",
+      label:"Có cảnh báo nhưng vẫn có thể xuất",
+      detail:`${validation.warnings?.length||0} cảnh báo · Excel vẫn lấy đúng lịch đang nhìn thấy.`,
+      buttonLabel:"Kiểm tra & Xuất Excel",
+    }
+  }
+  return {
+    tone:"ready",
+    label:"Lịch sẵn sàng xuất",
+    detail:"Excel sẽ lấy đúng lịch hiện tại và không chạy lại optimizer.",
+    buttonLabel:"Kiểm tra & Xuất Excel",
+  }
+}
+
