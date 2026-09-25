@@ -463,17 +463,20 @@ def test_normalize_requires_exactly_one_active_store_manager():
         normalize_config(payload)
 
 
-def test_regional_manager_rules_are_canonical_and_cannot_be_removed_from_payload():
+def test_regional_manager_defaults_are_editable_and_not_reinjected():
     payload = config()
-    payload["fixed_weekday_rules"] = []
+    payload["fixed_weekday_rules"] = [
+        {"employee_id": "phuong", "weekday": 0, "shift": "AFTERNOON", "level": "HARD", "source": "REGIONAL"},
+    ]
 
     normalized = normalize_config(payload)
-    regional = [rule for rule in normalized["fixed_weekday_rules"] if rule.get("source") == "REGIONAL"]
-
-    assert regional == [
-        {"employee_id": "phuong", "weekday": 0, "shift": "MORNING", "level": "HARD", "source": "REGIONAL"},
-        {"employee_id": "phuong", "weekday": 1, "shift": "AFTERNOON", "level": "HARD", "source": "REGIONAL"},
+    assert normalized["fixed_weekday_rules"] == [
+        {"employee_id": "phuong", "weekday": 0, "shift": "AFTERNOON", "level": "HARD", "source": "REGIONAL"},
     ]
+
+    payload["fixed_weekday_rules"] = []
+    normalized = normalize_config(payload)
+    assert normalized["fixed_weekday_rules"] == []
 
 
 def test_missing_manager_trend_migrates_to_real_default_scores():
@@ -507,4 +510,18 @@ def test_manager_trend_objective_is_lexicographic_before_ordinary_soft_goals():
     rows = lookup(option["assignments"])
     assert rows[("phuong", "2026-09-16")]["shift"] == "MORNING"
     assert rows[("phuong", "2026-09-18")]["shift"] == "AFTERNOON"
+
+def test_edited_regional_default_is_the_hard_rule_solver_respects():
+    payload = config()
+    payload["fixed_weekday_rules"] = [
+        {"employee_id": "phuong", "weekday": 0, "shift": "AFTERNOON", "level": "HARD", "source": "REGIONAL"},
+        {"employee_id": "phuong", "weekday": 1, "shift": "AFTERNOON", "level": "HARD", "source": "REGIONAL"},
+    ]
+
+    result = generate_schedule(payload)
+
+    assert result["options"]
+    rows = lookup(result["options"][0]["assignments"])
+    assert rows[("phuong", "2026-09-14")]["shift"] == "AFTERNOON"
+    assert rows[("phuong", "2026-09-15")]["shift"] == "AFTERNOON"
 

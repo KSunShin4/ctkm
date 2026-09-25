@@ -31,10 +31,6 @@ DEFAULT_MANAGER_TREND = [
     {"weekday": 5, "morning": 48, "afternoon": 69},
     {"weekday": 6, "morning": 63, "afternoon": 73},
 ]
-REGIONAL_MANAGER_RULES = (
-    {"weekday": 0, "shift": "MORNING", "level": "HARD", "source": "REGIONAL"},
-    {"weekday": 1, "shift": "AFTERNOON", "level": "HARD", "source": "REGIONAL"},
-)
 VARIANT_WEIGHTS = {
     "balanced": {
         "shortage": 1200,
@@ -211,23 +207,15 @@ def normalize_config(payload: dict[str, Any]) -> dict[str, Any]:
         if level not in LEVELS:
             raise SchedulingError("fixed_weekday_rules.level không hợp lệ")
         source = str(raw.get("source") or "USER").strip().upper()
-        # Legacy default rows are migrated into the canonical regional rules below.
-        if source == "REGIONAL":
-            continue
-        if employee_id == manager_id and level == "HARD" and (
-            (weekday == 0 and shift == "MORNING") or
-            (weekday == 1 and shift == "AFTERNOON")
-        ):
-            continue
+        if source not in {"USER", "REGIONAL"}:
+            source = "USER"
         fixed_rules.append({
             "employee_id": employee_id,
             "weekday": weekday,
             "shift": shift,
             "level": level,
-            "source": "USER",
+            "source": source,
         })
-    for regional in REGIONAL_MANAGER_RULES:
-        fixed_rules.append({"employee_id": manager_id, **regional})
 
     employee_rules: dict[str, dict[str, Any]] = {}
     for raw in payload.get("employee_rules") or []:
