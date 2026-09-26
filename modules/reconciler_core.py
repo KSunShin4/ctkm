@@ -119,12 +119,26 @@ def _stable_id(prefix: str, values: list) -> str:
 
 def _attach_task_ids(actions: pd.DataFrame) -> pd.DataFrame:
     result = actions.copy()
-    result["pog_position_id"] = result.apply(
-        lambda row: _stable_id(
-            "POGPOS", [row.get(column) for column in _POG_POSITION_ID_COLUMNS],
-        ),
-        axis=1,
-    )
+
+    def _pog_position_identity(row):
+        values = [row.get(column) for column in _POG_POSITION_ID_COLUMNS]
+        required = ("store_id", "pog_code", "location_id")
+        incomplete = any(
+            row.get(column) is None
+            or pd.isna(row.get(column))
+            or not str(row.get(column)).strip()
+            for column in required
+        )
+        source_row_id = row.get("pog_source_row_id")
+        if incomplete and source_row_id is not None and not pd.isna(source_row_id) and str(source_row_id).strip():
+            # An incomplete coordinate tuple cannot prove that two source rows
+            # describe the same physical position. Use lineage only as a safe
+            # discriminator for this unresolved case; complete positions remain
+            # stable and source-row independent.
+            values.append(str(source_row_id).strip())
+        return _stable_id("POGPOS", values)
+
+    result["pog_position_id"] = result.apply(_pog_position_identity, axis=1)
     result["task_id"] = result.apply(
         lambda row: _stable_id("TASK", [
             row.get("promotion_id"), row.get("scheduled_action"), row.get("pog_position_id"),
@@ -434,8 +448,18 @@ def build_fefo_action_frame(
         pog["pog_source_row_id"] = [f"POG:Sheet1:{idx}" for idx in range(2, len(pog) + 2)]
 
     position_key = ["item_key", *location_cols]
+    required_position = ["store_id", "pog_code", "location_id"]
     location_rows = []
-    for _, group in pog.groupby(position_key, dropna=False, sort=False):
+    complete_mask = pog[required_position].apply(
+        lambda row: all(
+            value is not None and not pd.isna(value) and str(value).strip()
+            for value in row
+        ),
+        axis=1,
+    )
+
+    complete_pog = pog[complete_mask]
+    for _, group in complete_pog.groupby(position_key, dropna=False, sort=False):
         first = group.iloc[0].copy()
         row_ids = list(dict.fromkeys(group["pog_source_row_id"].astype(str).tolist()))
         first["pog_source_row_id"] = row_ids[0]
@@ -444,6 +468,16 @@ def build_fefo_action_frame(
         first["pog_duplicate_status"] = (
             "Đã gom dòng POG trùng hoàn toàn" if len(group) > 1 else "Dòng POG duy nhất"
         )
+        location_rows.append(first)
+
+    # Missing coordinates mean physical equivalence is unproven. Preserve every
+    # incomplete source row independently instead of silently deduplicating it.
+    for _, row in pog[~complete_mask].iterrows():
+        first = row.copy()
+        row_id = str(first["pog_source_row_id"])
+        first["pog_source_row_ids"] = row_id
+        first["pog_source_row_count"] = 1
+        first["pog_duplicate_status"] = "Dòng POG thiếu vị trí - giữ riêng"
         location_rows.append(first)
     locations = pd.DataFrame(location_rows)
     if locations.empty:
