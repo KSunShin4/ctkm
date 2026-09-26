@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 import pandas as pd
+import pytest
 from openpyxl import load_workbook
 
 import main
@@ -331,5 +332,123 @@ def test_slim_location_review_does_not_fallback_to_missing_location_rows(tmp_pat
         assert "P9001" not in review_values
         assert "Không có vị trí POG nào cần review." in review_values
         workbook.close()
+    finally:
+        main.EX.export_final_report = original_export
+
+
+
+def test_final_validator_rejects_missing_total_or_primary_action_row(tmp_path):
+    original_export = main.EX.export_final_report
+    try:
+        _install_on_fake_backend()
+        output = tmp_path / "completeness.xlsx"
+        actions = _actions()
+        summary = {
+            "Thang bao cao": "2026-09",
+            "Ngay nghiep vu": pd.Timestamp("2026-09-05"),
+            "So dong KM thieu vi tri POG": 1,
+            "So dong can kiem tra vi tri": 1,
+            "So dong cho gan": 1,
+            "So dong can review": 1,
+            "So dong POG khong co KM phu hop": 0,
+        }
+        main.EX.export_final_report(
+            output_path=output,
+            df_matched=pd.DataFrame([{"item_id": "P1001"}]),
+            df_ctkm_only=pd.DataFrame(),
+            df_pog_only=pd.DataFrame(),
+            overlap_warnings=[],
+            mapping_logs=[],
+            reconciliation_summary=summary,
+            df_fefo_actions=actions,
+            df_pog_review=pd.DataFrame(),
+        )
+        validate_ctkm_workbook(output, summary)
+
+        workbook = load_workbook(output)
+        workbook["TỔNG HỢP - TEM"].delete_rows(2, 1)
+        workbook.save(output)
+        workbook.close()
+        with pytest.raises(RuntimeError, match="TỔNG HỢP - TEM"):
+            validate_ctkm_workbook(output, summary)
+
+        main.EX.export_final_report(
+            output_path=output,
+            df_matched=pd.DataFrame([{"item_id": "P1001"}]),
+            df_ctkm_only=pd.DataFrame(),
+            df_pog_only=pd.DataFrame(),
+            overlap_warnings=[],
+            mapping_logs=[],
+            reconciliation_summary=summary,
+            df_fefo_actions=actions,
+            df_pog_review=pd.DataFrame(),
+        )
+        workbook = load_workbook(output)
+        workbook["Gắn tem"].delete_rows(2, 1)
+        workbook.save(output)
+        workbook.close()
+        with pytest.raises(RuntimeError, match="Gắn tem"):
+            validate_ctkm_workbook(output, summary)
+    finally:
+        main.EX.export_final_report = original_export
+
+
+def test_final_validator_rejects_same_task_lineage_with_different_business_values(tmp_path):
+    original_export = main.EX.export_final_report
+    try:
+        _install_on_fake_backend()
+        output = tmp_path / "silent-collapse.xlsx"
+        actions = pd.DataFrame([
+            {
+                "task_id": "TASK-COLLISION",
+                "source_row_id": "CTKM:Monthly:10",
+                "item_id": "P1001",
+                "item_name": "Product A",
+                "campaign_name": "A",
+                "scheduled_action": "gắn tem",
+                "action": "gắn tem",
+                "in_report_scope": True,
+                "location_completeness": "Đủ vị trí",
+                "location_needs_review": False,
+                "review_required": False,
+                "program_source": "CTKM",
+            },
+            {
+                "task_id": "TASK-COLLISION",
+                "source_row_id": "CTKM:Monthly:10",
+                "item_id": "P1001",
+                "item_name": "Product B",
+                "campaign_name": "A",
+                "scheduled_action": "gắn tem",
+                "action": "gắn tem",
+                "in_report_scope": True,
+                "location_completeness": "Đủ vị trí",
+                "location_needs_review": False,
+                "review_required": False,
+                "program_source": "CTKM",
+            },
+        ])
+        summary = {
+            "Thang bao cao": "2026-09",
+            "Ngay nghiep vu": pd.Timestamp("2026-09-05"),
+            "So dong KM thieu vi tri POG": 0,
+            "So dong can kiem tra vi tri": 0,
+            "So dong cho gan": 0,
+            "So dong can review": 0,
+            "So dong POG khong co KM phu hop": 0,
+        }
+        main.EX.export_final_report(
+            output_path=output,
+            df_matched=pd.DataFrame(),
+            df_ctkm_only=pd.DataFrame(),
+            df_pog_only=pd.DataFrame(),
+            overlap_warnings=[],
+            mapping_logs=[],
+            reconciliation_summary=summary,
+            df_fefo_actions=actions,
+            df_pog_review=pd.DataFrame(),
+        )
+        with pytest.raises(RuntimeError, match="cùng task/lineage"):
+            validate_ctkm_workbook(output, summary)
     finally:
         main.EX.export_final_report = original_export
