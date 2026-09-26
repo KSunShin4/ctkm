@@ -447,6 +447,27 @@ def build_fefo_action_frame(
     else:
         pog["pog_source_row_id"] = [f"POG:Sheet1:{idx}" for idx in range(2, len(pog) + 2)]
 
+    # Preserve POG source values separately from CTKM/Clearance values.  Raw POG
+    # fields are namespaced so they can travel to Audit hành động without
+    # overwriting promotion columns.
+    pog_lineage_columns = {
+        "source_row_id", "source_excel_row", "logical_row_id", "pog_source_row_id",
+    }
+    pog_passthrough_columns = [
+        column for column in pog.columns
+        if column not in {
+            "item_key", "item_id", *location_cols, *pog_lineage_columns,
+        }
+    ]
+    pog_passthrough_map = {
+        column: (
+            f"extra__POG__{str(column)[len('extra__'):]}"
+            if str(column).startswith("extra__")
+            else f"extra__POG__{column}"
+        )
+        for column in pog_passthrough_columns
+    }
+
     position_key = ["item_key", *location_cols]
     required_position = ["store_id", "pog_code", "location_id"]
     location_rows = []
@@ -459,7 +480,23 @@ def build_fefo_action_frame(
     )
 
     complete_pog = pog[complete_mask]
-    for _, group in complete_pog.groupby(position_key, dropna=False, sort=False):
+    # A complete physical position is only an exact technical duplicate when all
+    # source values (except row lineage) also match.  Equal coordinates alone do
+    # not justify dropping different raw POG data.
+    pog_identity_columns = [
+        column for column in pog.columns
+        if column not in pog_lineage_columns
+    ]
+    complete_groups: dict[tuple, list[int]] = {}
+    for idx, row in complete_pog.iterrows():
+        key = tuple(
+            (column, _fingerprint_value(row.get(column)))
+            for column in pog_identity_columns
+        )
+        complete_groups.setdefault(key, []).append(idx)
+
+    for indices in complete_groups.values():
+        group = complete_pog.loc[indices]
         first = group.iloc[0].copy()
         row_ids = list(dict.fromkeys(group["pog_source_row_id"].astype(str).tolist()))
         first["pog_source_row_id"] = row_ids[0]
@@ -485,10 +522,34 @@ def build_fefo_action_frame(
             df_ctkm, target_month, None, business_date=business_date,
             overlap_warnings=overlap_warnings,
         )
-    locations["pog_position_count"] = locations.groupby("item_key")["item_key"].transform("size")
+
+    for source_column, output_column in pog_passthrough_map.items():
+        locations[output_column] = locations[source_column]
+
+    def _position_count_identity(row):
+        key = tuple(_fingerprint_value(row.get(column)) for column in position_key)
+        incomplete = any(
+            row.get(column) is None
+            or pd.isna(row.get(column))
+            or not str(row.get(column)).strip()
+            for column in required_position
+        )
+        if incomplete:
+            key = (*key, ("lineage", str(row.get("pog_source_row_id") or "")))
+        return key
+
+    locations["_position_count_identity"] = locations.apply(_position_count_identity, axis=1)
+    position_counts = {
+        item_key: len(set(group["_position_count_identity"]))
+        for item_key, group in locations.groupby("item_key", dropna=False)
+    }
+    locations["pog_position_count"] = locations["item_key"].map(position_counts).astype(int)
+
+    pog_passthrough_output = list(pog_passthrough_map.values())
     keep_location_cols = [
         "item_key", *location_cols, "pog_source_row_id", "pog_source_row_ids",
         "pog_source_row_count", "pog_duplicate_status", "pog_position_count",
+        *pog_passthrough_output,
     ]
     actions = actions.merge(locations.loc[:, keep_location_cols], on="item_key", how="left", indicator="_pog_match")
     for col in location_cols:
@@ -540,6 +601,7 @@ def build_fefo_action_frame(
         "pog_source_row_count", "pog_duplicate_status", "pog_position_count",
         "location_completeness", "has_multiple_pog_positions", "pog_month_status",
         "location_needs_review", "location_status", "pog_position_id", "task_id",
+        *pog_passthrough_output,
     ]].reset_index(drop=True)
 
 
