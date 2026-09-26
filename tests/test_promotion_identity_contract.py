@@ -158,3 +158,45 @@ def test_same_offer_same_slot_from_distinct_source_rows_still_shares_stable_iden
     assert len(actions) == 1
     assert actions["promotion_id"].nunique() == 1
     assert actions.loc[0, "source_row_count"] == 2
+
+
+
+def test_overlap_equivalence_uses_same_key_channel_identity_as_promotion_ids():
+    frame = pd.DataFrame([
+        _promo(key_channel="Offline", channel="OFFLINE", source_row_id="CTKM:Monthly:10"),
+        _promo(key_channel="Others", channel="OFFLINE", source_row_id="CTKM:Monthly:20"),
+    ])
+
+    warnings = main.RC.detect_campaign_time_overlaps(frame)
+    actions = _actions(frame.to_dict("records"))
+
+    assert actions["promotion_id"].nunique() == 2
+    assert actions["task_id"].nunique() == 2
+    assert len(warnings) == 1
+    assert warnings[0].is_blocking is True
+    assert warnings[0].conflict_type == "blocking_conflict"
+
+
+def test_overlap_equivalence_does_not_hide_distinct_multi_promo_slots():
+    rows = [
+        _promo(promo_slot_id=1, source_row_id="CTKM:Monthly:10:slot-1"),
+        _promo(promo_slot_id=2, source_row_id="CTKM:Monthly:10:slot-2"),
+    ]
+
+    frame = pd.DataFrame(rows)
+    warnings = main.RC.detect_campaign_time_overlaps(frame)
+    actions = _actions(rows)
+
+    assert actions["promotion_id"].nunique() == 2
+    assert actions["task_id"].nunique() == 2
+    assert len(warnings) == 1
+    assert warnings[0].is_blocking is True
+
+
+def test_overlap_equivalence_still_ignores_descriptive_source_differences():
+    frame = pd.DataFrame([
+        _promo(item_name="Product A", product_type="Medicine", source_sheet="Monthly A"),
+        _promo(item_name="Renamed A", product_type="Other label", source_sheet="Monthly B"),
+    ])
+
+    assert main.RC.detect_campaign_time_overlaps(frame) == []

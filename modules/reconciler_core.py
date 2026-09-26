@@ -213,8 +213,17 @@ def _collapse_exact_duplicates(frame: pd.DataFrame) -> pd.DataFrame:
 
 
 def _same_campaign_row(a: dict, b: dict) -> bool:
-    columns = [column for column in _BUSINESS_COLUMNS if column in a or column in b]
-    return all(_fingerprint_value(a.get(column)) == _fingerprint_value(b.get(column)) for column in columns)
+    """Return whether two rows represent the same stable promotion identity.
+
+    Descriptive/source-display differences must not create false conflicts, but
+    fields that define promotion identity (including KEY Channel and promo slot)
+    must never be ignored here or overlap detection can suppress real warnings.
+    """
+    columns = [column for column in _PROMOTION_ID_COLUMNS if column in a or column in b]
+    return all(
+        _fingerprint_value(a.get(column)) == _fingerprint_value(b.get(column))
+        for column in columns
+    )
 
 
 def detect_campaign_time_overlaps(df_ctkm) -> list:
