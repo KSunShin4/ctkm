@@ -561,7 +561,7 @@ export default function App() {
   const [activeSheet, setActiveSheet] = useState(null)
   const [error, setError]         = useState(null)
   const [backendStatus, setBackendStatus] = useState("checking") // checking | ok | offline
-  const [queueStatus, setQueueStatus] = useState(null)
+  const [queueStatus, setQueueStatus] = useState(null)\n  const [mappingConfirmation, setMappingConfirmation] = useState(null)\n  const [confirmCtkmMapping, setConfirmCtkmMapping] = useState({})\n  const [confirmPogMapping, setConfirmPogMapping] = useState({})\n  const [mappingConfirmSaving, setMappingConfirmSaving] = useState(false)
 
   useEffect(() => {
     busyRef.current = temRLoading || expirationLoading || step === STEPS.running
@@ -919,6 +919,33 @@ export default function App() {
     }
   }
 
+  const confirmAndResumeMapping = async () => {
+    if (!mappingConfirmation?.jobId) return
+    setMappingConfirmSaving(true); setError(null)
+    try {
+      const fd = new FormData()
+      fd.append("ctkm_mapping", JSON.stringify(confirmCtkmMapping))
+      fd.append("pog_mapping", JSON.stringify(confirmPogMapping))
+      fd.append("save_preset", "true")
+      const res = await authFetch(`${API}/api/job/${mappingConfirmation.jobId}/mapping-confirmation`, {method:"POST", body:fd})
+      const accepted = await res.json()
+      if (!res.ok) throw new Error(accepted.detail || "Không xác nhận được mapping")
+      setMappingConfirmation(null); setStep(STEPS.running)
+      const data = await waitForJob(accepted.job_id)
+      if (data.status === "awaiting_mapping_confirmation") {
+        const confirmation = data.mapping_confirmation || {}
+        setMappingConfirmation({jobId:data.job_id, ...confirmation})
+        setConfirmCtkmMapping(confirmation.ctkm?.mapping || {})
+        setConfirmPogMapping(confirmation.pog?.mapping || {})
+        return
+      }
+      setResult({summary:data.summary, warnings:data.warnings}); setStep(STEPS.done); refreshPresets()
+      const pres = await authFetch(`${API}/api/preview/${data.job_id}?rows=100`)
+      if (pres.ok) { const pdata = await pres.json(); setPreview(pdata); setActiveSheet(Object.keys(pdata.sheets)[0]) }
+    } catch (e) { setError(e.message); setStep(STEPS.error) }
+    finally { setMappingConfirmSaving(false) }
+  }
+
   const downloadAdminFile = async (downloadJobId, onError = setError) => {
     try {
       const res = await authFetch(`${API}/api/download/${downloadJobId}`)
@@ -1216,6 +1243,30 @@ export default function App() {
   const hoaDon    = S["  Trong do CTKM theo hoa don"]    ?? 0
 
   const warnings  = result?.warnings ?? []
+
+
+  const mappingConfirmationModal = mappingConfirmation ? (
+    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.68)",zIndex:9999,display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
+      <div className="card" style={{width:"min(960px,96vw)",maxHeight:"90vh",overflow:"auto"}}>
+        <div className="card-title">Cần xác nhận mapping để tiếp tục</div>
+        <div className="sheet-hint" style={{marginBottom:16}}>{mappingConfirmation.reason}</div>
+        {[["CTKM",mappingConfirmation.ctkm,confirmCtkmMapping,setConfirmCtkmMapping,FACT_FIELDS],["POG",mappingConfirmation.pog,confirmPogMapping,setConfirmPogMapping,POG_FIELDS]].map(([label,info,values,setter,fields]) => (
+          <div key={label} style={{marginBottom:18}}><div className="card-title">{label}</div>
+            <div className="table-wrap mapping-table"><table><thead><tr><th>Cột nguồn</th><th>Gợi ý</th><th>Tin cậy</th><th>Xác nhận</th></tr></thead><tbody>
+              {[...new Set([...Object.keys(info?.mapping||{}),...(info?.unmapped||[])])].map(src => <tr key={src}>
+                <td>{src}</td><td>{info?.mapping?.[src]||"(chưa map)"}</td><td>{info?.confidence?.[src]??"—"}</td><td>
+                  <select className="sheet-select" value={values[src]||""} onChange={e=>setter(prev=>({...prev,[src]:e.target.value}))}>
+                    <option value="">(không sử dụng)</option>{fields.map(field=><option key={field} value={field}>{field}</option>)}
+                  </select></td></tr>)}
+            </tbody></table></div>
+          </div>
+        ))}
+        <button className="btn btn-primary" onClick={confirmAndResumeMapping} disabled={mappingConfirmSaving}>
+          {mappingConfirmSaving?"Đang xác nhận…":"Xác nhận và tiếp tục job"}
+        </button>
+      </div>
+    </div>
+  ) : null
 
   return (
     <>
