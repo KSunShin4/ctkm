@@ -278,3 +278,58 @@ def test_slim_backend_retains_hidden_source_metadata_and_invalid_pog_rows(tmp_pa
 
 def test_full_library_export_remains_available_outside_backend_contract():
     assert hasattr(main.EX, "_original_export_final_report")
+
+
+
+def test_slim_location_review_does_not_fallback_to_missing_location_rows(tmp_path):
+    original_export = main.EX.export_final_report
+    try:
+        _install_on_fake_backend()
+        output = tmp_path / "independent-location-axes.xlsx"
+        actions = pd.DataFrame([{
+            "task_id": "T-MISSING-LOCATION",
+            "item_id": "P9001",
+            "item_name": "Missing location",
+            "campaign_name": "A",
+            "promo_from": pd.Timestamp("2026-09-01"),
+            "promo_to": pd.Timestamp("2026-09-30"),
+            "scheduled_action": "gắn tem",
+            "action": "gắn tem",
+            "in_report_scope": True,
+            "location_completeness": "Không tìm thấy SKU trong POG",
+            # Deliberately no location_needs_review column: review membership is unknown.
+            "review_required": False,
+            "program_source": "CTKM",
+        }])
+        summary = {
+            "Thang bao cao": "2026-09",
+            "Ngay nghiep vu": pd.Timestamp("2026-09-15"),
+        }
+
+        main.EX.export_final_report(
+            output_path=output,
+            df_matched=pd.DataFrame(),
+            df_ctkm_only=pd.DataFrame(),
+            df_pog_only=pd.DataFrame(),
+            overlap_warnings=[],
+            mapping_logs=[],
+            reconciliation_summary=summary,
+            df_fefo_actions=actions,
+            df_pog_review=pd.DataFrame(),
+        )
+
+        workbook = load_workbook(output, data_only=True)
+        missing_values = {
+            cell.value for row in workbook["CTKM thieu vi tri ke"].iter_rows()
+            for cell in row if cell.value is not None
+        }
+        review_values = {
+            cell.value for row in workbook["POG cần kiểm tra"].iter_rows()
+            for cell in row if cell.value is not None
+        }
+        assert "P9001" in missing_values
+        assert "P9001" not in review_values
+        assert "Không có vị trí POG nào cần review." in review_values
+        workbook.close()
+    finally:
+        main.EX.export_final_report = original_export
