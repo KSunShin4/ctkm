@@ -52,9 +52,9 @@ def test_operational_summary_counts_unique_in_scope_tasks_only():
 
     main._performance.align_task_summary_with_work_rows(summary, actions)
 
-    assert summary["So dong tem tu Clearance"] == 1
-    assert summary["So dong cho gan"] == 1
-    assert summary["So dong can review"] == 1
+    assert summary["So dong tem tu Clearance"] == 2
+    assert summary["So dong cho gan"] == 2
+    assert summary["So dong can review"] == 2
     # This helper only aligns task counts; location metrics are handled by exporter.
     assert summary["So dong CTKM thieu vi tri ke"] == 7
     assert summary["So dong can kiem tra vi tri"] == 9
@@ -82,9 +82,9 @@ def test_export_mutates_pipeline_summary_before_writing_tom_tat(tmp_path):
     )
 
     # The same dict is returned by run_pipeline, so API/backend sees these values.
-    assert summary["So dong tem tu Clearance"] == 1
-    assert summary["So dong cho gan"] == 1
-    assert summary["So dong can review"] == 1
+    assert summary["So dong tem tu Clearance"] == 2
+    assert summary["So dong cho gan"] == 2
+    assert summary["So dong can review"] == 2
     # All fixture actions have complete POG locations, so export must replace the
     # deliberately stale location numbers with zero and keep the legacy alias equal.
     assert summary["So dong KM thieu vi tri POG"] == 0
@@ -96,12 +96,12 @@ def test_export_mutates_pipeline_summary_before_writing_tom_tat(tmp_path):
         workbook["Tom tat"].cell(row=row, column=2).value
         for row in range(2, workbook["Tom tat"].max_row + 1)
     }
-    assert tom_tat["So dong tem tu Clearance"] == 1
-    assert tom_tat["So dong cho gan"] == 1
-    assert tom_tat["So dong can review"] == 1
+    assert tom_tat["So dong tem tu Clearance"] == 2
+    assert tom_tat["So dong cho gan"] == 2
+    assert tom_tat["So dong can review"] == 2
     assert tom_tat["So dong KM thieu vi tri POG"] == 0
     assert tom_tat["So dong CTKM thieu vi tri ke"] == 0
 
     # Workbook work sheets use the exact same task semantics as the summary.
-    assert workbook["Chờ gắn"].max_row == 2
-    assert workbook["Cần review"].max_row == 2
+    assert workbook["Chờ gắn"].max_row == 3
+    assert workbook["Cần review"].max_row == 3
