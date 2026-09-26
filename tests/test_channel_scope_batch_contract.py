@@ -87,3 +87,52 @@ def test_meaningful_others_subchannels_are_not_operationally_deduped():
     assert actions["scope_identity_key"].nunique() == 2
     assert actions["operational_task_key"].nunique() == 2
     assert len(unique_work_tracking_rows(actions)) == 2
+
+
+def test_task_id_collision_preserves_distinct_source_lineages():
+    rows = pd.DataFrame([
+        {
+            "task_id": "TASK-COLLISION",
+            "source_row_id": "CTKM:Monthly:434",
+            "item_id": "P29975",
+            "processing_status": "",
+        },
+        {
+            "task_id": "TASK-COLLISION",
+            "source_row_id": "CTKM:Monthly:453",
+            "item_id": "P29975",
+            "processing_status": "",
+        },
+    ])
+
+    result = unique_work_tracking_rows(rows)
+
+    assert len(result) == 2
+    assert result["source_row_id"].tolist() == [
+        "CTKM:Monthly:434",
+        "CTKM:Monthly:453",
+    ]
+
+
+def test_same_source_lineage_join_duplicates_still_collapse():
+    rows = pd.DataFrame([
+        {
+            "task_id": "TASK-SAME-SOURCE",
+            "source_row_id": "CTKM:Monthly:434",
+            "pog_source_row_id": "POG:Export:10",
+            "item_id": "P29975",
+            "processing_status": "",
+        },
+        {
+            "task_id": "TASK-SAME-SOURCE",
+            "source_row_id": "CTKM:Monthly:434",
+            "pog_source_row_id": "POG:Export:11",
+            "item_id": "P29975",
+            "processing_status": "",
+        },
+    ])
+
+    result = unique_work_tracking_rows(rows)
+
+    assert len(result) == 1
+    assert result.iloc[0]["source_row_id"] == "CTKM:Monthly:434"

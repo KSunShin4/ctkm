@@ -38,7 +38,7 @@ def _task(task_id, source_row_id, **overrides):
     return row
 
 
-def test_work_tracking_rows_are_unique_by_task_id_and_union_source_lineage():
+def test_work_tracking_rows_preserve_distinct_source_lineages_even_when_task_id_collides():
     frame = pd.DataFrame([
         _task("TASK-1", "CTKM:Monthly:10", item_name="Product A"),
         _task("TASK-1", "CTKM:Monthly:20", item_name="Product A renamed"),
@@ -46,13 +46,13 @@ def test_work_tracking_rows_are_unique_by_task_id_and_union_source_lineage():
 
     result = main.EX._add_work_tracking_columns(frame)
 
-    assert len(result) == 1
+    assert len(result) == 2
     assert result.loc[0, "task_id"] == "TASK-1"
-    assert result.loc[0, "source_row_ids"] == "CTKM:Monthly:10 | CTKM:Monthly:20"
-    assert result.loc[0, "source_row_count"] == 2
+    assert result["source_row_ids"].tolist() == ["CTKM:Monthly:10", "CTKM:Monthly:20"]
+    assert result["source_row_count"].tolist() == [1, 1]
     assert result.loc[0, "pog_source_row_ids"] == "POG:Export:10"
     assert result.loc[0, "pog_source_row_count"] == 1
-    assert "Audit hành động" in result.loc[0, "duplicate_status"]
+    assert result["task_id"].tolist() == ["TASK-1", "TASK-1"]
     assert result.loc[0, "processing_status"] == "Chưa xử lý"
 
 
@@ -78,7 +78,7 @@ def test_rows_without_task_id_are_never_silently_collapsed():
     assert len(result) == 2
 
 
-def test_export_keeps_all_source_rows_in_audit_but_one_editable_row_per_task(tmp_path):
+def test_export_keeps_distinct_source_rows_in_both_audit_and_editable_workbook(tmp_path):
     actions = pd.DataFrame([
         _task("TASK-1", "CTKM:Monthly:10", item_name="Product A"),
         _task("TASK-1", "CTKM:Monthly:20", item_name="Product A renamed"),
@@ -99,7 +99,7 @@ def test_export_keeps_all_source_rows_in_audit_but_one_editable_row_per_task(tmp
     workbook = load_workbook(output)
 
     # One editable physical task, despite two source rows describing it.
-    assert workbook["Gắn tem"].max_row == 2
+    assert workbook["Gắn tem"].max_row == 3
     # Audit retains both source rows for fidelity and investigation.
     assert workbook["Audit hành động"].max_row == 3
     assert workbook["Gắn tem"].data_validations.count == 1
