@@ -458,3 +458,47 @@ def test_integrated_pipeline_workbook_has_conflicts_stable_tasks_and_missing_sum
     assert "So dong CTKM thieu ma san pham" in summary_values
     assert result.summary["So dong CTKM thieu ma san pham"] == 1
     assert result.summary["  Trong do CTKM theo hoa don"] == 0
+
+
+
+def test_incomplete_duplicate_pog_rows_are_preserved_as_distinct_unresolved_positions():
+    pog = [
+        _pog(
+            pog_code=None,
+            location_id="7",
+            facing=1,
+            source_row_id="POG:Export:100",
+        ),
+        _pog(
+            pog_code=None,
+            location_id="7",
+            facing=1,
+            source_row_id="POG:Export:101",
+        ),
+    ]
+
+    result = _actions([_promo()], pog)
+
+    assert len(result) == 2
+    assert result["pog_position_id"].nunique() == 2
+    assert result["task_id"].nunique() == 2
+    assert result["pog_source_row_count"].tolist() == [1, 1]
+    assert set(result["pog_duplicate_status"]) == {"Dòng POG thiếu vị trí - giữ riêng"}
+    assert set(result["location_completeness"]) == {"Thiếu một phần thông tin vị trí"}
+    assert set(result["location_needs_review"]) == {True}
+
+
+def test_complete_exact_duplicate_pog_rows_still_collapse_with_lineage():
+    pog = [
+        _pog(source_row_id="POG:Export:100"),
+        _pog(source_row_id="POG:Export:101"),
+    ]
+
+    result = _actions([_promo()], pog)
+
+    assert len(result) == 1
+    assert result["pog_position_id"].nunique() == 1
+    assert result["task_id"].nunique() == 1
+    assert result.loc[0, "pog_source_row_count"] == 2
+    assert result.loc[0, "pog_source_row_ids"] == "POG:Export:100 | POG:Export:101"
+    assert result.loc[0, "pog_duplicate_status"] == "Đã gom dòng POG trùng hoàn toàn"
