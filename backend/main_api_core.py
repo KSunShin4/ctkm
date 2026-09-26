@@ -705,6 +705,40 @@ async def enqueue_ctkm(
     return _job_public(job)
 
 
+
+@app.post("/api/job/{job_id}/mapping-confirmation", status_code=202)
+async def confirm_job_mapping(job_id: str, ctkm_mapping: str = Form(...), pog_mapping: str = Form(...),
+                              save_preset: bool = Form(True), _admin: str = Depends(require_admin)):
+    job = _jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Không tìm thấy tác vụ")
+    if job.get("kind") != "ctkm" or job.get("status") != "awaiting_mapping_confirmation":
+        raise HTTPException(status_code=409, detail="Tác vụ không chờ xác nhận mapping")
+    try:
+        ctkm, pog = json.loads(ctkm_mapping), json.loads(pog_mapping)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=422, detail=f"Mapping không phải JSON hợp lệ: {exc.msg}") from exc
+    if not isinstance(ctkm, dict) or not isinstance(pog, dict):
+        raise HTTPException(status_code=422, detail="Mapping phải là object")
+    if not _required_mapping_targets(_main_mod.SCHEMA["fact_fields"]).issubset(set(ctkm.values())):
+        raise HTTPException(status_code=422, detail="Mapping CTKM chưa đủ field bắt buộc")
+    if not _required_mapping_targets(_main_mod.SCHEMA["pog_fields"]).issubset(set(pog.values())):
+        raise HTTPException(status_code=422, detail="Mapping POG chưa đủ field bắt buộc")
+    if len(set(ctkm.values())) != len(ctkm) or len(set(pog.values())) != len(pog):
+        raise HTTPException(status_code=422, detail="Một field đích không được map từ nhiều cột nguồn")
+    confirmation = job.get("mapping_confirmation") or {}
+    if save_preset:
+        _store_preset(confirmation.get("ctkm_columns", []), confirmation.get("pog_columns", []),
+                      ctkm_mapping=ctkm, pog_mapping=pog)
+    work = job.get("resume_work")
+    if not callable(work):
+        raise HTTPException(status_code=409, detail="Tác vụ không còn dữ liệu để tiếp tục")
+    job["confirmed_mappings"] = {"ctkm": ctkm, "pog": pog}
+    job["mapping_confirmation"] = None
+    job.update(status="queued", progress=0, message="Đã xác nhận mapping, đang vào lại hàng đợi", error=None)
+    _submit_job(job_id, "ctkm", work)
+    return _job_public(job)
+
 @app.post("/api/check-expiration")
 async def check_expiration(
     expiration_file: UploadFile = File(..., description="File Detail Expiration Onhand by Item (.xlsx)"),
