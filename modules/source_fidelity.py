@@ -40,13 +40,16 @@ def _fallback_source_row_id(row, position: int) -> str:
 
 
 def _source_row_id(row, position: int) -> str:
+    logical = row.get("logical_row_id")
+    if not _blank(logical):
+        return str(logical)
     value = row.get("source_row_id")
     return _fallback_source_row_id(row, position) if _blank(value) else str(value)
 
 
 def _lineage_ids(row) -> list[str]:
     values = []
-    for field in ("source_row_ids", "source_row_id"):
+    for field in ("logical_row_id", "source_row_ids", "source_row_id"):
         value = row.get(field)
         if _blank(value):
             continue
