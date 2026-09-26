@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 from openpyxl import load_workbook
+from openpyxl.utils import get_column_letter
 
 import main
 from backend.final_output_contract import validate_ctkm_workbook
@@ -510,8 +511,18 @@ def test_selected_output_columns_only_trim_operational_views_not_audit(tmp_path)
             assert "extra__NOTE - Cần lưu ý" in audit_headers
             assert "extra__POG__FIXELNAME" in audit_headers
             assert "Dòng nguồn chính (source_row_id)" in audit_headers
-            assert "extra__NOTE - Cần lưu ý" not in total_headers
-            assert "extra__POG__FIXELNAME" not in action_headers
+
+            # Action sheets keep underlying columns for identity/audit, but
+            # presentation selection hides unselected canonical/raw fields.
+            assert "extra__POG__FIXELNAME" in action_headers
+            raw_idx = action_headers.index("extra__POG__FIXELNAME") + 1
+            assert workbook["Gắn tem"].column_dimensions[get_column_letter(raw_idx)].hidden is True
+
+            assert "From" in action_headers
+            from_idx = action_headers.index("From") + 1
+            assert workbook["Gắn tem"].column_dimensions[get_column_letter(from_idx)].hidden is True
+            campaign_idx = action_headers.index("Campaign") + 1
+            assert workbook["Gắn tem"].column_dimensions[get_column_letter(campaign_idx)].hidden is False
         finally:
             workbook.close()
     finally:
