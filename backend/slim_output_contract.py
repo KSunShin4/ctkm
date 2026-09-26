@@ -73,6 +73,10 @@ def _prepare_frames(exporter, df_fefo_actions: pd.DataFrame | None):
     else:
         actions = df_fefo_actions.copy()
 
+    for required_column in ("key_channel", "channel", "item_id", "item_name", "promo_uom"):
+        if required_column not in actions.columns:
+            actions[required_column] = pd.NA
+
     scope = _in_scope(actions)
     action_field = "scheduled_action" if "scheduled_action" in actions.columns else "action"
     normalized = (
@@ -220,6 +224,31 @@ def _update_all_km_summary(
         summary["So item POG khong co CTKM phu hop"] = len(missing_keys)
 
 
+_SELECTABLE_PRESENTATION_FIELDS = {
+    "item_id", "item_name", "promo_uom", "key_channel", "channel",
+    "campaign_name", "campaign_detail", "promo_from", "promo_to",
+    "normal_price", "promo_price", "product_type",
+    "store_id", "pog_code", "location_id", "facing",
+}
+_PINNED_PRESENTATION_FIELDS = {
+    "key_channel", "channel", "item_id", "item_name", "promo_uom",
+}
+
+
+def _apply_selected_output_visibility(ws, exporter, selected: set[str]) -> None:
+    if not selected:
+        return
+    for index, cell in enumerate(ws[1], start=1):
+        header = str(cell.value or "").strip()
+        if header in _PINNED_PRESENTATION_FIELDS:
+            ws.column_dimensions[exporter.get_column_letter(index)].hidden = False
+            continue
+        if header in _SELECTABLE_PRESENTATION_FIELDS:
+            ws.column_dimensions[exporter.get_column_letter(index)].hidden = (
+                header.lower() not in selected
+            )
+
+
 def install_slim_output_contract(core_module) -> None:
     if getattr(core_module.app.state, "slim_output_contract_v1", False):
         return
@@ -245,7 +274,7 @@ def install_slim_output_contract(core_module) -> None:
         # These are intentionally unused in slim presentation, but do not discard
         # df_matched/df_pog_only: they are required for all-KM reconciliation.
         del df_ctkm_only, overlap_warnings, mapping_logs
-        del snapshot_alignment_warning, selected_output_columns
+        del snapshot_alignment_warning
 
         matched_all, missing_all_km, added_keys = build_all_km_reconciliation_frames(
             main_core, df_matched, df_pog_only, df_fefo_actions
@@ -265,6 +294,14 @@ def install_slim_output_contract(core_module) -> None:
         total, gan, thao, wait, review, location_issues, location_review, audit = _prepare_frames(
             exporter, df_fefo_actions
         )
+
+        # selected_output_columns is presentation-only; all workbook data columns
+        # remain present so audit/identity validation cannot be weakened by a UI choice.
+        selected = {
+            str(column).strip().lower()
+            for column in (selected_output_columns or [])
+            if str(column).strip()
+        }
 
         pog_review = df_pog_review.copy() if df_pog_review is not None else pd.DataFrame()
         pog_metadata = _metadata_from(df_pog_review, "pog_metadata")
@@ -350,6 +387,8 @@ def install_slim_output_contract(core_module) -> None:
                 exporter._hide_technical_columns(
                     ws, action_sheet=sheet_name in {"Gắn tem", "Tháo tem", "Chờ gắn", "Cần review"}
                 )
+                if sheet_name in {"TỔNG HỢP - TEM", "Gắn tem", "Tháo tem", "Chờ gắn", "Cần review"}:
+                    _apply_selected_output_visibility(ws, exporter, selected)
                 exporter._apply_bilingual_headers(ws)
 
             for sheet_name in (

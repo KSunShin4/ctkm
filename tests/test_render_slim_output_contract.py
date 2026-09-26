@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 from openpyxl import load_workbook
+from openpyxl.utils import get_column_letter
 
 import main
 from backend.final_output_contract import validate_ctkm_workbook
@@ -450,5 +451,79 @@ def test_final_validator_rejects_same_task_lineage_with_different_business_value
         )
         with pytest.raises(RuntimeError, match="cùng task/lineage"):
             validate_ctkm_workbook(output, summary)
+    finally:
+        main.EX.export_final_report = original_export
+
+
+
+def test_selected_output_columns_only_trim_operational_views_not_audit(tmp_path):
+    original_export = main.EX.export_final_report
+    try:
+        _install_on_fake_backend()
+        output = tmp_path / "selected-output.xlsx"
+        actions = _actions().copy()
+        actions["extra__NOTE - Cần lưu ý"] = "  raw note  "
+        actions["extra__POG__FIXELNAME"] = "  Kệ A  "
+        actions["source_row_id"] = "CTKM:Monthly:8"
+        actions["source_row_ids"] = "CTKM:Monthly:8"
+        actions["source_row_count"] = 1
+
+        summary = {
+            "Thang bao cao": "2026-09",
+            "Ngay nghiep vu": pd.Timestamp("2026-09-05"),
+            "So dong KM thieu vi tri POG": 1,
+            "So dong can kiem tra vi tri": 1,
+            "So dong cho gan": 1,
+            "So dong can review": 1,
+            "So dong POG khong co KM phu hop": 0,
+        }
+        main.EX.export_final_report(
+            output_path=output,
+            df_matched=pd.DataFrame(),
+            df_ctkm_only=pd.DataFrame(),
+            df_pog_only=pd.DataFrame(),
+            overlap_warnings=[],
+            mapping_logs=[],
+            reconciliation_summary=summary,
+            selected_output_columns=["campaign_name"],
+            df_fefo_actions=actions,
+            df_pog_review=pd.DataFrame(),
+        )
+
+        workbook = load_workbook(output, data_only=True)
+        try:
+            total_headers = [cell.value for cell in workbook["TỔNG HỢP - TEM"][1]]
+            action_headers = [cell.value for cell in workbook["Gắn tem"][1]]
+            audit_headers = [cell.value for cell in workbook["Audit hành động"][1]]
+
+            # Required user-facing columns stay pinned even when not selected.
+            for required in [
+                "KEY Channel", "Channel", "Mã sản phẩm",
+                "Tên sản phẩm", "Đơn vị sản phẩm (Promo UoM)",
+            ]:
+                assert required in total_headers
+                assert required in action_headers
+
+            assert "Campaign" in total_headers
+            assert "Campaign" in action_headers
+
+            # Source/audit fidelity is never trimmed by presentation selection.
+            assert "extra__NOTE - Cần lưu ý" in audit_headers
+            assert "extra__POG__FIXELNAME" in audit_headers
+            assert "Dòng nguồn chính (source_row_id)" in audit_headers
+
+            # Action sheets keep underlying columns for identity/audit, but
+            # presentation selection hides unselected canonical/raw fields.
+            assert "extra__POG__FIXELNAME" in action_headers
+            raw_idx = action_headers.index("extra__POG__FIXELNAME") + 1
+            assert workbook["Gắn tem"].column_dimensions[get_column_letter(raw_idx)].hidden is True
+
+            assert "From" in action_headers
+            from_idx = action_headers.index("From") + 1
+            assert workbook["Gắn tem"].column_dimensions[get_column_letter(from_idx)].hidden is True
+            campaign_idx = action_headers.index("Campaign") + 1
+            assert workbook["Gắn tem"].column_dimensions[get_column_letter(campaign_idx)].hidden is False
+        finally:
+            workbook.close()
     finally:
         main.EX.export_final_report = original_export
