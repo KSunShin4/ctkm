@@ -238,3 +238,42 @@ def test_export_shows_source_new_and_matched_pog_codes(tmp_path):
     assert "P09544" in values
     assert "P30519" in values
     assert "Khớp mã mới" in values
+
+
+
+def test_distinct_new_item_codes_get_distinct_promotion_and_task_identity():
+    processed, _ = _process_monthly([
+        _monthly_row("P1001", "P9001", "Transition product"),
+        _monthly_row("P1001", "P9002", "Transition product"),
+    ])
+
+    actions = main.RC.build_fefo_action_frame(
+        processed,
+        "2026-09",
+        df_pog=None,
+        business_date=BUSINESS_DATE,
+    )
+
+    assert len(actions) == 2
+    assert set(actions["new_item_id"]) == {"P9001", "P9002"}
+    assert set(actions["item_code_transition_status"]) == {"Mơ hồ - không tự remap"}
+    assert actions["promotion_id"].nunique() == 2
+    assert actions["task_id"].nunique() == 2
+
+
+def test_same_new_item_code_keeps_identity_stable_across_old_vs_new_pog_match():
+    processed, _ = _process_monthly([
+        _monthly_row("P09544", "P30519", "La Roche Posay Effaclar Duo+M"),
+    ])
+    old_pog = pd.DataFrame([_pog("P09544", "5", "POG:Export:342")])
+    new_pog = pd.DataFrame([_pog("P30519", "5", "POG:Export:342")])
+
+    old_actions = main.RC.build_fefo_action_frame(
+        processed, "2026-09", old_pog, business_date=BUSINESS_DATE,
+    )
+    new_actions = main.RC.build_fefo_action_frame(
+        processed, "2026-09", new_pog, business_date=BUSINESS_DATE,
+    )
+
+    assert old_actions.loc[0, "promotion_id"] == new_actions.loc[0, "promotion_id"]
+    assert old_actions.loc[0, "task_id"] == new_actions.loc[0, "task_id"]
