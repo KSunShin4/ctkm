@@ -38,7 +38,7 @@ def _task(task_id, source_row_id, **overrides):
     return row
 
 
-def test_work_tracking_rows_are_unique_by_task_id_and_union_source_lineage():
+def test_work_tracking_rows_preserve_distinct_source_lineages_even_when_task_id_collides():
     frame = pd.DataFrame([
         _task("TASK-1", "CTKM:Monthly:10", item_name="Product A"),
         _task("TASK-1", "CTKM:Monthly:20", item_name="Product A renamed"),
@@ -78,7 +78,7 @@ def test_rows_without_task_id_are_never_silently_collapsed():
     assert len(result) == 2
 
 
-def test_export_keeps_all_source_rows_in_audit_but_one_editable_row_per_task(tmp_path):
+def test_export_keeps_distinct_source_rows_in_both_audit_and_editable_workbook(tmp_path):
     actions = pd.DataFrame([
         _task("TASK-1", "CTKM:Monthly:10", item_name="Product A"),
         _task("TASK-1", "CTKM:Monthly:20", item_name="Product A renamed"),
