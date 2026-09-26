@@ -144,6 +144,9 @@ def test_intentional_multi_promo_targets_remain_compatible_with_normalizer_unpiv
     assert unpivoted["promo_price"].tolist() == [100, 80]
     assert unpivoted["promo_slot_id"].tolist() == [1, 2]
     assert unpivoted["source_row_id"].tolist() == [
+        "CTKM:Sheet1:2", "CTKM:Sheet1:2"
+    ]
+    assert unpivoted["logical_row_id"].tolist() == [
         "CTKM:Sheet1:2:slot-1", "CTKM:Sheet1:2:slot-2"
     ]
 
