@@ -98,7 +98,11 @@ def _prepare_frames(exporter, df_fefo_actions: pd.DataFrame | None):
             scope & actions["location_needs_review"].fillna(False).astype(bool)
         ].copy()
     else:
-        location_review = location_issues.copy()
+        # Completeness and review are independent location-quality axes.
+        # Missing/partial coordinates belong to CTKM thieu vi tri ke, but without
+        # the canonical review flag there is no evidence that a row belongs to
+        # POG cần kiểm tra. Never manufacture review rows by copying the issue set.
+        location_review = pd.DataFrame(columns=actions.columns)
 
     for frame in (gan, thao, wait, review):
         if "so_ngay_con_lai" not in frame.columns:
