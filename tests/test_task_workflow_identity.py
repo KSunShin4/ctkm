@@ -78,6 +78,20 @@ def test_rows_without_task_id_are_never_silently_collapsed():
     assert len(result) == 2
 
 
+
+
+def test_same_task_id_without_source_lineage_is_never_silently_collapsed():
+    frame = pd.DataFrame([
+        _task("TASK-COLLISION", None, source_row_ids=None, source_row_count=0, item_name="Product A"),
+        _task("TASK-COLLISION", None, source_row_ids=None, source_row_count=0, item_name="Product B"),
+    ])
+
+    result = main.EX._add_work_tracking_columns(frame)
+
+    assert len(result) == 2
+    assert result["task_id"].tolist() == ["TASK-COLLISION", "TASK-COLLISION"]
+    assert result["item_name"].tolist() == ["Product A", "Product B"]
+
 def test_export_keeps_distinct_source_rows_in_both_audit_and_editable_workbook(tmp_path):
     actions = pd.DataFrame([
         _task("TASK-1", "CTKM:Monthly:10", item_name="Product A"),

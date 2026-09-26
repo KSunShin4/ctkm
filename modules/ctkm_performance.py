@@ -178,9 +178,11 @@ def unique_work_tracking_rows(df: pd.DataFrame) -> pd.DataFrame:
             # a join) may still collapse into one editable work row.
             if task and source_lineage:
                 key = ("task_source", task, source_lineage)
-            elif task:
-                key = ("task", task)
             else:
+                # Without source lineage there is no evidence that matching
+                # task_id values describe the same source/business record.
+                # Preserve each row rather than turning an identifier collision
+                # into silent data loss.
                 key = ("row", position)
             groups.setdefault(key, []).append(idx)
 
