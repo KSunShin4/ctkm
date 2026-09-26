@@ -245,7 +245,7 @@ def install_slim_output_contract(core_module) -> None:
         # These are intentionally unused in slim presentation, but do not discard
         # df_matched/df_pog_only: they are required for all-KM reconciliation.
         del df_ctkm_only, overlap_warnings, mapping_logs
-        del snapshot_alignment_warning, selected_output_columns
+        del snapshot_alignment_warning
 
         matched_all, missing_all_km, added_keys = build_all_km_reconciliation_frames(
             main_core, df_matched, df_pog_only, df_fefo_actions
@@ -265,6 +265,40 @@ def install_slim_output_contract(core_module) -> None:
         total, gan, thao, wait, review, location_issues, location_review, audit = _prepare_frames(
             exporter, df_fefo_actions
         )
+
+        # selected_output_columns is a presentation preference only.  Audit keeps
+        # the complete source-faithful frame regardless of what the user chooses
+        # to display on operational sheets.
+        pinned_output_columns = {
+            "key_channel", "channel", "item_id", "item_name", "promo_uom",
+            "processing_status", "processed_by", "processed_at", "staff_note",
+        }
+        selected = {
+            str(column).strip().lower()
+            for column in (selected_output_columns or [])
+            if str(column).strip()
+        }
+
+        def _presentation_frame(frame):
+            if frame is None or frame.empty or not selected:
+                return frame
+            keep = []
+            for column in frame.columns:
+                exact = str(column).strip().lower()
+                base = str(column).split("__", 1)[0].strip().lower()
+                if (
+                    exact in selected
+                    or base in selected
+                    or exact in pinned_output_columns
+                ):
+                    keep.append(column)
+            return frame.loc[:, keep].copy()
+
+        total = _presentation_frame(total)
+        gan = _presentation_frame(gan)
+        thao = _presentation_frame(thao)
+        wait = _presentation_frame(wait)
+        review = _presentation_frame(review)
 
         pog_review = df_pog_review.copy() if df_pog_review is not None else pd.DataFrame()
         pog_metadata = _metadata_from(df_pog_review, "pog_metadata")
