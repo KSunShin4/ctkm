@@ -1,4 +1,5 @@
 import React from "react"
+import {useUiPreferences} from "./ui-preferences.js"
 
 export const MASCOT_STATES={
   idle:{label:"Sẵn sàng",face:"•ᴗ•",mark:"✦"},
@@ -14,7 +15,7 @@ export const assistantComponentCss=`
 .assistant-empty{padding:28px 18px;border:1px dashed #cfd4dc;border-radius:16px;text-align:center;background:#fafbfc}.assistant-empty .mascot{justify-content:center}.assistant-empty h3{margin:12px 0 4px;font-size:14px}.assistant-empty p{margin:0 auto;max-width:460px;color:#667085;font-size:11px;line-height:1.55}
 @media(max-width:760px){.mascot-avatar{width:46px;height:46px;border-radius:15px}.assistant-card{grid-template-columns:1fr;padding:14px}.assistant-card>.mascot{align-items:center}.assistant-actions>*{flex:1;text-align:center}.assistant-empty{padding:20px 12px}}
 `
-export function Mascot({state="idle",showLabel=false}){const x=MASCOT_STATES[state]||MASCOT_STATES.idle;return <span className="mascot" data-state={state}><span className="mascot-avatar" aria-hidden="true"><span className="mascot-hair"/><span className="mascot-face">{x.face}</span><span className="mascot-mark">{x.mark}</span></span>{showLabel&&<span className="mascot-label">{x.label}</span>}</span>}
-export function AssistantCard({state="idle",title,children,actions=[]}){return <section className="assistant-card"><Mascot state={state}/><div><h3>{title}</h3><p>{children}</p>{actions.length>0&&<div className="assistant-actions">{actions.map((a,i)=>a.href?<a key={i} className={a.primary?"primary":""} href={a.href}>{a.label}</a>:<button key={i} type="button" className={a.primary?"primary":""} onClick={a.onClick}>{a.label}</button>)}</div>}</div></section>}
-export function GuideBubble({children}){return <div className="guide-bubble">{children}</div>}
-export function EmptyState({title="Chưa có dữ liệu",children,state="guide"}){return <section className="assistant-empty"><Mascot state={state}/><h3>{title}</h3><p>{children}</p></section>}
+export function Mascot({state="idle",showLabel=false}){const prefs=useUiPreferences();if(!prefs.assistant)return null;const x=MASCOT_STATES[state]||MASCOT_STATES.idle;return <span className="mascot" data-state={state}><span className="mascot-avatar" aria-hidden="true"><span className="mascot-hair"/><span className="mascot-face">{x.face}</span><span className="mascot-mark">{x.mark}</span></span>{showLabel&&<span className="mascot-label">{x.label}</span>}</span>}
+export function AssistantCard({state="idle",title,children,actions=[]}){const prefs=useUiPreferences();if(!prefs.assistant)return null;return <section className="assistant-card"><Mascot state={state}/><div><h3>{title}</h3><p>{children}</p>{actions.length>0&&<div className="assistant-actions">{actions.map((a,i)=>a.href?<a key={i} className={a.primary?"primary":""} href={a.href}>{a.label}</a>:<button key={i} type="button" className={a.primary?"primary":""} onClick={a.onClick}>{a.label}</button>)}</div>}</div></section>}
+export function GuideBubble({children}){const prefs=useUiPreferences();if(!prefs.assistant)return null;return <div className="guide-bubble">{children}</div>}
+export function EmptyState({title="Chưa có dữ liệu",children,state="guide"}){const prefs=useUiPreferences();if(!prefs.assistant)return null;return <section className="assistant-empty"><Mascot state={state}/><h3>{title}</h3><p>{children}</p></section>}
