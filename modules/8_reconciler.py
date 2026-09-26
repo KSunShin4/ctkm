@@ -35,6 +35,11 @@ for _constant in ("_BUSINESS_COLUMNS", "_PROMOTION_ID_COLUMNS"):
         _index = _columns.index("channel") if "channel" in _columns else len(_columns)
         _columns.insert(_index, "key_channel")
 
+_promotion_columns = getattr(_core, "_PROMOTION_ID_COLUMNS", None)
+if isinstance(_promotion_columns, list) and "new_item_id" not in _promotion_columns:
+    _index = _promotion_columns.index("item_key") + 1 if "item_key" in _promotion_columns else 0
+    _promotion_columns.insert(_index, "new_item_id")
+
 _business_columns = getattr(_core, "_BUSINESS_COLUMNS", None)
 if isinstance(_business_columns, list):
     for _field in ("new_item_id", "item_code_transition_status"):
