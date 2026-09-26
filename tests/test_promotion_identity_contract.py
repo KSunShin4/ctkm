@@ -92,3 +92,19 @@ def test_source_lineage_does_not_change_stable_promotion_identity():
         "CTKM:Monthly:10", "CTKM:Monthly:999"
     }
     assert actions.loc[0, "duplicate_status"] == "Đã gom dòng trùng hoàn toàn"
+
+
+
+def test_key_channel_alone_is_part_of_stable_promotion_and_task_identity():
+    rows = [
+        _promo(key_channel="Offline", channel="OFFLINE"),
+        _promo(key_channel="Others", channel="OFFLINE"),
+    ]
+
+    actions = _actions(rows)
+
+    assert len(actions) == 2
+    assert actions["promotion_id"].nunique() == 2
+    assert actions["task_id"].nunique() == 2
+    assert set(actions["key_channel"]) == {"Offline", "Others"}
+    assert set(actions["channel"]) == {"OFFLINE"}
