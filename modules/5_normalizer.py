@@ -231,7 +231,9 @@ def unpivot_multi_promo(df: pd.DataFrame, max_slots: int = 5):
                 base_row_id = output_row.get("source_row_id")
                 if pd.notna(base_row_id) and str(base_row_id).strip():
                     logical_id = f"{base_row_id}:slot-{slot_idx}"
-                    output_row["source_row_id"] = logical_id
+                    # Keep source_row_id as the physical Excel lineage. Logical
+                    # promotion identity belongs in logical_row_id so audit/export
+                    # can always point back to the real worksheet row.
                     output_row["logical_row_id"] = logical_id
                 output_row["promo_slot_id"] = slot_idx
                 rows_out.append(output_row)

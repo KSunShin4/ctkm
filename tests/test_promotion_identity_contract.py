@@ -142,6 +142,10 @@ def test_multi_promo_slots_with_identical_business_values_remain_distinct_logica
     assert actions["promotion_id"].nunique() == 2
     assert actions["task_id"].nunique() == 2
     assert actions["source_row_id"].tolist() == [
+        "CTKM:Monthly:10",
+        "CTKM:Monthly:10",
+    ]
+    assert actions["logical_row_id"].tolist() == [
         "CTKM:Monthly:10:slot-1",
         "CTKM:Monthly:10:slot-2",
     ]

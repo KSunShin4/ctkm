@@ -128,8 +128,8 @@ def detect_campaign_time_overlaps(df_ctkm):
                 f"{af.date()} -> {at.date()}",
                 f"{bf.date()} -> {bt.date()}",
                 _scope_display(a), _scope_display(b),
-                _core._display_value(a.get("source_row_id"), ""),
-                _core._display_value(b.get("source_row_id"), ""),
+                _core._display_value(a.get("logical_row_id") or a.get("source_row_id"), ""),
+                _core._display_value(b.get("logical_row_id") or b.get("source_row_id"), ""),
                 conflict_type, is_blocking,
             )
             warning.scope_relation = relation
@@ -350,10 +350,16 @@ def _attach_review_metadata(result: pd.DataFrame, overlap_warnings) -> pd.DataFr
         return result
 
     for idx, row in result.iterrows():
-        lineage_value = row.get("source_row_ids", row.get("source_row_id", ""))
-        lineage_ids = {
-            value.strip() for value in str(lineage_value).split("|") if value.strip()
-        }
+        lineage_ids = set()
+        for lineage_value in (
+            row.get("logical_row_id"),
+            row.get("source_row_ids", row.get("source_row_id", "")),
+        ):
+            if lineage_value is None or pd.isna(lineage_value):
+                continue
+            lineage_ids.update(
+                value.strip() for value in str(lineage_value).split("|") if value.strip()
+            )
         details = list(dict.fromkeys(
             detail for row_id in lineage_ids for detail in details_by_row.get(row_id, [])
         ))
