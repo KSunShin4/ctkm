@@ -31,5 +31,6 @@ test("portal main renders GuideApp only for guide-side entrypoint",async()=>{
   const source=await read("./portal-main.jsx")
   assert.match(source,/import GuideApp/)
   assert.match(source,/path\.startsWith\("\/assistant"\)/)
-  assert.match(source,/root\.render\(<GuideApp\/>\)/)
+  assert.match(source,/render\\(<GuideApp\\/>\\)/)
+  assert.match(source,/UiPreferenceRoot/)
 })
