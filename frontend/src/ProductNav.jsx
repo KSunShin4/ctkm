@@ -1,42 +1,5 @@
 import React from "react"
-
-export const PORTAL_MODULES = [
-  {id:"ops", label:"CTKM / Tem", href:"/"},
-  {id:"schedule", label:"Xếp lịch", href:"/schedule"},
-  {id:"guide", label:"Hướng dẫn", href:"/guide"},
-  {id:"assistant", label:"Trợ lý", href:"/assistant"},
-]
-
-const css=`
-.portal-nav{height:44px;display:flex;align-items:center;gap:12px;padding:0 18px;background:#102a43;color:#fff;position:sticky;top:0;z-index:80;border-bottom:1px solid rgba(255,255,255,.12)}
-.portal-nav-brand{font-size:13px;font-weight:900;letter-spacing:-.2px;white-space:nowrap}
-.portal-nav-brand span{color:#6ee7b7}
-.portal-nav-links{display:flex;gap:4px;overflow-x:auto;scrollbar-width:none}
-.portal-nav-links::-webkit-scrollbar{display:none}
-.portal-nav-link{display:inline-flex;align-items:center;min-height:30px;padding:6px 10px;border-radius:8px;color:#dbeafe;text-decoration:none;font-size:11px;font-weight:750;white-space:nowrap}
-.portal-nav-link:hover{background:rgba(255,255,255,.09);color:#fff}
-.portal-nav-link.active{background:#fff;color:#102a43}
-.portal-nav-spacer{flex:1}
-.portal-nav-note{font-size:10px;color:#a9c2d9;white-space:nowrap}
-@media(max-width:700px){.portal-nav{height:42px;padding:0 10px;gap:8px}.portal-nav-brand{font-size:12px}.portal-nav-note{display:none}.portal-nav-link{padding:6px 9px;font-size:10px}}
-`
-
-export function currentPortalModule(pathname=window.location.pathname){
-  const path=String(pathname||"/")
-  if(path.startsWith("/schedule"))return "schedule"
-  if(path.startsWith("/guide"))return "guide"
-  if(path.startsWith("/assistant"))return "assistant"
-  return "ops"
-}
-
-export default function ProductNav({current}){
-  const active=current||currentPortalModule()
-  return <><style>{css}</style><nav className="portal-nav" aria-label="Điều hướng module">
-    <div className="portal-nav-brand">Pharma<span>Ops</span></div>
-    <div className="portal-nav-links">
-      {PORTAL_MODULES.map(item=><a key={item.id} className={`portal-nav-link ${active===item.id?"active":""}`} href={item.href}>{item.label}</a>)}
-    </div>
-    <div className="portal-nav-spacer"/>
-    <div className="portal-nav-note">Công cụ vận hành cửa hàng</div>
-  </nav></>
-}
+export const PORTAL_MODULES=[{id:"overview",label:"Tổng quan",short:"Tổng quan",href:"/overview",icon:"⌂"},{id:"schedule",label:"Xếp lịch",short:"Lịch",href:"/schedule",icon:"▦"},{id:"ops",label:"CTKM / Tem",short:"CTKM",href:"/",icon:"✓"},{id:"guide",label:"Hướng dẫn",short:"Hướng dẫn",href:"/guide",icon:"?"},{id:"assistant",label:"Trợ lý",short:"Trợ lý",href:"/assistant",icon:"✦"},{id:"settings",label:"Cài đặt",short:"Cài đặt",href:"/settings",icon:"⚙"}]
+const css=`.portal-nav{height:58px;display:flex;align-items:center;gap:18px;padding:0 22px;background:#102a43;color:#fff;position:sticky;top:0;z-index:80;border-bottom:1px solid rgba(255,255,255,.12)}.portal-nav-brand{display:flex;align-items:center;gap:9px;color:#fff;text-decoration:none;white-space:nowrap}.portal-brand-mark{width:29px;height:29px;border-radius:9px;background:#fff;color:#087f5b;display:grid;place-items:center;font-size:18px;font-weight:900}.portal-brand-name{font-size:14px;font-weight:900}.portal-brand-name span{color:#6ee7b7}.portal-nav-links{display:flex;gap:3px;overflow-x:auto;scrollbar-width:none}.portal-nav-links::-webkit-scrollbar{display:none}.portal-nav-link{display:inline-flex;align-items:center;gap:6px;min-height:34px;padding:7px 10px;border-radius:9px;color:#dbeafe;text-decoration:none;font-size:11px;font-weight:750;white-space:nowrap}.portal-nav-link:hover{background:rgba(255,255,255,.09);color:#fff}.portal-nav-link.active{background:#fff;color:#102a43}.portal-nav-icon{font-size:13px}.portal-nav-spacer{flex:1}.portal-nav-note{font-size:10px;color:#a9c2d9;white-space:nowrap}.portal-mobile-nav{display:none}@media(max-width:760px){.portal-nav{height:52px;padding:0 12px}.portal-nav-links,.portal-nav-note{display:none}body{padding-bottom:68px}.portal-mobile-nav{position:fixed;display:grid;grid-template-columns:repeat(6,1fr);left:0;right:0;bottom:0;z-index:100;background:rgba(255,255,255,.98);border-top:1px solid #e4e7ec;padding:5px 4px calc(5px + env(safe-area-inset-bottom));box-shadow:0 -4px 18px rgba(16,24,40,.08)}.portal-mobile-link{min-width:0;display:flex;flex-direction:column;align-items:center;gap:2px;padding:4px 1px;color:#667085;text-decoration:none;font-size:8px;font-weight:750;white-space:nowrap}.portal-mobile-link .portal-nav-icon{font-size:16px}.portal-mobile-link.active{color:#087f5b}}`
+export function currentPortalModule(pathname=window.location.pathname){const p=String(pathname||"/");if(p.startsWith("/overview"))return"overview";if(p.startsWith("/schedule"))return"schedule";if(p.startsWith("/guide"))return"guide";if(p.startsWith("/assistant"))return"assistant";if(p.startsWith("/settings"))return"settings";return"ops"}
+export default function ProductNav({current}){const active=current||currentPortalModule();return <><style>{css}</style><nav className="portal-nav" aria-label="Điều hướng module"><a className="portal-nav-brand" href="/overview"><span className="portal-brand-mark">+</span><span className="portal-brand-name">Pharma<span>Ops</span></span></a><div className="portal-nav-links">{PORTAL_MODULES.map(x=><a key={x.id} className={`portal-nav-link ${active===x.id?"active":""}`} href={x.href}><span className="portal-nav-icon">{x.icon}</span>{x.label}</a>)}</div><div className="portal-nav-spacer"/><div className="portal-nav-note">Trợ lý vận hành cửa hàng</div></nav><nav className="portal-mobile-nav" aria-label="Điều hướng module trên điện thoại">{PORTAL_MODULES.map(x=><a key={x.id} className={`portal-mobile-link ${active===x.id?"active":""}`} href={x.href}><span className="portal-nav-icon">{x.icon}</span><span>{x.short}</span></a>)}</nav></>}

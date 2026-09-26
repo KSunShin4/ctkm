@@ -1,32 +1,6 @@
-<!doctype html>
-<html lang="vi">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>CTKM Pipeline</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
-  </head>
-  <body>
-    <div id="root"></div>
-    <a id="shelf-shortcut" href="/scan-tem?mode=shelf" style="display:none;position:fixed;right:14px;bottom:14px;z-index:50;background:#175cd3;color:#fff;text-decoration:none;padding:11px 14px;border-radius:12px;box-shadow:0 8px 24px rgba(16,24,40,.22);font:800 12px/1.2 Inter,ui-sans-serif,sans-serif">▤ Kiểm theo kệ</a>
-    <script type="module">
-      if (window.location.pathname.startsWith('/schedule')) {
-        import('/src/scheduling-main.jsx')
-      } else if (window.location.pathname.startsWith('/guide') || window.location.pathname.startsWith('/assistant')) {
-        import('/src/portal-main.jsx')
-      } else if (window.location.pathname.startsWith('/scan-tem')) {
-        const mode = new URLSearchParams(window.location.search).get('mode')
-        if (mode === 'shelf') {
-          import('/src/tag-audit-shelf-main.jsx')
-        } else {
-          document.getElementById('shelf-shortcut').style.display = 'block'
-          import('/src/tag-audit-main.jsx')
-        }
-      } else {
-        import('/src/main.jsx')
-      }
-    </script>
-  </body>
-</html>
+<!doctype html><html lang="vi"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><title>PharmaOps — Trợ lý vận hành cửa hàng</title></head><body><div id="root"></div><a id="shelf-shortcut" href="/scan-tem?mode=shelf" style="display:none">Kiểm theo kệ</a><script type="module">
+if(window.location.pathname.startsWith('/schedule'))import('/src/scheduling-main.jsx')
+else if(window.location.pathname.startsWith('/overview')||window.location.pathname.startsWith('/guide')||window.location.pathname.startsWith('/assistant')||window.location.pathname.startsWith('/settings'))import('/src/portal-main.jsx')
+else if(window.location.pathname.startsWith('/scan-tem')){const mode=new URLSearchParams(window.location.search).get('mode');if(mode==='shelf')import('/src/tag-audit-shelf-main.jsx');else{document.getElementById('shelf-shortcut').style.display='block';import('/src/tag-audit-main.jsx')}}
+else import('/src/main.jsx')
+</script></body></html>
