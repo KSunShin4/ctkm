@@ -68,6 +68,22 @@ def _scope_display(row) -> str:
     )
 
 
+def _logical_or_source_lineage(row) -> str:
+    for column in ("logical_row_id", "source_row_id"):
+        value = row.get(column)
+        if value is None:
+            continue
+        try:
+            if pd.isna(value):
+                continue
+        except (TypeError, ValueError):
+            pass
+        text = str(value).strip()
+        if text:
+            return text
+    return ""
+
+
 def detect_campaign_time_overlaps(df_ctkm):
     """Detect product overlaps without turning warnings into task decisions."""
     warnings = []
@@ -128,8 +144,8 @@ def detect_campaign_time_overlaps(df_ctkm):
                 f"{af.date()} -> {at.date()}",
                 f"{bf.date()} -> {bt.date()}",
                 _scope_display(a), _scope_display(b),
-                _core._display_value(a.get("logical_row_id") or a.get("source_row_id"), ""),
-                _core._display_value(b.get("logical_row_id") or b.get("source_row_id"), ""),
+                _logical_or_source_lineage(a),
+                _logical_or_source_lineage(b),
                 conflict_type, is_blocking,
             )
             warning.scope_relation = relation
