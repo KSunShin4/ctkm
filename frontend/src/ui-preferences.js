@@ -1,0 +1,8 @@
+import {useEffect,useState} from "react"
+export const UI_PREFERENCES_KEY="pharmaops_ui_preferences_v1"
+export const DEFAULT_UI_PREFERENCES={compact:false,assistant:true,help:true}
+export function readUiPreferences(){try{return {...DEFAULT_UI_PREFERENCES,...JSON.parse(localStorage.getItem(UI_PREFERENCES_KEY)||"{}")}}catch{return {...DEFAULT_UI_PREFERENCES}}}
+export function writeUiPreferences(prefs){const next={...DEFAULT_UI_PREFERENCES,...prefs};localStorage.setItem(UI_PREFERENCES_KEY,JSON.stringify(next));window.dispatchEvent(new CustomEvent("pharmaops:ui-preferences",{detail:next}));return next}
+export function useUiPreferences(){const [prefs,setPrefs]=useState(readUiPreferences);useEffect(()=>{const sync=e=>setPrefs(e?.detail?{...DEFAULT_UI_PREFERENCES,...e.detail}:readUiPreferences());window.addEventListener("pharmaops:ui-preferences",sync);window.addEventListener("storage",sync);return()=>{window.removeEventListener("pharmaops:ui-preferences",sync);window.removeEventListener("storage",sync)}},[]);return prefs}
+export function UiPreferenceRoot({children}){const prefs=useUiPreferences();useEffect(()=>{document.documentElement.classList.toggle("pharmaops-compact",!!prefs.compact);return()=>document.documentElement.classList.remove("pharmaops-compact")},[prefs.compact]);return children}
+export const uiPreferenceCss=`.pharmaops-compact .panel,.pharmaops-compact .card,.pharmaops-compact .portal-card,.pharmaops-compact .settings-card{padding-top:10px!important;padding-bottom:10px!important}.pharmaops-compact .assistant-card{padding:10px}.pharmaops-compact .guide-card{padding:12px}`
