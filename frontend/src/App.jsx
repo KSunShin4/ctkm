@@ -1,5 +1,7 @@
 import { useState, useCallback, useRef, useEffect } from "react"
 import ProductNav from "./ProductNav.jsx"
+import {HelpTip, MODULE_HELP, helpTipCss} from "./help-foundation.jsx"
+import {Mascot, GuideBubble, assistantComponentCss} from "./assistant-components.jsx"
 
 const API = import.meta.env.VITE_API_BASE_URL || ""  // relative /api by default; override in production if needed
 
@@ -134,6 +136,7 @@ const css = `
     transition: border-color .15s; margin-top: 10px;
   }
   .sheet-select:focus { border-color: var(--accent); }
+  .ops-assistant{display:flex;align-items:flex-start;gap:10px;margin:0 0 14px;padding:12px;border:1px solid var(--border);border-radius:var(--radius-lg);background:var(--surface)}.ops-assistant .mascot-avatar{width:42px;height:42px;border-radius:14px}.ops-assistant-copy{flex:1;min-width:0}.ops-assistant-title{display:flex;align-items:center;gap:7px;font-size:12px;font-weight:750;margin-bottom:6px}.metric-help{display:flex;align-items:center;justify-content:center;gap:5px}
   .mapping-row { display: grid; grid-template-columns: 130px minmax(0, 1fr); gap: 10px;
                  align-items: center; margin-bottom: 8px; }
   .mapping-field { color: var(--text2); font-size: 12px; }
@@ -1252,6 +1255,7 @@ export default function App() {
   const mappingConfirmationModal = mappingConfirmation ? (
     <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.68)",zIndex:9999,display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
       <div className="card" style={{width:"min(960px,96vw)",maxHeight:"90vh",overflow:"auto"}}>
+        <div className="ops-assistant"><Mascot state="warning"/><div className="ops-assistant-copy"><div className="ops-assistant-title">Cần bạn xác nhận mapping <HelpTip title="Mapping theo dữ liệu" text={MODULE_HELP.ops.mapping}/></div><GuideBubble>Hệ thống chỉ đang đề xuất tên trường từ header và giá trị mẫu. Hãy kiểm tra cột nguồn trước khi xác nhận; giá trị nguồn không bị sửa.</GuideBubble></div></div>
         <div className="card-title">Cần xác nhận mapping để tiếp tục</div>
         <div className="sheet-hint" style={{marginBottom:16}}>{mappingConfirmation.reason}</div>
         {[["CTKM",mappingConfirmation.ctkm,confirmCtkmMapping,setConfirmCtkmMapping,FACT_FIELDS],["POG",mappingConfirmation.pog,confirmPogMapping,setConfirmPogMapping,POG_FIELDS]].map(([label,info,values,setter,fields]) => (
@@ -1274,7 +1278,7 @@ export default function App() {
 
   return (
     <>
-      <style>{css}</style>
+      <style>{css}</style><style>{helpTipCss}</style><style>{assistantComponentCss}</style>
       <ProductNav current="ops"/>
       <div className="shell">
 
@@ -1688,7 +1692,7 @@ export default function App() {
             </div>
 
             <div className="card tem-r-card">
-              <div className="card-title">Tem R · phân bổ theo tồn và vị trí kệ</div>
+              <div className="card-title" style={{display:"flex",alignItems:"center",gap:7}}>Tem R · phân bổ theo tồn và vị trí kệ <HelpTip title="Tem R" text="Chọn đúng sheet, mã P và cột tồn kho theo giá trị đang hiển thị. Mapping chỉ xác định cột dùng để tính; không thay đổi dữ liệu nguồn."/></div>
               <Dropzone
                 label="File Tem R (.xlsx)"
                 sub="Tải file lên rồi chọn các cột dùng để phân bổ"
@@ -2028,20 +2032,21 @@ export default function App() {
                 </div>
 
                 {/* Summary stats */}
+                <div className="ops-assistant"><Mascot state={Number(locationReview)>0||Number(overlapW)>0?"warning":"success"}/><div className="ops-assistant-copy"><div className="ops-assistant-title">Trợ lý kết quả CTKM <HelpTip title="Nguyên tắc hành động" text="POG chỉ cung cấp vị trí kệ (store/pog/location/facing), không quyết định Gắn, Tháo hay Chờ. Hành động CTKM vẫn theo rule nghiệp vụ và business date."/></div><GuideBubble>{Number(locationReview)>0||Number(overlapW)>0?"Có dữ liệu cần review. Hãy kiểm tra vị trí POG và cảnh báo trùng trước khi thao tác tem.":"Chưa thấy metric vị trí/trùng thời gian cần chú ý trong kết quả này."}</GuideBubble></div></div>
                 <div className="section-title">
                   Kết quả tháng {month}
                 </div>
                 <div className="summary-grid" style={{marginBottom:28}}>
                   <StatBox num={matched}   label="Dòng khớp (CTKM + kệ)" sub={`${fmt(itemMatch)} item duy nhất`} />
-                  <StatBox num={ctkmMiss}  label="Thiếu vị trí POG"
+                  <StatBox num={ctkmMiss}  label={<span className="metric-help">Thiếu vị trí POG <HelpTip title="CTKM thiếu vị trí kệ" text="CTKM vẫn là bản ghi CTKM hợp lệ nhưng chưa nối được vị trí kệ. Không dùng việc thiếu POG để tự đổi quyết định Gắn/Tháo."/></span>}
                     sub={hoaDon > 0 ? `${hoaDon} CTKM theo hóa đơn` : null}
                     accent="var(--accent)" />
-                  <StatBox num={locationReview} label="Cần review vị trí POG"
+                  <StatBox num={locationReview} label={<span className="metric-help">Cần review vị trí POG <HelpTip title="Review vị trí" text="Các dòng thiếu vị trí hoặc snapshot cần kiểm tra thủ công. Review vị trí là bước kiểm tra dữ liệu kệ, không phải một quyết định CTKM mới."/></span>}
                     sub="Gồm thiếu vị trí hoặc snapshot cần kiểm tra"
                     accent="var(--red)" />
                   <StatBox num={pogMiss}   label="POG không có CTKM phù hợp"
                     accent="var(--blue)" />
-                  <StatBox num={overlapW}  label="Cảnh báo trùng thời gian"
+                  <StatBox num={overlapW}  label={<span className="metric-help">Cảnh báo trùng thời gian <HelpTip title="Overlap / conflict" text="Các CTKM có khoảng thời gian chồng lấn cần được đối chiếu theo SKU và channel. Cảnh báo không tự xoá hay gộp bản ghi nguồn."/></span>}
                     accent={overlapW > 0 ? "var(--red)" : "var(--green)"} />
                 </div>
 
