@@ -66,7 +66,8 @@ _BUSINESS_COLUMNS = [
 
 _PROMOTION_ID_COLUMNS = [
     "program_source", "item_key", "campaign_name", "campaign_detail",
-    "promo_from", "promo_to", "normal_price", "promo_price", "promo_uom", "channel",
+    "promo_from", "promo_to", "normal_price", "promo_price", "promo_uom",
+    "key_channel", "channel",
 ]
 
 _POG_POSITION_ID_COLUMNS = [
