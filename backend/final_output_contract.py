@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from collections import Counter
 from numbers import Number
 from pathlib import Path
+import unicodedata
 
 import openpyxl
 
@@ -153,6 +155,203 @@ def _workbook_profile(workbook) -> str:
     )
 
 
+_FIELD_ALIASES = {
+    "task_id": ("task_id", "Mã công việc (task_id)"),
+    "pog_position_id": ("pog_position_id", "Mã vị trí POG ổn định (pog_position_id)"),
+    "source_row_id": ("source_row_id", "Dòng nguồn chính (source_row_id)"),
+    "source_row_ids": ("source_row_ids", "Các dòng nguồn (source_row_ids)"),
+    "logical_row_id": ("logical_row_id",),
+    "scheduled_action": ("scheduled_action", "Hành động theo lịch (scheduled_action)"),
+    "review_required": ("review_required", "Cần review?"),
+    "in_report_scope": ("in_report_scope",),
+}
+
+
+def _normalize_text(value) -> str:
+    if value is None:
+        return ""
+    text = unicodedata.normalize("NFKD", str(value).strip().lower())
+    return "".join(ch for ch in text if not unicodedata.combining(ch))
+
+
+def _truthy_cell(value) -> bool:
+    return value is True or _normalize_text(value) in {"true", "1", "yes", "co", "có"}
+
+
+def _normalized_cell(value):
+    if value is None:
+        return ("missing", "")
+    if isinstance(value, (date, datetime)):
+        return ("date", value.isoformat())
+    if isinstance(value, Number):
+        return ("number", float(value))
+    return ("text", str(value))
+
+
+def _worksheet_records(ws) -> list[dict[str, object]]:
+    headers = [
+        "" if ws.cell(row=1, column=index).value is None
+        else str(ws.cell(row=1, column=index).value)
+        for index in range(1, (ws.max_column or 0) + 1)
+    ]
+    rows = [
+        [ws.cell(row=row, column=index).value for index in range(1, (ws.max_column or 0) + 1)]
+        for row in range(2, (ws.max_row or 0) + 1)
+        if any(
+            ws.cell(row=row, column=index).value is not None
+            and str(ws.cell(row=row, column=index).value).strip()
+            for index in range(1, (ws.max_column or 0) + 1)
+        )
+    ]
+    if is_empty_placeholder(headers, rows):
+        return []
+    return [dict(zip(headers, row)) for row in rows]
+
+
+def _record_value(record: dict[str, object], field: str):
+    for header in _FIELD_ALIASES.get(field, (field,)):
+        if header in record:
+            return record.get(header)
+    return None
+
+
+def _lineage_parts(value) -> list[str]:
+    if value is None:
+        return []
+    return [part.strip() for part in str(value).split("|") if part.strip()]
+
+
+def _scoped_work_records(audit_records: list[dict[str, object]]) -> list[dict[str, object]]:
+    scoped = []
+    for record in audit_records:
+        scope = _record_value(record, "in_report_scope")
+        if scope is not None and not _truthy_cell(scope):
+            continue
+        scoped.append(record)
+
+    groups: dict[tuple, list[dict[str, object]]] = {}
+    for position, record in enumerate(scoped):
+        task = _record_value(record, "task_id")
+        task = "" if task is None else str(task).strip()
+        lineage = []
+        lineage.extend(_lineage_parts(_record_value(record, "source_row_ids")))
+        lineage.extend(_lineage_parts(_record_value(record, "source_row_id")))
+        lineage = list(dict.fromkeys(lineage))
+        key = ("task_source", task, tuple(lineage)) if task and lineage else ("row", position)
+        groups.setdefault(key, []).append(record)
+
+    return [records[0] for records in groups.values()]
+
+
+def _projection_counter(records: list[dict[str, object]], headers: list[str]) -> Counter:
+    return Counter(
+        tuple(_normalized_cell(record.get(header)) for header in headers)
+        for record in records
+    )
+
+
+def _action_identity(record: dict[str, object]) -> tuple:
+    task = _record_value(record, "task_id")
+    logical = _record_value(record, "logical_row_id")
+    source = _record_value(record, "source_row_id")
+    position = _record_value(record, "pog_position_id")
+    return tuple(
+        _normalized_cell(value)
+        for value in (task, logical if logical not in (None, "") else source, position)
+    )
+
+
+def _validate_export_completeness(workbook) -> None:
+    required = {"Audit hành động", "Gắn tem", "Tháo tem", "Chờ gắn", "Cần review"}
+    if not required.issubset(workbook.sheetnames):
+        return
+
+    audit_records = _worksheet_records(workbook["Audit hành động"])
+    work_records = _scoped_work_records(audit_records)
+
+    if "TỔNG HỢP - TEM" in workbook.sheetnames:
+        total_ws = workbook["TỔNG HỢP - TEM"]
+        total_records = _worksheet_records(total_ws)
+        total_headers = [
+            str(total_ws.cell(row=1, column=index).value or "")
+            for index in range(1, (total_ws.max_column or 0) + 1)
+        ]
+        audit_headers = set(audit_records[0].keys()) if audit_records else set()
+        common_headers = [header for header in total_headers if header in audit_headers]
+
+        # A same-task/same-lineage collapse is only legitimate when all user-facing
+        # business values agree. Otherwise the exporter would silently choose one.
+        scoped_raw = [
+            record for record in audit_records
+            if _record_value(record, "in_report_scope") is None
+            or _truthy_cell(_record_value(record, "in_report_scope"))
+        ]
+        grouped: dict[tuple, list[dict[str, object]]] = {}
+        for position, record in enumerate(scoped_raw):
+            task = str(_record_value(record, "task_id") or "").strip()
+            lineage = list(dict.fromkeys([
+                *_lineage_parts(_record_value(record, "source_row_ids")),
+                *_lineage_parts(_record_value(record, "source_row_id")),
+            ]))
+            key = ("task_source", task, tuple(lineage)) if task and lineage else ("row", position)
+            grouped.setdefault(key, []).append(record)
+        for key, records in grouped.items():
+            if len(records) <= 1 or not common_headers:
+                continue
+            if len(_projection_counter(records, common_headers)) != 1:
+                raise RuntimeError(
+                    "Export completeness invariant failed; cùng task/lineage nhưng "
+                    f"dữ liệu nghiệp vụ khác nhau: {key}"
+                )
+
+        if len(total_records) != len(work_records):
+            raise RuntimeError(
+                "Export completeness invariant failed; TỔNG HỢP - TEM không đủ "
+                f"work rows: total={len(total_records)}, expected={len(work_records)}"
+            )
+        if common_headers and (
+            _projection_counter(total_records, common_headers)
+            != _projection_counter(work_records, common_headers)
+        ):
+            raise RuntimeError(
+                "Export completeness invariant failed; TỔNG HỢP - TEM lệch dữ liệu "
+                "so với Audit hành động in-scope."
+            )
+
+    scheduled_groups = {
+        "Gắn tem": {"gan tem", "gan tem fefo"},
+        "Tháo tem": {"thao tem", "thao tem fefo", "thao rem fefo"},
+        "Chờ gắn": {"cho gan tem"},
+    }
+    for sheet_name, accepted in scheduled_groups.items():
+        expected = [
+            record for record in work_records
+            if _normalize_text(_record_value(record, "scheduled_action")) in accepted
+        ]
+        actual = _worksheet_records(workbook[sheet_name])
+        if Counter(map(_action_identity, actual)) != Counter(map(_action_identity, expected)):
+            raise RuntimeError(
+                f"Export completeness invariant failed; sheet '{sheet_name}' "
+                "không khớp scheduled_action trong Audit hành động."
+            )
+
+    review_expected = []
+    for record in work_records:
+        review_value = _record_value(record, "review_required")
+        if review_value is not None:
+            needs_review = _truthy_cell(review_value)
+        else:
+            needs_review = _normalize_text(_record_value(record, "scheduled_action")) == "review"
+        if needs_review:
+            review_expected.append(record)
+    review_actual = _worksheet_records(workbook["Cần review"])
+    if Counter(map(_action_identity, review_actual)) != Counter(map(_action_identity, review_expected)):
+        raise RuntimeError(
+            "Export completeness invariant failed; sheet 'Cần review' không khớp "
+            "review_required trong Audit hành động."
+        )
+
+
 def validate_ctkm_workbook(path: str | Path, summary: dict | None) -> None:
     """Reject an unreadable/inconsistent full or production-slim workbook."""
     artifact = Path(path)
@@ -176,6 +375,8 @@ def validate_ctkm_workbook(path: str | Path, summary: dict | None) -> None:
         for metadata_name in ("POG metadata", "KM metadata"):
             if metadata_name in workbook.sheetnames and workbook[metadata_name].sheet_state != "hidden":
                 raise RuntimeError(f"{metadata_name} phải được ẩn trong workbook kết quả.")
+
+        _validate_export_completeness(workbook)
 
         summary_dict = summary if isinstance(summary, dict) else {}
         if profile == "full":
