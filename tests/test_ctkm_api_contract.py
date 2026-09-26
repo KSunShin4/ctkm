@@ -144,3 +144,61 @@ def test_canonical_ctkm_queue_passes_business_date_and_clearance_to_pipeline(mon
         assert captured["clearance_mapping_override"]["Item code"] == "item_id"
     finally:
         main_api._jobs.pop(response["job_id"], None)
+
+
+def test_mapping_confirmation_required_for_missing_required_target():
+    schema = {
+        "item_id": {"required": True},
+        "promo_from": {"required": True},
+        "optional": {"required": False},
+    }
+    assert main_api._mapping_needs_confirmation(
+        {"mapping": {"A": "item_id"}, "confidence": {"A": 0.99}}, schema
+    )
+
+
+def test_mapping_confirmation_required_for_low_confidence_required_target():
+    schema = {"item_id": {"required": True}}
+    assert main_api._mapping_needs_confirmation(
+        {"mapping": {"mystery": "item_id"}, "confidence": {"mystery": 0.60}}, schema
+    )
+    assert not main_api._mapping_needs_confirmation(
+        {"mapping": {"mystery": "item_id"}, "confidence": {"mystery": 0.95}}, schema
+    )
+
+
+def test_confirm_mapping_requeues_same_job_and_saves_preset(monkeypatch, tmp_path):
+    job_id = "resume01"
+    resumed = {}
+    stored = {}
+
+    def work(job):
+        resumed["job_id"] = job["job_id"]
+
+    main_api._jobs[job_id] = {
+        "job_id": job_id, "kind": "ctkm", "status": "awaiting_mapping_confirmation",
+        "progress": 30, "message": "waiting", "summary": {}, "warnings": [], "error": None,
+        "created_at": "2026-09-26T00:00:00", "month": "2026-09",
+        "output_path": str(tmp_path / "out.xlsx"), "resume_work": work,
+        "mapping_confirmation": {
+            "ctkm_columns": ["sku", "campaign", "from", "to"],
+            "pog_columns": ["sku", "store"],
+        },
+    }
+    monkeypatch.setattr(main_api, "_store_preset", lambda *a, **kw: stored.update(kw))
+    monkeypatch.setattr(main_api, "_submit_job", lambda jid, kind, fn: fn(main_api._jobs[jid]))
+
+    response = asyncio.run(main_api.confirm_job_mapping(
+        job_id=job_id,
+        ctkm_mapping='{"sku":"item_id","campaign":"campaign_name","from":"promo_from","to":"promo_to"}',
+        pog_mapping='{"sku":"item_id","store":"store_id"}',
+        save_preset=True,
+        _admin="test-admin",
+    ))
+    try:
+        assert response["job_id"] == job_id
+        assert resumed["job_id"] == job_id
+        assert stored["ctkm_mapping"]["sku"] == "item_id"
+        assert main_api._jobs[job_id]["confirmed_mappings"]["pog"]["store"] == "store_id"
+    finally:
+        main_api._jobs.pop(job_id, None)
