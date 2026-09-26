@@ -350,8 +350,8 @@ def test_unpivot_keeps_excel_row_and_creates_distinct_logical_ids():
 
     assert result["source_excel_row"].tolist() == [8, 8]
     assert result["promo_slot_id"].tolist() == [1, 2]
-    assert result["logical_row_id"].nunique() == 2
-    assert result["source_row_id"].tolist() == ["Monthly:8:slot-1", "Monthly:8:slot-2"]
+    assert result["logical_row_id"].tolist() == ["Monthly:8:slot-1", "Monthly:8:slot-2"]
+    assert result["source_row_id"].tolist() == ["Monthly:8", "Monthly:8"]
 
 
 def test_export_uses_business_date_for_remaining_days_and_pog_review(tmp_path):
@@ -502,3 +502,64 @@ def test_complete_exact_duplicate_pog_rows_still_collapse_with_lineage():
     assert result.loc[0, "pog_source_row_count"] == 2
     assert result.loc[0, "pog_source_row_ids"] == "POG:Export:100 | POG:Export:101"
     assert result.loc[0, "pog_duplicate_status"] == "Đã gom dòng POG trùng hoàn toàn"
+
+
+
+def test_multi_promo_keeps_physical_excel_lineage_and_uses_logical_ids_for_overlap_review():
+    frame = pd.DataFrame([
+        {
+            "item_id": "P1001",
+            "item_name": "Product",
+            "campaign_name": "A",
+            "campaign_detail__1": "Giảm 10%",
+            "campaign_detail__2": "Mua 2 tặng 1",
+            "promo_price__1": 90000,
+            "promo_price__2": 80000,
+            "promo_from": pd.Timestamp("2026-09-01"),
+            "promo_to": pd.Timestamp("2026-09-30"),
+            "normal_price": 100000,
+            "channel": "OFFLINE",
+            "source_excel_row": 8,
+            "source_row_id": "CTKM:Monthly:8",
+            "program_source": "CTKM",
+        },
+        {
+            "item_id": "P1001",
+            "item_name": "Product",
+            "campaign_name": "B",
+            "campaign_detail": "Giảm 5%",
+            "promo_price": 95000,
+            "promo_from": pd.Timestamp("2026-09-01"),
+            "promo_to": pd.Timestamp("2026-09-30"),
+            "normal_price": 100000,
+            "channel": "OFFLINE",
+            "source_excel_row": 9,
+            "source_row_id": "CTKM:Monthly:9",
+            "program_source": "CTKM",
+        },
+    ])
+
+    unpivoted_first, warnings = main.NM.unpivot_multi_promo(frame.iloc[[0]])
+    assert warnings == []
+    combined = pd.concat([unpivoted_first, frame.iloc[[1]]], ignore_index=True, sort=False)
+
+    overlap = main.RC.detect_campaign_time_overlaps(combined)
+    actions = main.RC.build_fefo_action_frame(
+        combined,
+        "2026-09",
+        business_date=pd.Timestamp("2026-09-15"),
+        overlap_warnings=overlap,
+    )
+
+    # Physical Excel lineage is stable and source-faithful.
+    slot_rows = actions[actions["source_excel_row"].eq(8)].sort_values("promo_slot_id")
+    assert slot_rows["source_row_id"].tolist() == ["CTKM:Monthly:8", "CTKM:Monthly:8"]
+    assert slot_rows["logical_row_id"].tolist() == [
+        "CTKM:Monthly:8:slot-1",
+        "CTKM:Monthly:8:slot-2",
+    ]
+
+    # Review linkage remains logical-slot precise rather than falling back to the
+    # shared physical source row.
+    assert set(slot_rows["review_required"]) == {True}
+    assert all("xung_dot_chuong_trinh" in str(v) for v in slot_rows["review_reason"])
