@@ -93,7 +93,10 @@ def filter_selected_columns_keep_channels(df: pd.DataFrame, selected_columns) ->
         return base in selected_fields or exact in selected_fields
 
     keep = [column for column in df.columns if matches(column)]
-    pinned = [column for column in ("key_channel", "channel", "item_id") if column in df.columns]
+    pinned = [
+        column for column in ("key_channel", "channel", "item_id", "item_name", "promo_uom")
+        if column in df.columns
+    ]
     keep = [column for column in keep if column not in pinned]
     return df.loc[:, [*pinned, *[column for column in keep if column in df.columns]]].copy()
 

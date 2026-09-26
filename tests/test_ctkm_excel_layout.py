@@ -205,3 +205,22 @@ def test_total_sheet_is_inserted_after_guide_and_uses_mockup_headers():
     ]
     assert ws.freeze_panes == "C2"
     assert ws.auto_filter.ref is not None
+
+
+
+def test_selected_output_always_pins_product_name_and_uom_when_available():
+    perf = _performance_module()
+    frame = pd.DataFrame({
+        "key_channel": ["Offline"],
+        "channel": ["OFFLINE"],
+        "item_id": ["P1"],
+        "item_name": ["Thuốc A"],
+        "promo_uom": ["Hộp"],
+        "campaign_name": ["Campaign A"],
+    })
+
+    result = perf.filter_selected_columns_keep_channels(frame, ["campaign_name"])
+
+    assert list(result.columns) == [
+        "key_channel", "channel", "item_id", "item_name", "promo_uom", "campaign_name"
+    ]
