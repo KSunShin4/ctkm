@@ -168,14 +168,27 @@ def unique_work_tracking_rows(df: pd.DataFrame) -> pd.DataFrame:
         groups: dict[tuple[str, object], list[object]] = {}
         for position, (idx, row) in enumerate(result.iterrows()):
             task = _usable_key(row.get("task_id"))
-            key = ("task", task) if task else ("row", position)
+            source_lineage = tuple(_unique_lineage(
+                pd.DataFrame([row]), "source_row_ids", "source_row_id"
+            ))
+            # task_id is an operational identifier, not proof that two distinct
+            # source records are duplicates.  Keep different source lineages
+            # separate so collisions can never discard source business data.
+            # Repeated rows created from the same source lineage (for example by
+            # a join) may still collapse into one editable work row.
+            if task and source_lineage:
+                key = ("task_source", task, source_lineage)
+            elif task:
+                key = ("task", task)
+            else:
+                key = ("row", position)
             groups.setdefault(key, []).append(idx)
 
         rows = []
         for key, indices in groups.items():
             group = result.loc[indices]
             first = _merge_review_metadata(group.iloc[0].copy(), group)
-            if key[0] == "task" and len(group) > 1:
+            if key[0] in {"task", "task_source"} and len(group) > 1:
                 source_ids = _unique_lineage(group, "source_row_ids", "source_row_id")
                 if source_ids:
                     if "source_row_id" in result.columns:
