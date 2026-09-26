@@ -46,13 +46,13 @@ def test_work_tracking_rows_preserve_distinct_source_lineages_even_when_task_id_
 
     result = main.EX._add_work_tracking_columns(frame)
 
-    assert len(result) == 1
+    assert len(result) == 2
     assert result.loc[0, "task_id"] == "TASK-1"
-    assert result.loc[0, "source_row_ids"] == "CTKM:Monthly:10 | CTKM:Monthly:20"
-    assert result.loc[0, "source_row_count"] == 2
+    assert result["source_row_ids"].tolist() == ["CTKM:Monthly:10", "CTKM:Monthly:20"]
+    assert result["source_row_count"].tolist() == [1, 1]
     assert result.loc[0, "pog_source_row_ids"] == "POG:Export:10"
     assert result.loc[0, "pog_source_row_count"] == 1
-    assert "Audit hành động" in result.loc[0, "duplicate_status"]
+    assert result["task_id"].tolist() == ["TASK-1", "TASK-1"]
     assert result.loc[0, "processing_status"] == "Chưa xử lý"
 
 
