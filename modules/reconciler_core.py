@@ -67,7 +67,7 @@ _BUSINESS_COLUMNS = [
 _PROMOTION_ID_COLUMNS = [
     "program_source", "item_key", "campaign_name", "campaign_detail",
     "promo_from", "promo_to", "normal_price", "promo_price", "promo_uom",
-    "key_channel", "channel",
+    "key_channel", "channel", "promo_slot_id",
 ]
 
 _POG_POSITION_ID_COLUMNS = [
@@ -182,7 +182,7 @@ def _collapse_exact_duplicates(frame: pd.DataFrame) -> pd.DataFrame:
     df = _ensure_source_lineage(frame)
     lineage = {
         "source_row_id", "source_row_ids", "source_row_count", "duplicate_status",
-        "source_excel_row", "logical_row_id", "promo_slot_id",
+        "source_excel_row", "logical_row_id",
     }
     identity_columns = [column for column in df.columns if column not in lineage]
     groups: dict[tuple, list[int]] = {}

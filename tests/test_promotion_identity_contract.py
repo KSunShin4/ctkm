@@ -108,3 +108,53 @@ def test_key_channel_alone_is_part_of_stable_promotion_and_task_identity():
     assert actions["task_id"].nunique() == 2
     assert set(actions["key_channel"]) == {"Offline", "Others"}
     assert set(actions["channel"]) == {"OFFLINE"}
+
+
+
+def test_multi_promo_slots_with_identical_business_values_remain_distinct_logical_promotions():
+    frame = pd.DataFrame([{
+        "item_id": "P1001",
+        "item_name": "Product A",
+        "promo_uom": "Hộp",
+        "key_channel": "Offline",
+        "channel": "OFFLINE",
+        "campaign_name": "FULL MONTH",
+        "campaign_detail__1": "Giảm 10%",
+        "campaign_detail__2": "Giảm 10%",
+        "promo_price__1": 90000,
+        "promo_price__2": 90000,
+        "promo_from": pd.Timestamp("2026-09-01"),
+        "promo_to": pd.Timestamp("2026-09-30"),
+        "normal_price": 100000,
+        "program_source": "CTKM",
+        "source_sheet": "Monthly",
+        "source_row_id": "CTKM:Monthly:10",
+    }])
+
+    unpivoted, warnings = main.NM.unpivot_multi_promo(frame)
+    actions = _actions(unpivoted.to_dict("records"))
+
+    assert warnings == []
+    assert len(unpivoted) == 2
+    assert unpivoted["promo_slot_id"].tolist() == [1, 2]
+    assert len(actions) == 2
+    assert actions["promo_slot_id"].tolist() == [1, 2]
+    assert actions["promotion_id"].nunique() == 2
+    assert actions["task_id"].nunique() == 2
+    assert actions["source_row_id"].tolist() == [
+        "CTKM:Monthly:10:slot-1",
+        "CTKM:Monthly:10:slot-2",
+    ]
+
+
+def test_same_offer_same_slot_from_distinct_source_rows_still_shares_stable_identity():
+    rows = [
+        _promo(source_row_id="CTKM:Monthly:10", promo_slot_id=1),
+        _promo(source_row_id="CTKM:Monthly:999", promo_slot_id=1),
+    ]
+
+    actions = _actions(rows)
+
+    assert len(actions) == 1
+    assert actions["promotion_id"].nunique() == 1
+    assert actions.loc[0, "source_row_count"] == 2
