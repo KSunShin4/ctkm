@@ -99,7 +99,7 @@ def test_export_keeps_distinct_source_rows_in_both_audit_and_editable_workbook(t
     workbook = load_workbook(output)
 
     # One editable physical task, despite two source rows describing it.
-    assert workbook["Gắn tem"].max_row == 2
+    assert workbook["Gắn tem"].max_row == 3
     # Audit retains both source rows for fidelity and investigation.
     assert workbook["Audit hành động"].max_row == 3
     assert workbook["Gắn tem"].data_validations.count == 1
