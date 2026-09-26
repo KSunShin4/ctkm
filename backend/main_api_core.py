@@ -133,6 +133,25 @@ _gemini_cooldown_until: float = 0.0
 _gemini_cooldown_lock = threading.Lock()
 
 
+class MappingConfirmationRequired(Exception):
+    """Pause a CTKM job without treating mapping uncertainty as failure."""
+
+
+def _required_mapping_targets(schema_section: dict) -> set[str]:
+    return {name for name, spec in schema_section.items()
+            if spec.get("required") and not spec.get("auto_filled")}
+
+
+def _mapping_needs_confirmation(result: dict, schema_section: dict, threshold: float = 0.85) -> bool:
+    mapping = result.get("mapping") or {}
+    required = _required_mapping_targets(schema_section)
+    if not required.issubset(set(mapping.values())):
+        return True
+    confidence = result.get("confidence") or {}
+    return any(float(confidence.get(src, 1.0) or 0) < threshold
+               for src, dst in mapping.items() if dst in required)
+
+
 class _HeavyJobQueue:
     """One in-process lane for memory/CPU-heavy Excel jobs."""
 
@@ -288,7 +307,7 @@ def _job_public(job: dict) -> dict:
     return {
         key: job.get(key) for key in (
             "job_id", "kind", "status", "progress", "message", "summary",
-            "warnings", "error", "created_at", "month",
+            "warnings", "error", "created_at", "month", "mapping_confirmation",
         )
     } | {"queue_position": waiting.get("position") if waiting else 0, "has_output": Path(job["output_path"]).is_file()}
 
@@ -606,7 +625,10 @@ async def enqueue_ctkm(
     def work(current):
         try:
             current.update(progress=20, message="Đang đọc CTKM và POG")
-            local_ctkm, local_pog, local_output = ctkm_override, pog_override, output_columns
+            confirmed = current.get("confirmed_mappings") or {}
+            local_ctkm = confirmed.get("ctkm") or ctkm_override
+            local_pog = confirmed.get("pog") or pog_override
+            local_output = output_columns
             wb_ctkm = _main_mod.L.load_workbook_raw(
                 str(ctkm_path), is_pog_file=False,
                 selected_sheet_names=[ctkm_sheet_name] if ctkm_sheet_name else None,
@@ -626,6 +648,35 @@ async def enqueue_ctkm(
             local_output = local_output or preset.get("output_columns")
             if mapping_mode == "saved_only" and (not local_ctkm or not local_pog):
                 raise ValueError("Chưa có mapping đã lưu cho cấu trúc hai file này")
+            if not local_ctkm or not local_pog:
+                def preview_or_confirmed(sheet_name, frame, schema_section, override):
+                    if override:
+                        return {"mapping": override, "confidence": {}, "unmapped": [], "source": "confirmed"}
+                    logs = []
+                    preview_mapping(sheet_name, frame, schema_section, logs)
+                    return logs[-1] if logs else {
+                        "mapping": {}, "confidence": {}, "unmapped": list(frame.columns), "source": "unknown"
+                    }
+
+                ctkm_preview = preview_or_confirmed(
+                    _primary_name, primary_sheet.df, _main_mod.SCHEMA["fact_fields"], local_ctkm
+                )
+                pog_preview = preview_or_confirmed(
+                    pog_name, wb_pog.sheets[pog_name].df, _main_mod.SCHEMA["pog_fields"], local_pog
+                )
+                if (_mapping_needs_confirmation(ctkm_preview, _main_mod.SCHEMA["fact_fields"])
+                        or _mapping_needs_confirmation(pog_preview, _main_mod.SCHEMA["pog_fields"])):
+                    current["mapping_confirmation"] = {
+                        "ctkm": ctkm_preview, "pog": pog_preview,
+                        "ctkm_columns": list(primary_sheet.df.columns),
+                        "pog_columns": list(wb_pog.sheets[pog_name].df.columns),
+                        "reason": "Mapping bắt buộc còn thiếu hoặc độ tin cậy chưa đủ.",
+                    }
+                    current["resume_work"] = work
+                    current["status"] = "awaiting_mapping_confirmation"
+                    raise MappingConfirmationRequired()
+                local_ctkm = local_ctkm or ctkm_preview.get("mapping")
+                local_pog = local_pog or pog_preview.get("mapping")
             current.update(progress=45, message="Đang ghép dữ liệu và xuất Excel")
             result = run_pipeline(
                 ctkm_filepath=str(ctkm_path),
@@ -646,12 +697,47 @@ async def enqueue_ctkm(
             )
             return result.summary, result.warnings
         finally:
-            ctkm_path.unlink(missing_ok=True); pog_path.unlink(missing_ok=True)
-            clearance_path.unlink(missing_ok=True)
+            if current.get("status") != "awaiting_mapping_confirmation":
+                ctkm_path.unlink(missing_ok=True); pog_path.unlink(missing_ok=True)
+                clearance_path.unlink(missing_ok=True)
 
     _submit_job(job_id, "ctkm", work)
     return _job_public(job)
 
+
+
+@app.post("/api/job/{job_id}/mapping-confirmation", status_code=202)
+async def confirm_job_mapping(job_id: str, ctkm_mapping: str = Form(...), pog_mapping: str = Form(...),
+                              save_preset: bool = Form(True), _admin: str = Depends(require_admin)):
+    job = _jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Không tìm thấy tác vụ")
+    if job.get("kind") != "ctkm" or job.get("status") != "awaiting_mapping_confirmation":
+        raise HTTPException(status_code=409, detail="Tác vụ không chờ xác nhận mapping")
+    try:
+        ctkm, pog = json.loads(ctkm_mapping), json.loads(pog_mapping)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=422, detail=f"Mapping không phải JSON hợp lệ: {exc.msg}") from exc
+    if not isinstance(ctkm, dict) or not isinstance(pog, dict):
+        raise HTTPException(status_code=422, detail="Mapping phải là object")
+    if not _required_mapping_targets(_main_mod.SCHEMA["fact_fields"]).issubset(set(ctkm.values())):
+        raise HTTPException(status_code=422, detail="Mapping CTKM chưa đủ field bắt buộc")
+    if not _required_mapping_targets(_main_mod.SCHEMA["pog_fields"]).issubset(set(pog.values())):
+        raise HTTPException(status_code=422, detail="Mapping POG chưa đủ field bắt buộc")
+    if len(set(ctkm.values())) != len(ctkm) or len(set(pog.values())) != len(pog):
+        raise HTTPException(status_code=422, detail="Một field đích không được map từ nhiều cột nguồn")
+    confirmation = job.get("mapping_confirmation") or {}
+    if save_preset:
+        _store_preset(confirmation.get("ctkm_columns", []), confirmation.get("pog_columns", []),
+                      ctkm_mapping=ctkm, pog_mapping=pog)
+    work = job.get("resume_work")
+    if not callable(work):
+        raise HTTPException(status_code=409, detail="Tác vụ không còn dữ liệu để tiếp tục")
+    job["confirmed_mappings"] = {"ctkm": ctkm, "pog": pog}
+    job["mapping_confirmation"] = None
+    job.update(status="queued", progress=0, message="Đã xác nhận mapping, đang vào lại hàng đợi", error=None)
+    _submit_job(job_id, "ctkm", work)
+    return _job_public(job)
 
 @app.post("/api/check-expiration")
 async def check_expiration(
