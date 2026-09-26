@@ -1,4 +1,5 @@
 import pandas as pd
+from openpyxl import load_workbook
 
 import main
 
@@ -162,3 +163,83 @@ def test_same_offer_same_slot_from_distinct_source_rows_still_shares_stable_iden
     assert len(actions) == 1
     assert actions["promotion_id"].nunique() == 1
     assert actions.loc[0, "source_row_count"] == 2
+
+
+
+def test_identical_ctkm_and_clearance_offers_keep_distinct_cross_source_identity_and_review(tmp_path):
+    rows = [
+        _promo(
+            program_source="CTKM",
+            source_sheet="Monthly",
+            source_row_id="CTKM:Monthly:10",
+        ),
+        _promo(
+            program_source="CLEARANCE",
+            source_sheet="Clearance",
+            source_row_id="CLEARANCE:Clearance:20",
+        ),
+    ]
+    frame = pd.DataFrame(rows)
+
+    warnings = main.RC.detect_campaign_time_overlaps(frame)
+    actions = main.RC.build_fefo_action_frame(
+        frame,
+        "2026-09",
+        business_date=pd.Timestamp("2026-09-15"),
+        overlap_warnings=warnings,
+    )
+
+    assert len(actions) == 2
+    assert set(actions["program_source"]) == {"CTKM", "CLEARANCE"}
+    assert actions["promotion_id"].nunique() == 2
+    assert actions["task_id"].nunique() == 2
+    assert set(actions["source_row_id"]) == {
+        "CTKM:Monthly:10",
+        "CLEARANCE:Clearance:20",
+    }
+
+    assert len(warnings) == 1
+    assert warnings[0].is_blocking is True
+    assert warnings[0].conflict_type == "blocking_conflict"
+    assert actions["review_required"].astype(bool).all()
+    assert not actions["review_blocks_action"].astype(bool).any()
+
+    output = tmp_path / "cross-source-identical-offer.xlsx"
+    main.EX.export_final_report(
+        output,
+        pd.DataFrame(),
+        pd.DataFrame(),
+        pd.DataFrame(),
+        warnings,
+        [],
+        {
+            "Thang bao cao": "2026-09",
+            "Ngay nghiep vu": pd.Timestamp("2026-09-15"),
+        },
+        df_fefo_actions=actions,
+    )
+
+    workbook = load_workbook(output, data_only=True)
+    try:
+        # Cross-source rows remain independent all the way through the workbook.
+        assert workbook["Audit hành động"].max_row == 3
+        assert workbook["TỔNG HỢP - TEM"].max_row == 3
+        assert workbook["Gắn tem"].max_row == 3
+        assert workbook["Cần review"].max_row == 3
+
+        audit_values = {
+            cell.value
+            for row in workbook["Audit hành động"].iter_rows()
+            for cell in row
+            if cell.value is not None
+        }
+        total_values = {
+            cell.value
+            for row in workbook["TỔNG HỢP - TEM"].iter_rows()
+            for cell in row
+            if cell.value is not None
+        }
+        assert {"CTKM", "CLEARANCE"}.issubset(audit_values)
+        assert {"CTKM", "CLEARANCE"}.issubset(total_values)
+    finally:
+        workbook.close()
