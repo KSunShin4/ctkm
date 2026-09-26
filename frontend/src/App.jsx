@@ -561,7 +561,11 @@ export default function App() {
   const [activeSheet, setActiveSheet] = useState(null)
   const [error, setError]         = useState(null)
   const [backendStatus, setBackendStatus] = useState("checking") // checking | ok | offline
-  const [queueStatus, setQueueStatus] = useState(null)\n  const [mappingConfirmation, setMappingConfirmation] = useState(null)\n  const [confirmCtkmMapping, setConfirmCtkmMapping] = useState({})\n  const [confirmPogMapping, setConfirmPogMapping] = useState({})\n  const [mappingConfirmSaving, setMappingConfirmSaving] = useState(false)
+  const [queueStatus, setQueueStatus] = useState(null)
+  const [mappingConfirmation, setMappingConfirmation] = useState(null)
+  const [confirmCtkmMapping, setConfirmCtkmMapping] = useState({})
+  const [confirmPogMapping, setConfirmPogMapping] = useState({})
+  const [mappingConfirmSaving, setMappingConfirmSaving] = useState(false)
 
   useEffect(() => {
     busyRef.current = temRLoading || expirationLoading || step === STEPS.running
