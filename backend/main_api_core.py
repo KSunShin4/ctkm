@@ -142,14 +142,45 @@ def _required_mapping_targets(schema_section: dict) -> set[str]:
             if spec.get("required") and not spec.get("auto_filled")}
 
 
+_TRUSTED_MAPPING_SOURCE_PREFIXES = (
+    "manual",
+    "saved-preset",
+    "user-confirmed",
+    "standard-fact",
+    "standard-pog",
+)
+
+
+def _mapping_source_is_trusted(source: object) -> bool:
+    value = str(source or "").strip().lower()
+    return any(value.startswith(prefix) for prefix in _TRUSTED_MAPPING_SOURCE_PREFIXES)
+
+
 def _mapping_needs_confirmation(result: dict, schema_section: dict, threshold: float = 0.85) -> bool:
     mapping = result.get("mapping") or {}
     required = _required_mapping_targets(schema_section)
     if not required.issubset(set(mapping.values())):
         return True
+
+    # Explicit/manual, saved presets, user-confirmed choices and exact standard
+    # header rules are trusted by provenance, not by a fabricated numeric score.
+    if _mapping_source_is_trusted(result.get("source")):
+        return False
+
     confidence = result.get("confidence") or {}
-    return any(float(confidence.get(src, 1.0) or 0) < threshold
-               for src, dst in mapping.items() if dst in required)
+    for source, target in mapping.items():
+        if target not in required:
+            continue
+        if source not in confidence:
+            # Missing model/value-inference evidence is uncertainty, never 1.0.
+            return True
+        try:
+            score = float(confidence[source])
+        except (TypeError, ValueError):
+            return True
+        if score < threshold:
+            return True
+    return False
 
 
 class _HeavyJobQueue:
@@ -717,32 +748,53 @@ async def enqueue_ctkm(
 
 
 @app.post("/api/job/{job_id}/mapping-confirmation", status_code=202)
-async def confirm_job_mapping(job_id: str, ctkm_mapping: str = Form(...), pog_mapping: str = Form(...),
-                              save_preset: bool = Form(True), _admin: str = Depends(require_admin)):
+async def confirm_job_mapping(
+    job_id: str,
+    ctkm_mapping: str = Form(...),
+    pog_mapping: str = Form(...),
+    clearance_mapping: Optional[str] = Form(None),
+    save_preset: bool = Form(True),
+    _admin: str = Depends(require_admin),
+):
     job = _jobs.get(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Không tìm thấy tác vụ")
     if job.get("kind") != "ctkm" or job.get("status") != "awaiting_mapping_confirmation":
         raise HTTPException(status_code=409, detail="Tác vụ không chờ xác nhận mapping")
+
     try:
-        ctkm, pog = json.loads(ctkm_mapping), json.loads(pog_mapping)
+        ctkm = json.loads(ctkm_mapping)
+        pog = json.loads(pog_mapping)
+        clearance = json.loads(clearance_mapping) if clearance_mapping is not None else None
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=422, detail=f"Mapping không phải JSON hợp lệ: {exc.msg}") from exc
+
     if not isinstance(ctkm, dict) or not isinstance(pog, dict):
-        raise HTTPException(status_code=422, detail="Mapping phải là object")
-    if not _required_mapping_targets(_main_mod.SCHEMA["fact_fields"]).issubset(set(ctkm.values())):
-        raise HTTPException(status_code=422, detail="Mapping CTKM chưa đủ field bắt buộc")
-    if not _required_mapping_targets(_main_mod.SCHEMA["pog_fields"]).issubset(set(pog.values())):
-        raise HTTPException(status_code=422, detail="Mapping POG chưa đủ field bắt buộc")
-    if len(set(ctkm.values())) != len(ctkm) or len(set(pog.values())) != len(pog):
-        raise HTTPException(status_code=422, detail="Một field đích không được map từ nhiều cột nguồn")
+        raise HTTPException(status_code=422, detail="Mapping CTKM/POG phải là object")
+    if clearance is not None and not isinstance(clearance, dict):
+        raise HTTPException(status_code=422, detail="Mapping Clearance phải là object")
+
     confirmation = job.get("mapping_confirmation") or {}
-    ctkm_columns = {str(value) for value in confirmation.get("ctkm_columns", [])}
-    pog_columns = {str(value) for value in confirmation.get("pog_columns", [])}
-    if ctkm_columns and not set(ctkm).issubset(ctkm_columns):
-        raise HTTPException(status_code=422, detail="Mapping CTKM chứa cột nguồn không tồn tại")
-    if pog_columns and not set(pog).issubset(pog_columns):
-        raise HTTPException(status_code=422, detail="Mapping POG chứa cột nguồn không tồn tại")
+    clearance_required = confirmation.get("clearance") is not None
+    if clearance_required and clearance is None:
+        raise HTTPException(status_code=422, detail="Mapping Clearance chưa được xác nhận")
+
+    fact_required = _required_mapping_targets(_main_mod.SCHEMA["fact_fields"])
+    pog_required = _required_mapping_targets(_main_mod.SCHEMA["pog_fields"])
+    if not fact_required.issubset(set(ctkm.values())):
+        raise HTTPException(status_code=422, detail="Mapping CTKM chưa đủ field bắt buộc")
+    if not pog_required.issubset(set(pog.values())):
+        raise HTTPException(status_code=422, detail="Mapping POG chưa đủ field bắt buộc")
+    if clearance_required and not fact_required.issubset(set((clearance or {}).values())):
+        raise HTTPException(status_code=422, detail="Mapping Clearance chưa đủ field bắt buộc")
+
+    for label, mapping in (("CTKM", ctkm), ("POG", pog), ("Clearance", clearance)):
+        if mapping is not None and len(set(mapping.values())) != len(mapping):
+            raise HTTPException(
+                status_code=422,
+                detail=f"Một field đích {label} không được map từ nhiều cột nguồn",
+            )
+
     fact_targets = {
         name for name, spec in _main_mod.SCHEMA["fact_fields"].items()
         if not spec.get("auto_filled")
@@ -751,23 +803,78 @@ async def confirm_job_mapping(job_id: str, ctkm_mapping: str = Form(...), pog_ma
         name for name, spec in _main_mod.SCHEMA["pog_fields"].items()
         if not spec.get("auto_filled")
     }
-    if not set(ctkm.values()).issubset(fact_targets):
-        raise HTTPException(status_code=422, detail="Mapping CTKM chứa field đích không hợp lệ")
-    if not set(pog.values()).issubset(pog_targets):
-        raise HTTPException(status_code=422, detail="Mapping POG chứa field đích không hợp lệ")
+
+    def validate_confirmed(label, mapping, column_key, allowed_targets):
+        if mapping is None:
+            return
+        source_columns = {str(value) for value in confirmation.get(column_key, [])}
+        if source_columns and not set(mapping).issubset(source_columns):
+            raise HTTPException(
+                status_code=422,
+                detail=f"Mapping {label} chứa cột nguồn không tồn tại",
+            )
+        if not set(mapping.values()).issubset(allowed_targets):
+            raise HTTPException(
+                status_code=422,
+                detail=f"Mapping {label} chứa field đích không hợp lệ",
+            )
+
+    validate_confirmed("CTKM", ctkm, "ctkm_columns", fact_targets)
+    validate_confirmed("POG", pog, "pog_columns", pog_targets)
+    validate_confirmed("Clearance", clearance, "clearance_columns", fact_targets)
+
     if save_preset:
-        _store_preset(confirmation.get("ctkm_columns", []), confirmation.get("pog_columns", []),
-                      ctkm_mapping=ctkm, pog_mapping=pog)
+        # Workflow presets are keyed only by CTKM+POG headers. Clearance mapping
+        # is deliberately not persisted under that key because its schema is an
+        # independent source and may differ between files.
+        _store_preset(
+            confirmation.get("ctkm_columns", []),
+            confirmation.get("pog_columns", []),
+            ctkm_mapping=ctkm,
+            pog_mapping=pog,
+        )
+
     work = job.get("resume_work")
     if not callable(work):
         raise HTTPException(status_code=409, detail="Tác vụ không còn dữ liệu để tiếp tục")
-    job["confirmed_mappings"] = {"ctkm": ctkm, "pog": pog}
+
+    confirmed = {"ctkm": ctkm, "pog": pog}
+    if clearance_required:
+        confirmed["clearance"] = clearance or {}
+    job["confirmed_mappings"] = confirmed
+
+    # Preserve model/value-inference confidence only when the user confirms the
+    # exact suggestion. If the target was changed, that old score no longer
+    # describes the confirmed mapping and must not be reused.
+    evidence = {}
+    for kind, mapping in confirmed.items():
+        candidate = confirmation.get(kind) or {}
+        candidate_mapping = candidate.get("mapping") or {}
+        candidate_confidence = candidate.get("confidence") or {}
+        kept = {}
+        for source, target in mapping.items():
+            if candidate_mapping.get(source) != target or source not in candidate_confidence:
+                continue
+            try:
+                kept[source] = float(candidate_confidence[source])
+            except (TypeError, ValueError):
+                continue
+        evidence[kind] = kept
+    job["confirmed_mapping_confidence"] = evidence
+
     sources = dict(job.get("mapping_sources") or {})
     sources["ctkm"] = "user-confirmed"
     sources["pog"] = "user-confirmed"
+    if clearance_required:
+        sources["clearance"] = "user-confirmed"
     job["mapping_sources"] = sources
     job["mapping_confirmation"] = None
-    job.update(status="queued", progress=0, message="Đã xác nhận mapping, đang vào lại hàng đợi", error=None)
+    job.update(
+        status="queued",
+        progress=0,
+        message="Đã xác nhận mapping, đang vào lại hàng đợi",
+        error=None,
+    )
     _submit_job(job_id, "ctkm", work)
     return _job_public(job)
 
