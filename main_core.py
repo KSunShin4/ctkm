@@ -328,20 +328,49 @@ def _build_promo_action_source(df_ctkm: pd.DataFrame,
     return pd.concat([ctkm, clearance], ignore_index=True)
 
 def _process(sheet_name, df, schema_section, mapping_logs, is_fact, all_warnings,
-             mapping_override=None, source_excel_rows=None, source_prefix=None):
+             mapping_override=None, mapping_source=None,
+             source_excel_rows=None, source_prefix=None):
     df = df.copy()
     excel_rows = list(source_excel_rows or range(2, len(df) + 2))
     if len(excel_rows) != len(df):
         raise ValueError(f"Không khớp lineage dòng Excel cho sheet '{sheet_name}'.")
+    log_index = None
     if mapping_override:
         result = _build_manual_mapping_result(sheet_name, mapping_override, df, schema_section)
-        mapping_logs.append({**MC.mapping_result_to_dict_safe(result), "sheet_name": sheet_name})
         mapping = result.mapping
+        log_entry = {
+            **MC.mapping_result_to_dict_safe(result),
+            "source": mapping_source or getattr(result, "source", None) or "manual",
+            "sheet_name": sheet_name,
+        }
     else:
+        before_logs = len(mapping_logs)
         mapping = _get_or_map(sheet_name, df, schema_section, mapping_logs)
+        if len(mapping_logs) > before_logs:
+            log_index = len(mapping_logs) - 1
+        log_entry = None
     if is_fact:
         mapping = _ensure_channel_mapping(mapping, df)
         mapping = _ensure_promo_uom_mapping(mapping, df)
+
+    # Mapping log must describe the mapping that was actually applied after all
+    # deterministic fidelity corrections, while preserving the true provenance.
+    final_unmapped = [str(column) for column in df.columns if column not in mapping]
+    if log_entry is not None:
+        log_entry["mapping"] = dict(mapping)
+        log_entry["unmapped"] = final_unmapped
+        confidence = dict(log_entry.get("confidence") or {})
+        for source in mapping:
+            confidence.setdefault(source, 1.0)
+        log_entry["confidence"] = confidence
+        mapping_logs.append(log_entry)
+    elif log_index is not None:
+        mapping_logs[log_index]["mapping"] = dict(mapping)
+        mapping_logs[log_index]["unmapped"] = final_unmapped
+        confidence = dict(mapping_logs[log_index].get("confidence") or {})
+        for source in mapping:
+            confidence.setdefault(source, 1.0)
+        mapping_logs[log_index]["confidence"] = confidence
     df = NM.apply_mapping(df, mapping)
     df["source_excel_row"] = excel_rows
     source_label = f"{source_prefix}:" if source_prefix else ""
@@ -360,7 +389,9 @@ def run_pipeline(ctkm_filepath, pog_filepath, target_month, output_path,
                  selected_output_columns=None, pog_sheet_name=None,
                  clearance_filepath=None, clearance_sheet_name=None,
                  clearance_mapping_override=None,
-                 business_date=None) -> PipelineResult:
+                 business_date=None,
+                 ctkm_mapping_source=None, pog_mapping_source=None,
+                 clearance_mapping_source=None) -> PipelineResult:
     warnings, mapping_logs = [], []
 
     # --- Buoc 1: Load ---
@@ -390,6 +421,7 @@ def run_pipeline(ctkm_filepath, pog_filepath, target_month, output_path,
         True,
         warnings,
         mapping_override=ctkm_mapping_override,
+        mapping_source=ctkm_mapping_source,
         source_excel_rows=primary_ctkm_sheet.source_excel_rows,
         source_prefix="CTKM",
     )
@@ -404,8 +436,13 @@ def run_pipeline(ctkm_filepath, pog_filepath, target_month, output_path,
         clearance_name, clearance_sheet = _select_primary_ctkm_sheet(
             wb_clearance, clearance_sheet_name
         )
-        clearance_override = clearance_mapping_override or _infer_standard_fact_mapping(
-            clearance_sheet.df
+        inferred_clearance = (
+            {} if clearance_mapping_override else _infer_standard_fact_mapping(clearance_sheet.df)
+        )
+        clearance_override = clearance_mapping_override or inferred_clearance
+        effective_clearance_source = (
+            clearance_mapping_source
+            or ("standard-fact" if inferred_clearance else None)
         )
         df_clearance_all = _process(
             clearance_name,
@@ -415,6 +452,7 @@ def run_pipeline(ctkm_filepath, pog_filepath, target_month, output_path,
             True,
             warnings,
             mapping_override=clearance_override or None,
+            mapping_source=effective_clearance_source,
             source_excel_rows=clearance_sheet.source_excel_rows,
             source_prefix="CLEARANCE",
         )
@@ -432,6 +470,7 @@ def run_pipeline(ctkm_filepath, pog_filepath, target_month, output_path,
         False,
         warnings,
         mapping_override=pog_mapping_override,
+        mapping_source=pog_mapping_source,
         source_excel_rows=wb_pog.sheets[pog_sn].source_excel_rows,
         source_prefix="POG",
     )

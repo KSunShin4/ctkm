@@ -333,6 +333,61 @@ def install_input_contract(core_module) -> None:
         def work(current):
             try:
                 current.update(progress=20, message="Đang đọc CTKM và POG")
+                confirmed = current.get("confirmed_mappings") or {}
+                local_ctkm = confirmed.get("ctkm") or ctkm_map
+                local_pog = confirmed.get("pog") or pog_map
+                sources = dict(current.get("mapping_sources") or {})
+
+                def resolve_runtime(sheet_name, frame, schema_section, mapping, source):
+                    if mapping:
+                        return mapping, source, {
+                            "mapping": mapping,
+                            "confidence": {key: 1.0 for key in mapping},
+                            "unmapped": [str(col) for col in frame.columns if col not in mapping],
+                            "source": source or "manual",
+                        }
+                    logs = []
+                    main_mod.preview_mapping(sheet_name, frame, schema_section, logs)
+                    entry = logs[-1] if logs else {
+                        "mapping": {},
+                        "confidence": {},
+                        "unmapped": [str(col) for col in frame.columns],
+                        "source": "unknown",
+                    }
+                    return entry.get("mapping") or {}, entry.get("source") or "unknown", entry
+
+                local_ctkm, ctkm_runtime_source, ctkm_preview = resolve_runtime(
+                    primary_name, primary_sheet.df, main_mod.SCHEMA["fact_fields"],
+                    local_ctkm, sources.get("ctkm"),
+                )
+                local_pog, pog_runtime_source, pog_preview = resolve_runtime(
+                    selected_pog_sheet, pog_sheet.df, main_mod.SCHEMA["pog_fields"],
+                    local_pog, sources.get("pog"),
+                )
+
+                if (
+                    core_module._mapping_needs_confirmation(
+                        ctkm_preview, main_mod.SCHEMA["fact_fields"]
+                    )
+                    or core_module._mapping_needs_confirmation(
+                        pog_preview, main_mod.SCHEMA["pog_fields"]
+                    )
+                ):
+                    current["mapping_confirmation"] = {
+                        "ctkm": ctkm_preview,
+                        "pog": pog_preview,
+                        "ctkm_columns": list(primary_sheet.df.columns),
+                        "pog_columns": list(pog_sheet.df.columns),
+                        "reason": "Mapping bắt buộc còn thiếu hoặc độ tin cậy chưa đủ.",
+                    }
+                    current["resume_work"] = work
+                    current["status"] = "awaiting_mapping_confirmation"
+                    raise core_module.MappingConfirmationRequired()
+
+                sources["ctkm"] = ctkm_runtime_source
+                sources["pog"] = pog_runtime_source
+                current["mapping_sources"] = sources
+
                 current.update(progress=45, message="Đang ghép dữ liệu và xuất Excel")
                 result = core_module.run_pipeline(
                     ctkm_filepath=str(ctkm_path),
@@ -341,20 +396,26 @@ def install_input_contract(core_module) -> None:
                     output_path=str(output_path),
                     fail_on_month_mismatch=strict_month,
                     ctkm_sheet_name=primary_name,
-                    ctkm_mapping_override=ctkm_map,
-                    pog_mapping_override=pog_map,
+                    ctkm_mapping_override=local_ctkm,
+                    pog_mapping_override=local_pog,
                     selected_output_columns=output_columns,
                     pog_sheet_name=selected_pog_sheet,
                     clearance_filepath=(str(clearance_path) if clearance_content is not None else None),
                     clearance_sheet_name=selected_clearance_sheet,
                     clearance_mapping_override=clearance_map,
                     business_date=business_date_value,
+                    ctkm_mapping_source=ctkm_runtime_source,
+                    pog_mapping_source=pog_runtime_source,
+                    clearance_mapping_source=(
+                        sources.get("clearance") if clearance_map else None
+                    ),
                 )
                 return result.summary, result.warnings
             finally:
-                ctkm_path.unlink(missing_ok=True)
-                pog_path.unlink(missing_ok=True)
-                clearance_path.unlink(missing_ok=True)
+                if current.get("status") != "awaiting_mapping_confirmation":
+                    ctkm_path.unlink(missing_ok=True)
+                    pog_path.unlink(missing_ok=True)
+                    clearance_path.unlink(missing_ok=True)
 
         core_module._submit_job(job_id, "ctkm", work)
         return core_module._job_public(job)

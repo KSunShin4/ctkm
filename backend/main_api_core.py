@@ -285,6 +285,15 @@ def _run_queued_job(job_id: str, kind: str, work) -> None:
         job.update(status="running", progress=10, message="Đang xử lý file")
         summary, warnings = work(job)
         job.update(status="completed", progress=100, message="Hoàn tất", summary=summary, warnings=warnings)
+    except MappingConfirmationRequired:
+        job = _jobs.get(job_id)
+        if job is not None:
+            job.update(
+                status="awaiting_mapping_confirmation",
+                progress=30,
+                message="Cần xác nhận mapping trước khi tiếp tục",
+                error=None,
+            )
     except Exception as exc:
         job = _jobs.get(job_id)
         if job is not None:
@@ -308,6 +317,7 @@ def _job_public(job: dict) -> dict:
         key: job.get(key) for key in (
             "job_id", "kind", "status", "progress", "message", "summary",
             "warnings", "error", "created_at", "month", "mapping_confirmation",
+            "mapping_sources",
         )
     } | {"queue_position": waiting.get("position") if waiting else 0, "has_output": Path(job["output_path"]).is_file()}
 
@@ -727,6 +737,24 @@ async def confirm_job_mapping(job_id: str, ctkm_mapping: str = Form(...), pog_ma
     if len(set(ctkm.values())) != len(ctkm) or len(set(pog.values())) != len(pog):
         raise HTTPException(status_code=422, detail="Một field đích không được map từ nhiều cột nguồn")
     confirmation = job.get("mapping_confirmation") or {}
+    ctkm_columns = {str(value) for value in confirmation.get("ctkm_columns", [])}
+    pog_columns = {str(value) for value in confirmation.get("pog_columns", [])}
+    if ctkm_columns and not set(ctkm).issubset(ctkm_columns):
+        raise HTTPException(status_code=422, detail="Mapping CTKM chứa cột nguồn không tồn tại")
+    if pog_columns and not set(pog).issubset(pog_columns):
+        raise HTTPException(status_code=422, detail="Mapping POG chứa cột nguồn không tồn tại")
+    fact_targets = {
+        name for name, spec in _main_mod.SCHEMA["fact_fields"].items()
+        if not spec.get("auto_filled")
+    }
+    pog_targets = {
+        name for name, spec in _main_mod.SCHEMA["pog_fields"].items()
+        if not spec.get("auto_filled")
+    }
+    if not set(ctkm.values()).issubset(fact_targets):
+        raise HTTPException(status_code=422, detail="Mapping CTKM chứa field đích không hợp lệ")
+    if not set(pog.values()).issubset(pog_targets):
+        raise HTTPException(status_code=422, detail="Mapping POG chứa field đích không hợp lệ")
     if save_preset:
         _store_preset(confirmation.get("ctkm_columns", []), confirmation.get("pog_columns", []),
                       ctkm_mapping=ctkm, pog_mapping=pog)
@@ -734,6 +762,10 @@ async def confirm_job_mapping(job_id: str, ctkm_mapping: str = Form(...), pog_ma
     if not callable(work):
         raise HTTPException(status_code=409, detail="Tác vụ không còn dữ liệu để tiếp tục")
     job["confirmed_mappings"] = {"ctkm": ctkm, "pog": pog}
+    sources = dict(job.get("mapping_sources") or {})
+    sources["ctkm"] = "user-confirmed"
+    sources["pog"] = "user-confirmed"
+    job["mapping_sources"] = sources
     job["mapping_confirmation"] = None
     job.update(status="queued", progress=0, message="Đã xác nhận mapping, đang vào lại hàng đợi", error=None)
     _submit_job(job_id, "ctkm", work)
