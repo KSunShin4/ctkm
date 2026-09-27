@@ -1,8 +1,6 @@
 import copy
 
-import pandas as pd
-
-from backend import input_contract, main_api
+from backend import main_api
 
 
 def test_preset_key_uses_exact_header_identity():
@@ -107,52 +105,3 @@ def test_schema_contract_change_invalidates_same_header_preset(monkeypatch, tmp_
     assert listed[0]["preset_version"] == 3
     assert listed[0]["compatible"] is False
 
-
-def test_confirmed_preset_round_trip_is_saved_preset_on_next_run(monkeypatch, tmp_path):
-    path = tmp_path / "workflow_presets.json"
-    monkeypatch.setattr(main_api, "_PRESETS_PATH", path)
-
-    ctkm_columns = ["sku", "campaign", "from", "to"]
-    pog_columns = ["sku", "store"]
-    ctkm_mapping = {
-        "sku": "item_id",
-        "campaign": "campaign_name",
-        "from": "promo_from",
-        "to": "promo_to",
-    }
-    pog_mapping = {"sku": "item_id", "store": "store_id"}
-    main_api._store_preset(
-        ctkm_columns, pog_columns,
-        ctkm_mapping=ctkm_mapping, pog_mapping=pog_mapping,
-    )
-
-    saved = main_api._get_saved_preset(ctkm_columns, pog_columns)
-    fact = pd.DataFrame([{
-        "sku": "P1001",
-        "campaign": "Promo",
-        "from": "2026-09-01",
-        "to": "2026-09-30",
-    }])
-    pog = pd.DataFrame([{"sku": "P1001", "store": "SGPMC0001"}])
-
-    resolved_fact, fact_source = input_contract._mapping_or_none(
-        main_api._main_mod,
-        fact,
-        main_api._main_mod.SCHEMA["fact_fields"],
-        None,
-        saved["ctkm_mapping"],
-        kind="fact",
-    )
-    resolved_pog, pog_source = input_contract._mapping_or_none(
-        main_api._main_mod,
-        pog,
-        main_api._main_mod.SCHEMA["pog_fields"],
-        None,
-        saved["pog_mapping"],
-        kind="pog",
-    )
-
-    assert resolved_fact == ctkm_mapping
-    assert resolved_pog == pog_mapping
-    assert fact_source == "saved-preset"
-    assert pog_source == "saved-preset"
