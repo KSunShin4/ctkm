@@ -98,6 +98,16 @@ def install_render_resource_contract(core_module) -> None:
                 summary=summary, warnings=warnings, error=None,
             )
             _log(job_id, kind, "pipeline_complete")
+        except core_module.MappingConfirmationRequired:
+            job = core_module._jobs.get(job_id)
+            if job is not None:
+                job.update(
+                    status="awaiting_mapping_confirmation",
+                    progress=30,
+                    message="Cần xác nhận mapping trước khi tiếp tục",
+                    error=None,
+                )
+            _log(job_id, kind, "mapping_confirmation_required")
         except Exception as exc:
             job = core_module._jobs.get(job_id)
             if job is not None:
@@ -117,7 +127,9 @@ def install_render_resource_contract(core_module) -> None:
                 queue.release(job_id)
             else:
                 queue.cancel(job_id)
-            cleanup_job_artifacts(job_id, kind)
+            job = core_module._jobs.get(job_id)
+            if not job or job.get("status") != "awaiting_mapping_confirmation":
+                cleanup_job_artifacts(job_id, kind)
             gc.collect()
             _log(job_id, kind, "worker_released")
 
