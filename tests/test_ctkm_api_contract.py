@@ -354,3 +354,105 @@ def test_queued_job_mapping_confirmation_is_not_marked_failed(monkeypatch, tmp_p
         assert main_api._jobs[job_id]["error"] is None
     finally:
         main_api._jobs.pop(job_id, None)
+
+
+
+def test_saved_preset_is_reused_with_saved_preset_provenance(monkeypatch, tmp_path):
+    captured = {}
+
+    class FakeUpload:
+        def __init__(self, filename):
+            self.filename = filename
+
+    async def fake_read_upload(_upload, _max_bytes, _label):
+        return b"validated-by-fixture"
+
+    ctkm_frame = pd.DataFrame([{
+        "sku": "P1001",
+        "campaign": "Promo",
+        "from": "2026-09-01",
+        "to": "2026-09-30",
+    }])
+    pog_frame = pd.DataFrame([{
+        "sku": "P1001",
+        "store": "SGPMC0001",
+    }])
+    ctkm_mapping = {
+        "sku": "item_id",
+        "campaign": "campaign_name",
+        "from": "promo_from",
+        "to": "promo_to",
+    }
+    pog_mapping = {
+        "sku": "item_id",
+        "store": "store_id",
+    }
+
+    def fake_load(path, **_kwargs):
+        if path.endswith("pog.xlsx"):
+            return SimpleNamespace(
+                sheets={"POG": SimpleNamespace(df=pog_frame)},
+                pog_snapshot_month="2026-09",
+            )
+        return SimpleNamespace(
+            sheets={"CTKM": SimpleNamespace(df=ctkm_frame)},
+            pog_snapshot_month=None,
+        )
+
+    def fake_run_pipeline(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(summary={"ok": 1}, warnings=[])
+
+    def run_immediately(job_id, _kind, work):
+        summary, warnings = work(main_api._jobs[job_id])
+        main_api._jobs[job_id].update(
+            status="completed", summary=summary, warnings=warnings, progress=100,
+        )
+
+    monkeypatch.setattr(main_api, "_TMP_DIR", tmp_path / "tmp")
+    monkeypatch.setattr(main_api, "_OUT_DIR", tmp_path / "out")
+    main_api._TMP_DIR.mkdir()
+    main_api._OUT_DIR.mkdir()
+    monkeypatch.setattr(main_api, "_read_upload_limited", fake_read_upload)
+    monkeypatch.setattr(main_api._main_mod.L, "load_workbook_raw", fake_load)
+    monkeypatch.setattr(
+        main_api,
+        "_get_saved_preset",
+        lambda *_args: {
+            "ctkm_mapping": ctkm_mapping,
+            "pog_mapping": pog_mapping,
+        },
+    )
+    monkeypatch.setattr(main_api, "run_pipeline", fake_run_pipeline)
+    monkeypatch.setattr(main_api, "_submit_job", run_immediately)
+
+    response = asyncio.run(main_api.enqueue_ctkm(
+        ctkm_file=FakeUpload("ctkm.xlsx"),
+        pog_file=FakeUpload("pog.xlsx"),
+        clearance_file=None,
+        month="2026-09",
+        strict_month=False,
+        ctkm_sheet_name="CTKM",
+        clearance_sheet_name=None,
+        pog_sheet_name="POG",
+        ctkm_mapping_override=None,
+        pog_mapping_override=None,
+        selected_output_columns=None,
+        business_date="2026-09-15",
+        mapping_mode="saved_only",
+        _admin="test-admin",
+    ))
+
+    try:
+        assert response["status"] == "completed"
+        assert captured["ctkm_mapping_override"] == ctkm_mapping
+        assert captured["pog_mapping_override"] == pog_mapping
+        assert captured["ctkm_mapping_source"] == "saved-preset"
+        assert captured["pog_mapping_source"] == "saved-preset"
+        assert main_api._jobs[response["job_id"]]["mapping_sources"] == {
+            "ctkm": "saved-preset",
+            "pog": "saved-preset",
+            "clearance": None,
+        }
+    finally:
+        main_api._jobs.pop(response["job_id"], None)
