@@ -19,7 +19,7 @@ import threading
 import time
 
 
-_ACTIVE_STATUSES = {"queued", "running"}
+_ACTIVE_STATUSES = {"queued", "running", "awaiting_mapping_confirmation"}
 
 
 class ReservedHeavyJobQueue:
@@ -198,6 +198,7 @@ def install_runtime_contract(core_module) -> None:
             key: job.get(key) for key in (
                 "job_id", "kind", "status", "progress", "message", "summary",
                 "warnings", "error", "created_at", "month",
+                "mapping_confirmation", "mapping_sources",
             )
         } | {
             "queue_position": waiting.get("position") if waiting else 0,
@@ -259,6 +260,15 @@ def install_runtime_contract(core_module) -> None:
                 status="completed", progress=100, message="Hoàn tất",
                 summary=summary, warnings=warnings, error=None,
             )
+        except core_module.MappingConfirmationRequired:
+            job = core_module._jobs.get(job_id)
+            if job is not None:
+                job.update(
+                    status="awaiting_mapping_confirmation",
+                    progress=30,
+                    message="Cần xác nhận mapping trước khi tiếp tục",
+                    error=None,
+                )
         except Exception as exc:
             job = core_module._jobs.get(job_id)
             if job is not None:
@@ -272,7 +282,9 @@ def install_runtime_contract(core_module) -> None:
                 queue.release(job_id)
             else:
                 queue.cancel(job_id)
-            cleanup_job_artifacts(job_id, kind)
+            job = core_module._jobs.get(job_id)
+            if not job or job.get("status") != "awaiting_mapping_confirmation":
+                cleanup_job_artifacts(job_id, kind)
 
     def submit_job(job_id: str, kind: str, work) -> None:
         try:
