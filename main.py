@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
+import re
 from pathlib import Path
 import sys
 
@@ -97,6 +98,222 @@ def _infer_standard_pog_mapping(df):
     if not {"item_id", "store_id"}.issubset(set(mapping.values())):
         return {}
     return mapping
+
+
+def _nonblank_samples(series, limit=40):
+    values = []
+    for value in series:
+        if value is None:
+            continue
+        try:
+            if pd.isna(value):
+                continue
+        except (TypeError, ValueError):
+            pass
+        text = str(value).strip()
+        if text:
+            values.append(value)
+        if len(values) >= limit:
+            break
+    return values
+
+
+def _pattern_ratio(series, pattern, limit=40):
+    values = _nonblank_samples(series, limit)
+    if len(values) < 3:
+        return 0.0
+    matched = sum(bool(pattern.fullmatch(str(value).strip().upper())) for value in values)
+    return matched / len(values)
+
+
+def _date_sample_value(value):
+    if isinstance(value, (pd.Timestamp,)):
+        return value.normalize()
+    text = str(value).strip()
+    if not (
+        re.fullmatch(r"\d{4}[-/]\d{1,2}[-/]\d{1,2}(?:\s+.*)?", text)
+        or re.fullmatch(r"\d{1,2}[-/.]\d{1,2}[-/.]\d{4}(?:\s+.*)?", text)
+    ):
+        return None
+    parsed = pd.to_datetime(text, errors="coerce", dayfirst=not text[:4].isdigit())
+    if pd.isna(parsed) or not (2020 <= parsed.year <= 2035):
+        return None
+    return parsed.normalize()
+
+
+def _date_ratio(series, limit=40):
+    values = _nonblank_samples(series, limit)
+    if len(values) < 3:
+        return 0.0
+    return sum(_date_sample_value(value) is not None for value in values) / len(values)
+
+
+def _unique_pattern_candidate(df, excluded, pattern, minimum=0.75):
+    candidates = []
+    for column in df.columns:
+        if column in excluded:
+            continue
+        ratio = _pattern_ratio(df[column], pattern)
+        if ratio >= minimum:
+            candidates.append((column, ratio))
+    if len(candidates) != 1:
+        return None
+    return candidates[0]
+
+
+def _required_fact_header_partial(df):
+    normalized = {}
+    for column in df.columns:
+        normalized.setdefault(_core._normalized_header(column), column)
+
+    mapping = {}
+    trusted = set()
+
+    def claim(target, aliases):
+        for alias in aliases:
+            source = normalized.get(alias)
+            if source is not None and target not in mapping.values():
+                mapping[source] = target
+                trusted.add(source)
+                return
+
+    claim("item_id", ("item code", "item code 2", "itemid"))
+    claim("item_name", ("product name", "itemname", "item name"))
+    claim("promo_uom", ("promo uom", "promotion uom", "promo unit"))
+    claim("campaign_name", ("campaign",))
+    if "campaign_name" not in mapping.values():
+        claim("campaign_name", ("campaign detail",))
+    claim("campaign_detail", ("scheme detail for customer",))
+    claim("promo_from", ("from",))
+    claim("promo_to", ("to",))
+    claim("key_channel", ("key channel",))
+    claim("channel", ("kenh ap dung", "channel"))
+    claim("normal_price", ("normal",))
+    claim("promo_price", ("promo",))
+    claim("product_type", ("product type",))
+    return mapping, trusted
+
+
+def _required_pog_header_partial(df):
+    normalized = {}
+    for column in df.columns:
+        normalized.setdefault(_core._normalized_header(column), column)
+    mapping = {}
+    trusted = set()
+
+    aliases = {
+        "item_id": ("itemid", "item id", "item code"),
+        "item_name": ("itemname", "item name", "product name"),
+        "store_id": ("storeid", "store id"),
+        "pog_code": ("pogcode", "pog code"),
+        "location_id": ("locationid", "location id"),
+        "facing": ("totalfacing", "total facing", "facing"),
+    }
+    for target, names in aliases.items():
+        for alias in names:
+            source = normalized.get(alias)
+            if source is not None and target not in mapping.values():
+                mapping[source] = target
+                trusted.add(source)
+                break
+    return mapping, trusted
+
+
+def _infer_local_value_mapping(df, kind):
+    """Return a complete required mapping candidate only when local evidence is strong enough to evaluate."""
+    if df is None or df.empty:
+        return None
+
+    confidence = {}
+    if kind == "fact":
+        mapping, trusted = _required_fact_header_partial(df)
+        used = set(mapping)
+
+        if "item_id" not in mapping.values():
+            item = _unique_pattern_candidate(
+                df, used, re.compile(r"P\d{3,10}", re.IGNORECASE)
+            )
+            if item is not None:
+                source, score = item
+                mapping[source] = "item_id"
+                confidence[source] = round(float(score), 4)
+                used.add(source)
+
+        missing_dates = {
+            target for target in ("promo_from", "promo_to")
+            if target not in mapping.values()
+        }
+        if missing_dates == {"promo_from", "promo_to"}:
+            date_candidates = []
+            for column in df.columns:
+                if column in used:
+                    continue
+                ratio = _date_ratio(df[column])
+                if ratio >= 0.75:
+                    date_candidates.append((column, ratio))
+            if len(date_candidates) == 2:
+                (left, left_ratio), (right, right_ratio) = date_candidates
+                pairs = []
+                for left_value, right_value in zip(df[left], df[right]):
+                    a = _date_sample_value(left_value)
+                    b = _date_sample_value(right_value)
+                    if a is not None and b is not None:
+                        pairs.append((a, b))
+                    if len(pairs) >= 40:
+                        break
+                if len(pairs) >= 3:
+                    left_before = sum(a <= b for a, b in pairs) / len(pairs)
+                    right_before = sum(b <= a for a, b in pairs) / len(pairs)
+                    if left_before >= 0.75 and left_before > right_before:
+                        mapping[left], mapping[right] = "promo_from", "promo_to"
+                        score = min(left_ratio, right_ratio, left_before)
+                        confidence[left] = confidence[right] = round(float(score), 4)
+                    elif right_before >= 0.75 and right_before > left_before:
+                        mapping[right], mapping[left] = "promo_from", "promo_to"
+                        score = min(left_ratio, right_ratio, right_before)
+                        confidence[left] = confidence[right] = round(float(score), 4)
+
+        required = {"item_id", "campaign_name", "promo_from", "promo_to"}
+        if not required.issubset(set(mapping.values())):
+            return None
+        return {
+            "mapping": mapping,
+            "confidence": confidence,
+            "trusted_sources": sorted(trusted),
+            "source": "local-value-fact",
+        }
+
+    if kind == "pog":
+        mapping, trusted = _required_pog_header_partial(df)
+        used = set(mapping)
+        if "item_id" not in mapping.values():
+            item = _unique_pattern_candidate(
+                df, used, re.compile(r"P\d{3,10}", re.IGNORECASE)
+            )
+            if item is not None:
+                source, score = item
+                mapping[source] = "item_id"
+                confidence[source] = round(float(score), 4)
+                used.add(source)
+        if "store_id" not in mapping.values():
+            store = _unique_pattern_candidate(
+                df, used, re.compile(r"(?:[A-Z]{1,4})?PMC\d{3,6}", re.IGNORECASE)
+            )
+            if store is not None:
+                source, score = store
+                mapping[source] = "store_id"
+                confidence[source] = round(float(score), 4)
+
+        if not {"item_id", "store_id"}.issubset(set(mapping.values())):
+            return None
+        return {
+            "mapping": mapping,
+            "confidence": confidence,
+            "trusted_sources": sorted(trusted),
+            "source": "local-value-pog",
+        }
+
+    return None
 
 
 def _mapping_result(sheet_name, mapping, df, schema_section, source):
