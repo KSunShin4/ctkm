@@ -45,13 +45,30 @@ else:
     _spec.loader.exec_module(_core)
 
 _PRESET_LOCK = threading.RLock()
-_PRESET_KEY_PREFIX = "v2:"
+_PRESET_VERSION = 3
+_PRESET_KEY_PREFIX = "v3:"
+_PRESET_CONTRACT = "ctkm-mapping-preset-v3"
+
+
+def _preset_schema_signature() -> str:
+    """Bind saved mappings to the canonical mapping contract they were confirmed against."""
+    schema = getattr(getattr(_core, "_main_mod", None), "SCHEMA", {})
+    relevant = {
+        "contract": _PRESET_CONTRACT,
+        "fact_fields": schema.get("fact_fields", {}),
+        "pog_fields": schema.get("pog_fields", {}),
+    }
+    encoded = json.dumps(
+        relevant, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _preset_key(ctkm_columns, pog_columns) -> str:
-    """Key workflow presets by exact source headers, in a new safe namespace."""
+    """Key presets by exact source headers plus the current canonical schema contract."""
     identity = {
-        "version": 2,
+        "version": _PRESET_VERSION,
+        "schema_signature": _preset_schema_signature(),
         "ctkm_columns": sorted(str(column) for column in ctkm_columns),
         "pog_columns": sorted(str(column) for column in pog_columns),
     }
@@ -104,9 +121,16 @@ def _save_presets(presets: dict) -> None:
 
 def _get_saved_preset(ctkm_columns, pog_columns) -> dict:
     key = _preset_key(ctkm_columns, pog_columns)
+    expected_signature = _preset_schema_signature()
     with _PRESET_LOCK:
         value = _load_presets_unlocked().get(key, {})
-        return dict(value) if isinstance(value, dict) else {}
+        if not isinstance(value, dict):
+            return {}
+        if value.get("preset_version") != _PRESET_VERSION:
+            return {}
+        if value.get("schema_signature") != expected_signature:
+            return {}
+        return dict(value)
 
 
 def _store_preset(
@@ -127,7 +151,8 @@ def _store_preset(
             current["pog_mapping"] = pog_mapping
         if output_columns is not None:
             current["output_columns"] = output_columns
-        current["preset_version"] = 2
+        current["preset_version"] = _PRESET_VERSION
+        current["schema_signature"] = _preset_schema_signature()
         current["ctkm_columns"] = [str(column) for column in ctkm_columns]
         current["pog_columns"] = [str(column) for column in pog_columns]
         current["updated_at"] = _core.datetime.now().isoformat()
@@ -139,10 +164,21 @@ def _list_presets() -> list[dict]:
     with _PRESET_LOCK:
         presets = _load_presets_unlocked()
     results = []
+    current_schema_signature = _preset_schema_signature()
     for key, raw_value in presets.items():
         value = raw_value if isinstance(raw_value, dict) else {}
-        legacy = not str(key).startswith(_PRESET_KEY_PREFIX)
-        if legacy:
+        if str(key).startswith("v3:"):
+            detected_version = int(value.get("preset_version") or 3)
+        elif str(key).startswith("v2:"):
+            detected_version = int(value.get("preset_version") or 2)
+        else:
+            detected_version = int(value.get("preset_version") or 1)
+        legacy = detected_version < _PRESET_VERSION
+        compatible = (
+            detected_version == _PRESET_VERSION
+            and value.get("schema_signature") == current_schema_signature
+        )
+        if detected_version == 1:
             ctkm_sig, pog_sig = key.split("::", 1) if "::" in key else (key, "")
         else:
             ctkm_sig = " | ".join(value.get("ctkm_columns") or [])
@@ -155,8 +191,9 @@ def _list_presets() -> list[dict]:
             "has_ctkm_mapping": bool(value.get("ctkm_mapping")),
             "has_pog_mapping": bool(value.get("pog_mapping")),
             "has_output_columns": bool(value.get("output_columns")),
-            "preset_version": value.get("preset_version", 1 if legacy else 2),
+            "preset_version": detected_version,
             "legacy": legacy,
+            "compatible": compatible,
         })
     return sorted(results, key=lambda item: item.get("updated_at") or "", reverse=True)
 
