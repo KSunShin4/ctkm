@@ -117,7 +117,7 @@ def test_slim_backend_export_keeps_operational_reconciliation_and_audit_sheets(t
             name for name in SLIM_SHEET_ORDER if name not in {"POG metadata", "KM metadata"}
         ]
         assert "Canh bao trung thoi gian" not in workbook.sheetnames
-        assert "Mapping log" not in workbook.sheetnames
+        assert "Mapping log" in workbook.sheetnames
         assert "Tom tat" not in workbook.sheetnames
         assert "Xác nhận CTKM Clearance" not in workbook.sheetnames
 
@@ -523,6 +523,73 @@ def test_selected_output_columns_only_trim_operational_views_not_audit(tmp_path)
             assert workbook["Gắn tem"].column_dimensions[get_column_letter(from_idx)].hidden is True
             campaign_idx = action_headers.index("Campaign") + 1
             assert workbook["Gắn tem"].column_dimensions[get_column_letter(campaign_idx)].hidden is False
+        finally:
+            workbook.close()
+    finally:
+        main.EX.export_final_report = original_export
+
+
+
+def test_slim_workbook_keeps_mapping_provenance_labels(tmp_path):
+    original_export = main.EX.export_final_report
+    try:
+        _install_on_fake_backend()
+        output = tmp_path / "mapping-provenance.xlsx"
+        actions = _actions().iloc[:1].copy()
+        summary = {
+            "Thang bao cao": "2026-09",
+            "Ngay nghiep vu": pd.Timestamp("2026-09-17"),
+            "So dong KM thieu vi tri POG": 0,
+            "So dong can kiem tra vi tri": 0,
+            "So dong cho gan": 0,
+            "So dong can review": 1,
+            "So dong POG khong co KM phu hop": 0,
+        }
+        mapping_logs = [
+            {
+                "sheet_name": "Monthly",
+                "mapping": {"SKU": "item_id", "Campaign": "campaign_name"},
+                "confidence": {"SKU": 1.0, "Campaign": 1.0},
+                "unmapped": ["Note"],
+                "low_confidence_fields": [],
+                "source": "user-confirmed",
+            },
+            {
+                "sheet_name": "POG",
+                "mapping": {"ITEMID": "item_id", "STOREID": "store_id"},
+                "confidence": {"ITEMID": 1.0, "STOREID": 1.0},
+                "unmapped": [],
+                "low_confidence_fields": [],
+                "source": "saved-preset",
+            },
+        ]
+
+        main.EX.export_final_report(
+            output_path=output,
+            df_matched=pd.DataFrame([{"item_id": "P1001"}]),
+            df_ctkm_only=pd.DataFrame(),
+            df_pog_only=pd.DataFrame(),
+            overlap_warnings=[],
+            mapping_logs=mapping_logs,
+            reconciliation_summary=summary,
+            df_fefo_actions=actions,
+            df_pog_review=pd.DataFrame(),
+        )
+
+        workbook = load_workbook(output, data_only=True)
+        try:
+            ws = workbook["Mapping log"]
+            headers = [cell.value for cell in ws[1]]
+            source_col = headers.index("nguon") + 1
+            canonical_col = headers.index("canonical_field") + 1
+            values = [
+                (ws.cell(row, canonical_col).value, ws.cell(row, source_col).value)
+                for row in range(2, ws.max_row + 1)
+            ]
+            assert ("item_id", "user-confirmed") in values
+            assert ("campaign_name", "user-confirmed") in values
+            assert ("item_id", "saved-preset") in values
+            assert ("(KHONG MAP DUOC)", "user-confirmed") in values
         finally:
             workbook.close()
     finally:

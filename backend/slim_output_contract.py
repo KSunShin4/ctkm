@@ -35,6 +35,7 @@ SLIM_SHEET_ORDER = [
     "POG không có Monthly CTKM",
     "POG cần review",
     "Audit hành động",
+    "Mapping log",
     "POG không có CTKM",
     "POG metadata",
     "KM metadata",
@@ -249,6 +250,37 @@ def _apply_selected_output_visibility(ws, exporter, selected: set[str]) -> None:
             )
 
 
+def _mapping_log_frame(mapping_logs) -> pd.DataFrame:
+    rows = []
+    for log in mapping_logs or []:
+        sheet_name = log.get("sheet_name", "")
+        source = log.get("source", "")
+        confidence = log.get("confidence") or {}
+        low = set(log.get("low_confidence_fields") or [])
+        mapping = log.get("mapping") or {}
+        for source_column, canonical_field in mapping.items():
+            rows.append({
+                "sheet": sheet_name,
+                "cot_goc": source_column,
+                "canonical_field": canonical_field,
+                "confidence": confidence.get(source_column),
+                "can_review": source_column in low,
+                "nguon": source,
+            })
+        for source_column in log.get("unmapped") or []:
+            rows.append({
+                "sheet": sheet_name,
+                "cot_goc": source_column,
+                "canonical_field": "(KHONG MAP DUOC)",
+                "confidence": confidence.get(source_column),
+                "can_review": True,
+                "nguon": source,
+            })
+    if rows:
+        return pd.DataFrame(rows)
+    return pd.DataFrame({"Ghi chu": ["Chưa có mapping log."]})
+
+
 def install_slim_output_contract(core_module) -> None:
     if getattr(core_module.app.state, "slim_output_contract_v1", False):
         return
@@ -273,7 +305,7 @@ def install_slim_output_contract(core_module) -> None:
     ) -> str:
         # These are intentionally unused in slim presentation, but do not discard
         # df_matched/df_pog_only: they are required for all-KM reconciliation.
-        del df_ctkm_only, overlap_warnings, mapping_logs
+        del df_ctkm_only, overlap_warnings
         del snapshot_alignment_warning
 
         matched_all, missing_all_km, added_keys = build_all_km_reconciliation_frames(
@@ -344,6 +376,9 @@ def install_slim_output_contract(core_module) -> None:
             _safe_frame(exporter, audit, "Không có dữ liệu hành động để audit.").to_excel(
                 writer, sheet_name="Audit hành động", index=False
             )
+            _mapping_log_frame(mapping_logs).to_excel(
+                writer, sheet_name="Mapping log", index=False
+            )
 
             # Compatibility only: same true all-KM gap, never Monthly-only.
             _safe_frame(
@@ -401,6 +436,7 @@ def install_slim_output_contract(core_module) -> None:
                 exporter._configure_action_inputs(writer.sheets[sheet_name])
 
             _lightweight_audit_style(writer.sheets["Audit hành động"], exporter)
+            _lightweight_audit_style(writer.sheets["Mapping log"], exporter)
 
             writer.book._sheets = [
                 writer.book[name] for name in SLIM_SHEET_ORDER if name in writer.book.sheetnames

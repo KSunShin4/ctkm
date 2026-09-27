@@ -99,25 +99,39 @@ def install_render_resource_contract(core_module) -> None:
             )
             _log(job_id, kind, "pipeline_complete")
         except Exception as exc:
-            job = core_module._jobs.get(job_id)
-            if job is not None:
-                output_raw = str(job.get("output_path") or "").strip()
-                if output_raw:
-                    try:
-                        Path(output_raw).unlink(missing_ok=True)
-                    except OSError:
-                        pass
-                job.update(
-                    status="failed", message="Xử lý thất bại", error=str(exc),
-                    progress=100,
-                )
-            _log(job_id, kind, "pipeline_failed", detail=f"{type(exc).__name__}: {exc}")
+            pause_type = getattr(core_module, "MappingConfirmationRequired", None)
+            if pause_type is not None and isinstance(exc, pause_type):
+                job = core_module._jobs.get(job_id)
+                if job is not None:
+                    job.update(
+                        status="awaiting_mapping_confirmation",
+                        progress=30,
+                        message="Cần xác nhận mapping trước khi tiếp tục",
+                        error=None,
+                    )
+                _log(job_id, kind, "mapping_confirmation_required")
+            else:
+                job = core_module._jobs.get(job_id)
+                if job is not None:
+                    output_raw = str(job.get("output_path") or "").strip()
+                    if output_raw:
+                        try:
+                            Path(output_raw).unlink(missing_ok=True)
+                        except OSError:
+                            pass
+                    job.update(
+                        status="failed", message="Xử lý thất bại", error=str(exc),
+                        progress=100,
+                    )
+                _log(job_id, kind, "pipeline_failed", detail=f"{type(exc).__name__}: {exc}")
         finally:
             if acquired:
                 queue.release(job_id)
             else:
                 queue.cancel(job_id)
-            cleanup_job_artifacts(job_id, kind)
+            job = core_module._jobs.get(job_id)
+            if not job or job.get("status") != "awaiting_mapping_confirmation":
+                cleanup_job_artifacts(job_id, kind)
             gc.collect()
             _log(job_id, kind, "worker_released")
 
