@@ -161,3 +161,31 @@ def test_process_keeps_explicit_mapping_provenance_in_log():
     assert result.loc[0, "item_id"] == "P1001"
     assert logs[0]["source"] == "saved-preset"
     assert logs[0]["mapping"] == {"SKU": "item_id"}
+    assert logs[0]["confidence"] == {}
+
+
+
+def test_process_preserves_real_model_confidence_without_upgrading_missing_scores():
+    logs = []
+    frame = pd.DataFrame({"SKU": ["P1001"], "STORE": ["SGPMC0001"]})
+    result = main._process(
+        "POG",
+        frame,
+        {
+            "item_id": {"required": True},
+            "store_id": {"required": True},
+        },
+        logs,
+        False,
+        [],
+        mapping_override={"SKU": "item_id", "STORE": "store_id"},
+        mapping_source="gemini",
+        mapping_confidence={"SKU": 0.93},
+        source_excel_rows=[2],
+        source_prefix="POG",
+    )
+
+    assert result.loc[0, "item_id"] == "P1001"
+    assert logs[0]["source"] == "gemini"
+    assert logs[0]["confidence"] == {"SKU": 0.93}
+    assert "STORE" not in logs[0]["confidence"]
