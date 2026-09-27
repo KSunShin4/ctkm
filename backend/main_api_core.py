@@ -762,10 +762,11 @@ async def confirm_job_mapping(
     if job.get("kind") != "ctkm" or job.get("status") != "awaiting_mapping_confirmation":
         raise HTTPException(status_code=409, detail="Tác vụ không chờ xác nhận mapping")
 
+    clearance_raw = clearance_mapping if isinstance(clearance_mapping, str) else None
     try:
         ctkm = json.loads(ctkm_mapping)
         pog = json.loads(pog_mapping)
-        clearance = json.loads(clearance_mapping) if clearance_mapping is not None else None
+        clearance = json.loads(clearance_raw) if clearance_raw is not None else None
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=422, detail=f"Mapping không phải JSON hợp lệ: {exc.msg}") from exc
 
