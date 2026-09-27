@@ -260,23 +260,25 @@ def install_runtime_contract(core_module) -> None:
                 status="completed", progress=100, message="Hoàn tất",
                 summary=summary, warnings=warnings, error=None,
             )
-        except core_module.MappingConfirmationRequired:
-            job = core_module._jobs.get(job_id)
-            if job is not None:
-                job.update(
-                    status="awaiting_mapping_confirmation",
-                    progress=30,
-                    message="Cần xác nhận mapping trước khi tiếp tục",
-                    error=None,
-                )
         except Exception as exc:
-            job = core_module._jobs.get(job_id)
-            if job is not None:
-                _remove_tree(_output_path(job))
-                job.update(
-                    status="failed", message="Xử lý thất bại", error=str(exc),
-                    progress=100,
-                )
+            pause_type = getattr(core_module, "MappingConfirmationRequired", None)
+            if pause_type is not None and isinstance(exc, pause_type):
+                job = core_module._jobs.get(job_id)
+                if job is not None:
+                    job.update(
+                        status="awaiting_mapping_confirmation",
+                        progress=30,
+                        message="Cần xác nhận mapping trước khi tiếp tục",
+                        error=None,
+                    )
+            else:
+                job = core_module._jobs.get(job_id)
+                if job is not None:
+                    _remove_tree(_output_path(job))
+                    job.update(
+                        status="failed", message="Xử lý thất bại", error=str(exc),
+                        progress=100,
+                    )
         finally:
             if acquired:
                 queue.release(job_id)
