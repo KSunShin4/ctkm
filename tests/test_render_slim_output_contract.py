@@ -549,7 +549,7 @@ def test_slim_workbook_keeps_mapping_provenance_labels(tmp_path):
             {
                 "sheet_name": "Monthly",
                 "mapping": {"SKU": "item_id", "Campaign": "campaign_name"},
-                "confidence": {"SKU": 1.0, "Campaign": 1.0},
+                "confidence": {"SKU": 0.62},
                 "unmapped": ["Note"],
                 "low_confidence_fields": [],
                 "source": "user-confirmed",
@@ -557,10 +557,18 @@ def test_slim_workbook_keeps_mapping_provenance_labels(tmp_path):
             {
                 "sheet_name": "POG",
                 "mapping": {"ITEMID": "item_id", "STOREID": "store_id"},
-                "confidence": {"ITEMID": 1.0, "STOREID": 1.0},
+                "confidence": {},
                 "unmapped": [],
                 "low_confidence_fields": [],
                 "source": "saved-preset",
+            },
+            {
+                "sheet_name": "Value inferred",
+                "mapping": {"Mystery SKU": "item_id"},
+                "confidence": {"Mystery SKU": 0.93},
+                "unmapped": [],
+                "low_confidence_fields": [],
+                "source": "gemini",
             },
         ]
 
@@ -582,14 +590,20 @@ def test_slim_workbook_keeps_mapping_provenance_labels(tmp_path):
             headers = [cell.value for cell in ws[1]]
             source_col = headers.index("nguon") + 1
             canonical_col = headers.index("canonical_field") + 1
+            confidence_col = headers.index("confidence") + 1
             values = [
-                (ws.cell(row, canonical_col).value, ws.cell(row, source_col).value)
+                (
+                    ws.cell(row, canonical_col).value,
+                    ws.cell(row, source_col).value,
+                    ws.cell(row, confidence_col).value,
+                )
                 for row in range(2, ws.max_row + 1)
             ]
-            assert ("item_id", "user-confirmed") in values
-            assert ("campaign_name", "user-confirmed") in values
-            assert ("item_id", "saved-preset") in values
-            assert ("(KHONG MAP DUOC)", "user-confirmed") in values
+            assert ("item_id", "user-confirmed", 0.62) in values
+            assert ("campaign_name", "user-confirmed", None) in values
+            assert ("item_id", "saved-preset", None) in values
+            assert ("item_id", "gemini", 0.93) in values
+            assert ("(KHONG MAP DUOC)", "user-confirmed", None) in values
         finally:
             workbook.close()
     finally:
