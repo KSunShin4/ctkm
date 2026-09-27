@@ -101,19 +101,64 @@ def validate_output_columns(value, schema: dict) -> list[str] | None:
     return cleaned
 
 
-def _mapping_or_none(main_mod, df, schema_section, explicit, preset, *, kind: str):
+def _mapping_candidate(main_mod, df, schema_section, explicit, preset, *, kind: str):
     if explicit is not None:
-        return validate_manual_mapping(explicit, df, schema_section), "manual"
+        mapping = validate_manual_mapping(explicit, df, schema_section)
+        return {
+            "mapping": mapping,
+            "source": "manual",
+            "confidence": {},
+            "trusted_sources": list(mapping),
+        }
     if preset:
-        return validate_manual_mapping(preset, df, schema_section), "saved-preset"
+        mapping = validate_manual_mapping(preset, df, schema_section)
+        return {
+            "mapping": mapping,
+            "source": "saved-preset",
+            "confidence": {},
+            "trusted_sources": list(mapping),
+        }
+
     infer = (
         main_mod._infer_standard_fact_mapping
         if kind == "fact" else main_mod._infer_standard_pog_mapping
     )
     inferred = infer(df)
     if inferred:
-        return validate_manual_mapping(inferred, df, schema_section), f"standard-{kind}"
-    return None, "gemini-required"
+        mapping = validate_manual_mapping(inferred, df, schema_section)
+        return {
+            "mapping": mapping,
+            "source": f"standard-{kind}",
+            "confidence": {},
+            "trusted_sources": list(mapping),
+        }
+
+    local_infer = getattr(main_mod, "_infer_local_value_mapping", None)
+    if callable(local_infer):
+        candidate = local_infer(df, kind)
+        if candidate:
+            mapping = validate_manual_mapping(
+                candidate.get("mapping") or {}, df, schema_section
+            )
+            return {
+                "mapping": mapping,
+                "source": candidate.get("source") or f"local-value-{kind}",
+                "confidence": dict(candidate.get("confidence") or {}),
+                "trusted_sources": list(candidate.get("trusted_sources") or []),
+            }
+    return {
+        "mapping": None,
+        "source": "gemini-required",
+        "confidence": {},
+        "trusted_sources": [],
+    }
+
+
+def _mapping_or_none(main_mod, df, schema_section, explicit, preset, *, kind: str):
+    candidate = _mapping_candidate(
+        main_mod, df, schema_section, explicit, preset, kind=kind
+    )
+    return candidate["mapping"], candidate["source"]
 
 
 def _cleanup_dir(path: Path) -> None:
@@ -270,14 +315,16 @@ def install_input_contract(core_module) -> None:
                 list(primary_sheet.df.columns), list(pog_sheet.df.columns)
             )
 
-            ctkm_map, ctkm_source = _mapping_or_none(
+            ctkm_candidate = _mapping_candidate(
                 main_mod, primary_sheet.df, main_mod.SCHEMA["fact_fields"],
                 raw_ctkm_override, preset.get("ctkm_mapping"), kind="fact",
             )
-            pog_map, pog_source = _mapping_or_none(
+            pog_candidate = _mapping_candidate(
                 main_mod, pog_sheet.df, main_mod.SCHEMA["pog_fields"],
                 raw_pog_override, preset.get("pog_mapping"), kind="pog",
             )
+            ctkm_map, ctkm_source = ctkm_candidate["mapping"], ctkm_candidate["source"]
+            pog_map, pog_source = pog_candidate["mapping"], pog_candidate["source"]
 
             preset_output = preset.get("output_columns")
             if output_columns is None and preset_output is not None:
@@ -293,10 +340,12 @@ def install_input_contract(core_module) -> None:
                 clearance_name, clearance_sheet = main_mod._select_primary_ctkm_sheet(
                     wb_clearance, selected_clearance_sheet
                 )
-                clearance_map, clearance_source = _mapping_or_none(
+                clearance_candidate = _mapping_candidate(
                     main_mod, clearance_sheet.df, main_mod.SCHEMA["fact_fields"],
                     None, None, kind="fact",
                 )
+                clearance_map = clearance_candidate["mapping"]
+                clearance_source = clearance_candidate["source"]
                 selected_clearance_sheet = clearance_name
 
             needs_gemini = [
@@ -329,6 +378,23 @@ def install_input_contract(core_module) -> None:
             "pog": pog_source,
             "clearance": clearance_source,
         }
+        job["mapping_evidence"] = {
+            "ctkm": {
+                "confidence": dict(ctkm_candidate.get("confidence") or {}),
+                "trusted_sources": list(ctkm_candidate.get("trusted_sources") or []),
+            },
+            "pog": {
+                "confidence": dict(pog_candidate.get("confidence") or {}),
+                "trusted_sources": list(pog_candidate.get("trusted_sources") or []),
+            },
+            "clearance": (
+                {
+                    "confidence": dict(clearance_candidate.get("confidence") or {}),
+                    "trusted_sources": list(clearance_candidate.get("trusted_sources") or []),
+                }
+                if clearance_content is not None else {}
+            ),
+        }
 
         def work(current):
             try:
@@ -336,6 +402,7 @@ def install_input_contract(core_module) -> None:
                 confirmed = current.get("confirmed_mappings") or {}
                 confirmed_confidence = current.get("confirmed_mapping_confidence") or {}
                 sources = dict(current.get("mapping_sources") or {})
+                mapping_evidence = dict(current.get("mapping_evidence") or {})
 
                 local_ctkm = confirmed.get("ctkm") or ctkm_map
                 local_pog = confirmed.get("pog") or pog_map
@@ -346,12 +413,14 @@ def install_input_contract(core_module) -> None:
                 )
 
                 def resolve_runtime(
-                    sheet_name, frame, schema_section, mapping, source, confidence=None
+                    sheet_name, frame, schema_section, mapping, source,
+                    confidence=None, trusted_sources=None,
                 ):
                     if mapping:
                         return mapping, source, {
                             "mapping": mapping,
                             "confidence": dict(confidence or {}),
+                            "trusted_sources": list(trusted_sources or []),
                             "unmapped": [str(col) for col in frame.columns if col not in mapping],
                             "low_confidence_fields": [],
                             "source": source or "manual",
@@ -373,7 +442,8 @@ def install_input_contract(core_module) -> None:
                     main_mod.SCHEMA["fact_fields"],
                     local_ctkm,
                     sources.get("ctkm"),
-                    confirmed_confidence.get("ctkm"),
+                    confirmed_confidence.get("ctkm") or (mapping_evidence.get("ctkm") or {}).get("confidence"),
+                    (mapping_evidence.get("ctkm") or {}).get("trusted_sources"),
                 )
                 local_pog, pog_runtime_source, pog_preview = resolve_runtime(
                     selected_pog_sheet,
@@ -381,7 +451,8 @@ def install_input_contract(core_module) -> None:
                     main_mod.SCHEMA["pog_fields"],
                     local_pog,
                     sources.get("pog"),
-                    confirmed_confidence.get("pog"),
+                    confirmed_confidence.get("pog") or (mapping_evidence.get("pog") or {}).get("confidence"),
+                    (mapping_evidence.get("pog") or {}).get("trusted_sources"),
                 )
 
                 clearance_runtime_source = sources.get("clearance")
@@ -393,7 +464,8 @@ def install_input_contract(core_module) -> None:
                         main_mod.SCHEMA["fact_fields"],
                         local_clearance,
                         clearance_runtime_source,
-                        confirmed_confidence.get("clearance"),
+                        confirmed_confidence.get("clearance") or (mapping_evidence.get("clearance") or {}).get("confidence"),
+                        (mapping_evidence.get("clearance") or {}).get("trusted_sources"),
                     )
 
                 needs_confirmation = (
@@ -538,13 +610,15 @@ def install_input_contract(core_module) -> None:
                     except ValueError as exc:
                         warnings.append(f"Preset {sheet_name} không còn hợp lệ: {exc}")
 
-                inferred, source = _mapping_or_none(
+                candidate = _mapping_candidate(
                     main_mod, df, schema_section, None, None, kind=kind
                 )
+                inferred, source = candidate["mapping"], candidate["source"]
                 if inferred is not None:
                     return {
                         "mapping": inferred,
-                        "confidence": {},
+                        "confidence": dict(candidate.get("confidence") or {}),
+                        "trusted_sources": list(candidate.get("trusted_sources") or []),
                         "unmapped": [str(col) for col in df.columns if col not in inferred],
                         "source": source,
                     }, None
