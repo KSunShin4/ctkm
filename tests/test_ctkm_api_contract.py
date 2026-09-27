@@ -170,6 +170,24 @@ def test_mapping_confirmation_required_for_low_confidence_required_target():
     )
 
 
+
+def test_missing_confidence_is_uncertain_for_model_mapping_but_not_trusted_sources():
+    schema = {"item_id": {"required": True}}
+    assert main_api._mapping_needs_confirmation(
+        {"mapping": {"SKU": "item_id"}, "confidence": {}, "source": "gemini"},
+        schema,
+    )
+    assert main_api._mapping_needs_confirmation(
+        {"mapping": {"SKU": "item_id"}, "source": "cache"},
+        schema,
+    )
+    for source in ("saved-preset", "user-confirmed", "manual", "standard-fact"):
+        assert not main_api._mapping_needs_confirmation(
+            {"mapping": {"SKU": "item_id"}, "confidence": {}, "source": source},
+            schema,
+        )
+
+
 def test_confirm_mapping_requeues_same_job_and_saves_preset(monkeypatch, tmp_path):
     job_id = "resume01"
     resumed = {}
@@ -456,3 +474,81 @@ def test_saved_preset_is_reused_with_saved_preset_provenance(monkeypatch, tmp_pa
         }
     finally:
         main_api._jobs.pop(response["job_id"], None)
+
+
+
+def test_confirmation_accepts_clearance_and_preserves_only_matching_candidate_confidence(monkeypatch, tmp_path):
+    job_id = "clear01"
+    resumed = {}
+    fact_mapping = {
+        "sku": "item_id",
+        "campaign": "campaign_name",
+        "from": "promo_from",
+        "to": "promo_to",
+    }
+    changed_clearance = {
+        "sku": "item_id",
+        "campaign": "campaign_name",
+        "from": "promo_from",
+        "to": "promo_to",
+    }
+
+    def work(job):
+        resumed["job_id"] = job["job_id"]
+
+    main_api._jobs[job_id] = {
+        "job_id": job_id,
+        "kind": "ctkm",
+        "status": "awaiting_mapping_confirmation",
+        "progress": 30,
+        "message": "waiting",
+        "summary": {},
+        "warnings": [],
+        "error": None,
+        "created_at": "2026-09-27T00:00:00",
+        "month": "2026-09",
+        "output_path": str(tmp_path / "out.xlsx"),
+        "resume_work": work,
+        "mapping_sources": {"ctkm": "gemini", "pog": "gemini", "clearance": "gemini"},
+        "mapping_confirmation": {
+            "ctkm_columns": list(fact_mapping),
+            "pog_columns": ["sku", "store"],
+            "clearance_columns": list(changed_clearance),
+            "ctkm": {
+                "mapping": fact_mapping,
+                "confidence": {key: 0.60 for key in fact_mapping},
+                "source": "gemini",
+            },
+            "pog": {
+                "mapping": {"sku": "item_id", "store": "store_id"},
+                "confidence": {"sku": 0.91, "store": 0.92},
+                "source": "gemini",
+            },
+            "clearance": {
+                "mapping": changed_clearance,
+                "confidence": {"sku": 0.61, "campaign": 0.62, "from": 0.63, "to": 0.64},
+                "source": "gemini",
+            },
+        },
+    }
+    monkeypatch.setattr(main_api, "_submit_job", lambda jid, kind, fn: fn(main_api._jobs[jid]))
+
+    response = asyncio.run(main_api.confirm_job_mapping(
+        job_id=job_id,
+        ctkm_mapping='{"sku":"item_id","campaign":"campaign_name","from":"promo_from","to":"promo_to"}',
+        pog_mapping='{"sku":"item_id","store":"store_id"}',
+        clearance_mapping='{"sku":"item_id","campaign":"campaign_name","from":"promo_from","to":"promo_to"}',
+        save_preset=False,
+        _admin="test-admin",
+    ))
+
+    try:
+        assert response["job_id"] == job_id
+        assert resumed["job_id"] == job_id
+        assert main_api._jobs[job_id]["confirmed_mappings"]["clearance"] == changed_clearance
+        assert main_api._jobs[job_id]["mapping_sources"]["clearance"] == "user-confirmed"
+        assert main_api._jobs[job_id]["confirmed_mapping_confidence"]["clearance"] == {
+            "sku": 0.61, "campaign": 0.62, "from": 0.63, "to": 0.64,
+        }
+    finally:
+        main_api._jobs.pop(job_id, None)
