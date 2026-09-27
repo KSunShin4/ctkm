@@ -177,11 +177,19 @@ def _required_fact_header_partial(df):
                 return
 
     claim("item_id", ("item code", "item code 2", "itemid"))
+    claim("item_name", ("product name", "itemname", "item name"))
+    claim("promo_uom", ("promo uom", "promotion uom", "promo unit"))
     claim("campaign_name", ("campaign",))
     if "campaign_name" not in mapping.values():
         claim("campaign_name", ("campaign detail",))
+    claim("campaign_detail", ("scheme detail for customer",))
     claim("promo_from", ("from",))
     claim("promo_to", ("to",))
+    claim("key_channel", ("key channel",))
+    claim("channel", ("kenh ap dung", "channel"))
+    claim("normal_price", ("normal",))
+    claim("promo_price", ("promo",))
+    claim("product_type", ("product type",))
     return mapping, trusted
 
 
@@ -194,12 +202,16 @@ def _required_pog_header_partial(df):
 
     aliases = {
         "item_id": ("itemid", "item id", "item code"),
+        "item_name": ("itemname", "item name", "product name"),
         "store_id": ("storeid", "store id"),
+        "pog_code": ("pogcode", "pog code"),
+        "location_id": ("locationid", "location id"),
+        "facing": ("totalfacing", "total facing", "facing"),
     }
     for target, names in aliases.items():
         for alias in names:
             source = normalized.get(alias)
-            if source is not None:
+            if source is not None and target not in mapping.values():
                 mapping[source] = target
                 trusted.add(source)
                 break
