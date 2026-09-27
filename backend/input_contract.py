@@ -531,7 +531,7 @@ def install_input_contract(core_module) -> None:
                         mapping = validate_manual_mapping(preset_mapping, df, schema_section)
                         return {
                             "mapping": mapping,
-                            "confidence": {source: 1.0 for source in mapping},
+                            "confidence": {},
                             "unmapped": [str(col) for col in df.columns if col not in mapping],
                             "source": "saved-preset",
                         }, mapping
@@ -544,7 +544,7 @@ def install_input_contract(core_module) -> None:
                 if inferred is not None:
                     return {
                         "mapping": inferred,
-                        "confidence": {key: 1.0 for key in inferred},
+                        "confidence": {},
                         "unmapped": [str(col) for col in df.columns if col not in inferred],
                         "source": source,
                     }, None
