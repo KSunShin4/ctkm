@@ -568,6 +568,7 @@ export default function App() {
   const [mappingConfirmation, setMappingConfirmation] = useState(null)
   const [confirmCtkmMapping, setConfirmCtkmMapping] = useState({})
   const [confirmPogMapping, setConfirmPogMapping] = useState({})
+  const [confirmClearanceMapping, setConfirmClearanceMapping] = useState({})
   const [mappingConfirmSaving, setMappingConfirmSaving] = useState(false)
 
   useEffect(() => {
@@ -860,7 +861,7 @@ export default function App() {
       const data = await res.json()
       if (!res.ok) throw new Error(data.detail || "Không đọc được trạng thái tác vụ")
       onUpdate?.(data)
-      if (data.status === "completed") return data
+      if (data.status === "completed" || data.status === "awaiting_mapping_confirmation") return data
       if (data.status === "failed") throw new Error(data.error || "Tác vụ xử lý thất bại")
       await new Promise(resolve => setTimeout(resolve, 2000))
     }
@@ -909,6 +910,15 @@ export default function App() {
         setQueueStatus(prev => ({...(prev || {}), waiting: status.queue_position
           ? [{job_id:status.job_id, position:status.queue_position}] : []}))
       })
+      if (data.status === "awaiting_mapping_confirmation") {
+        clearInterval(iv)
+        const confirmation = data.mapping_confirmation || {}
+        setMappingConfirmation({jobId:data.job_id, ...confirmation})
+        setConfirmCtkmMapping(confirmation.ctkm?.mapping || {})
+        setConfirmPogMapping(confirmation.pog?.mapping || {})
+        setConfirmClearanceMapping(confirmation.clearance?.mapping || {})
+        return
+      }
       clearInterval(iv); setStepIdx(STEP_LABELS.length)
       setResult({ summary: data.summary, warnings: data.warnings })
       setStep(STEPS.done)
@@ -933,6 +943,9 @@ export default function App() {
       const fd = new FormData()
       fd.append("ctkm_mapping", JSON.stringify(confirmCtkmMapping))
       fd.append("pog_mapping", JSON.stringify(confirmPogMapping))
+      if (mappingConfirmation.clearance) {
+        fd.append("clearance_mapping", JSON.stringify(confirmClearanceMapping))
+      }
       fd.append("save_preset", "true")
       const res = await authFetch(`${API}/api/job/${mappingConfirmation.jobId}/mapping-confirmation`, {method:"POST", body:fd})
       const accepted = await res.json()
@@ -944,6 +957,7 @@ export default function App() {
         setMappingConfirmation({jobId:data.job_id, ...confirmation})
         setConfirmCtkmMapping(confirmation.ctkm?.mapping || {})
         setConfirmPogMapping(confirmation.pog?.mapping || {})
+        setConfirmClearanceMapping(confirmation.clearance?.mapping || {})
         return
       }
       setResult({summary:data.summary, warnings:data.warnings}); setStep(STEPS.done); refreshPresets()
@@ -1258,7 +1272,13 @@ export default function App() {
         <div className="ops-assistant"><Mascot state="warning"/><div className="ops-assistant-copy"><div className="ops-assistant-title">Cần bạn xác nhận mapping <HelpTip title="Mapping theo dữ liệu" text={MODULE_HELP.ops.mapping}/></div><GuideBubble>Hệ thống chỉ đang đề xuất tên trường từ header và giá trị mẫu. Hãy kiểm tra cột nguồn trước khi xác nhận; giá trị nguồn không bị sửa.</GuideBubble></div></div>
         <div className="card-title">Cần xác nhận mapping để tiếp tục</div>
         <div className="sheet-hint" style={{marginBottom:16}}>{mappingConfirmation.reason}</div>
-        {[["CTKM",mappingConfirmation.ctkm,confirmCtkmMapping,setConfirmCtkmMapping,FACT_FIELDS],["POG",mappingConfirmation.pog,confirmPogMapping,setConfirmPogMapping,POG_FIELDS]].map(([label,info,values,setter,fields]) => (
+        {[
+          ["CTKM",mappingConfirmation.ctkm,confirmCtkmMapping,setConfirmCtkmMapping,FACT_FIELDS],
+          ["POG",mappingConfirmation.pog,confirmPogMapping,setConfirmPogMapping,POG_FIELDS],
+          mappingConfirmation.clearance
+            ? ["Clearance",mappingConfirmation.clearance,confirmClearanceMapping,setConfirmClearanceMapping,FACT_FIELDS]
+            : null,
+        ].filter(Boolean).map(([label,info,values,setter,fields]) => (
           <div key={label} style={{marginBottom:18}}><div className="card-title">{label}</div>
             <div className="table-wrap mapping-table"><table><thead><tr><th>Cột nguồn</th><th>Gợi ý</th><th>Tin cậy</th><th>Xác nhận</th></tr></thead><tbody>
               {[...new Set([...Object.keys(info?.mapping||{}),...(info?.unmapped||[])])].map(src => <tr key={src}>
