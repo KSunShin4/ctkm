@@ -139,3 +139,25 @@ def test_normalizer_preserves_source_values_and_uses_separate_item_key():
     assert result.loc[0, "item_key"] == "12345"
     assert result.loc[1, "item_key"] == "P00123"
     assert pd.isna(result.loc[2, "item_key"])
+
+
+
+def test_process_keeps_explicit_mapping_provenance_in_log():
+    logs = []
+    frame = pd.DataFrame({"SKU": ["P1001"]})
+    result = main._process(
+        "Sheet1",
+        frame,
+        {"item_id": {"required": True}},
+        logs,
+        False,
+        [],
+        mapping_override={"SKU": "item_id"},
+        mapping_source="saved-preset",
+        source_excel_rows=[2],
+        source_prefix="CTKM",
+    )
+
+    assert result.loc[0, "item_id"] == "P1001"
+    assert logs[0]["source"] == "saved-preset"
+    assert logs[0]["mapping"] == {"SKU": "item_id"}
