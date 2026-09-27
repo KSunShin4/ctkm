@@ -142,6 +142,9 @@ def test_canonical_ctkm_queue_passes_business_date_and_clearance_to_pipeline(mon
         assert captured["ctkm_mapping_override"]["Item code 2"] == "item_id"
         assert captured["pog_mapping_override"]["ITEMID"] == "item_id"
         assert captured["clearance_mapping_override"]["Item code"] == "item_id"
+        assert captured["ctkm_mapping_source"].startswith("standard-fact")
+        assert captured["pog_mapping_source"].startswith("standard-pog")
+        assert captured["clearance_mapping_source"].startswith("standard-fact")
     finally:
         main_api._jobs.pop(response["job_id"], None)
 
@@ -184,6 +187,7 @@ def test_confirm_mapping_requeues_same_job_and_saves_preset(monkeypatch, tmp_pat
             "ctkm_columns": ["sku", "campaign", "from", "to"],
             "pog_columns": ["sku", "store"],
         },
+        "mapping_sources": {"ctkm": "gemini", "pog": "gemini"},
     }
     monkeypatch.setattr(main_api, "_store_preset", lambda *a, **kw: stored.update(kw))
     monkeypatch.setattr(main_api, "_submit_job", lambda jid, kind, fn: fn(main_api._jobs[jid]))
@@ -200,5 +204,153 @@ def test_confirm_mapping_requeues_same_job_and_saves_preset(monkeypatch, tmp_pat
         assert resumed["job_id"] == job_id
         assert stored["ctkm_mapping"]["sku"] == "item_id"
         assert main_api._jobs[job_id]["confirmed_mappings"]["pog"]["store"] == "store_id"
+        assert main_api._jobs[job_id]["mapping_sources"] == {
+            "ctkm": "user-confirmed", "pog": "user-confirmed"
+        }
+    finally:
+        main_api._jobs.pop(job_id, None)
+
+
+
+def test_production_ctkm_route_pauses_for_low_confidence_mapping_then_resumes_same_job(monkeypatch, tmp_path):
+    captured = {}
+
+    class FakeUpload:
+        def __init__(self, filename):
+            self.filename = filename
+
+    async def fake_read_upload(_upload, _max_bytes, _label):
+        return b"validated-by-fixture"
+
+    ctkm_frame = pd.DataFrame([{
+        "sku": "P1001", "campaign": "Promo",
+        "from": "2026-09-01", "to": "2026-09-30",
+    }])
+    pog_frame = pd.DataFrame([{"sku": "P1001", "store": "SGPMC0001"}])
+
+    def fake_load(path, **_kwargs):
+        if path.endswith("pog.xlsx"):
+            return SimpleNamespace(
+                sheets={"POG": SimpleNamespace(df=pog_frame)},
+                pog_snapshot_month="2026-09",
+            )
+        return SimpleNamespace(
+            sheets={"CTKM": SimpleNamespace(df=ctkm_frame)},
+            pog_snapshot_month=None,
+        )
+
+    def fake_preview(sheet_name, df, _schema, logs):
+        if sheet_name == "CTKM":
+            mapping = {
+                "sku": "item_id", "campaign": "campaign_name",
+                "from": "promo_from", "to": "promo_to",
+            }
+        else:
+            mapping = {"sku": "item_id", "store": "store_id"}
+        logs.append({
+            "sheet_name": sheet_name,
+            "mapping": mapping,
+            "confidence": {key: 0.60 for key in mapping},
+            "unmapped": [],
+            "low_confidence_fields": list(mapping),
+            "source": "gemini",
+        })
+        return mapping, logs
+
+    def fake_run_pipeline(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(summary={"ok": 1}, warnings=[])
+
+    def run_immediately(job_id, _kind, work):
+        job = main_api._jobs[job_id]
+        try:
+            summary, warnings = work(job)
+            job.update(
+                status="completed", summary=summary, warnings=warnings, progress=100,
+            )
+        except main_api.MappingConfirmationRequired:
+            job.update(
+                status="awaiting_mapping_confirmation",
+                progress=30,
+                message="Cần xác nhận mapping trước khi tiếp tục",
+            )
+
+    monkeypatch.setattr(main_api, "_TMP_DIR", tmp_path / "tmp")
+    monkeypatch.setattr(main_api, "_OUT_DIR", tmp_path / "out")
+    main_api._TMP_DIR.mkdir()
+    main_api._OUT_DIR.mkdir()
+    monkeypatch.setattr(main_api, "_read_upload_limited", fake_read_upload)
+    monkeypatch.setattr(main_api._main_mod.L, "load_workbook_raw", fake_load)
+    monkeypatch.setattr(main_api._main_mod, "_infer_standard_fact_mapping", lambda _df: {})
+    monkeypatch.setattr(main_api._main_mod, "_infer_standard_pog_mapping", lambda _df: {})
+    monkeypatch.setattr(main_api._main_mod, "preview_mapping", fake_preview)
+    monkeypatch.setattr(main_api, "_get_saved_preset", lambda *_args: {})
+    monkeypatch.setattr(main_api, "run_pipeline", fake_run_pipeline)
+    monkeypatch.setattr(main_api, "_submit_job", run_immediately)
+    monkeypatch.setattr(main_api, "_enforce_gemini_cooldown", lambda: None)
+
+    accepted = asyncio.run(main_api.enqueue_ctkm(
+        ctkm_file=FakeUpload("ctkm.xlsx"),
+        pog_file=FakeUpload("pog.xlsx"),
+        clearance_file=None,
+        month="2026-09",
+        strict_month=False,
+        ctkm_sheet_name="CTKM",
+        clearance_sheet_name=None,
+        pog_sheet_name="POG",
+        ctkm_mapping_override=None,
+        pog_mapping_override=None,
+        selected_output_columns=None,
+        business_date="2026-09-15",
+        mapping_mode="auto",
+        _admin="test-admin",
+    ))
+    job_id = accepted["job_id"]
+
+    try:
+        assert accepted["status"] == "awaiting_mapping_confirmation"
+        assert accepted["mapping_confirmation"]["ctkm"]["source"] == "gemini"
+        assert main_api._jobs[job_id]["resume_work"]
+
+        resumed = asyncio.run(main_api.confirm_job_mapping(
+            job_id=job_id,
+            ctkm_mapping='{"sku":"item_id","campaign":"campaign_name","from":"promo_from","to":"promo_to"}',
+            pog_mapping='{"sku":"item_id","store":"store_id"}',
+            save_preset=False,
+            _admin="test-admin",
+        ))
+
+        assert resumed["job_id"] == job_id
+        assert main_api._jobs[job_id]["status"] == "completed"
+        assert captured["ctkm_mapping_source"] == "user-confirmed"
+        assert captured["pog_mapping_source"] == "user-confirmed"
+        assert captured["ctkm_mapping_override"]["sku"] == "item_id"
+        assert captured["pog_mapping_override"]["store"] == "store_id"
+    finally:
+        main_api._jobs.pop(job_id, None)
+
+
+def test_queued_job_mapping_confirmation_is_not_marked_failed(monkeypatch, tmp_path):
+    job_id = "pause01"
+    main_api._jobs[job_id] = {
+        "job_id": job_id,
+        "kind": "ctkm",
+        "status": "queued",
+        "output_path": str(tmp_path / "out.xlsx"),
+        "created_at": "2026-09-27T00:00:00",
+    }
+    queue = SimpleNamespace(
+        acquire=lambda *_args: None,
+        release=lambda *_args: None,
+    )
+    monkeypatch.setattr(main_api, "_heavy_queue", queue)
+
+    def pause(_job):
+        raise main_api.MappingConfirmationRequired()
+
+    try:
+        main_api._run_queued_job(job_id, "ctkm", pause)
+        assert main_api._jobs[job_id]["status"] == "awaiting_mapping_confirmation"
+        assert main_api._jobs[job_id]["error"] is None
     finally:
         main_api._jobs.pop(job_id, None)
