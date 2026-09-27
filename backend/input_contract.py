@@ -334,16 +334,26 @@ def install_input_contract(core_module) -> None:
             try:
                 current.update(progress=20, message="Đang đọc CTKM và POG")
                 confirmed = current.get("confirmed_mappings") or {}
-                local_ctkm = confirmed.get("ctkm") or ctkm_map
-                local_pog = confirmed.get("pog") or pog_map
+                confirmed_confidence = current.get("confirmed_mapping_confidence") or {}
                 sources = dict(current.get("mapping_sources") or {})
 
-                def resolve_runtime(sheet_name, frame, schema_section, mapping, source):
+                local_ctkm = confirmed.get("ctkm") or ctkm_map
+                local_pog = confirmed.get("pog") or pog_map
+                local_clearance = (
+                    confirmed.get("clearance")
+                    if "clearance" in confirmed
+                    else clearance_map
+                )
+
+                def resolve_runtime(
+                    sheet_name, frame, schema_section, mapping, source, confidence=None
+                ):
                     if mapping:
                         return mapping, source, {
                             "mapping": mapping,
-                            "confidence": {key: 1.0 for key in mapping},
+                            "confidence": dict(confidence or {}),
                             "unmapped": [str(col) for col in frame.columns if col not in mapping],
+                            "low_confidence_fields": [],
                             "source": source or "manual",
                         }
                     logs = []
@@ -352,40 +362,78 @@ def install_input_contract(core_module) -> None:
                         "mapping": {},
                         "confidence": {},
                         "unmapped": [str(col) for col in frame.columns],
+                        "low_confidence_fields": [],
                         "source": "unknown",
                     }
                     return entry.get("mapping") or {}, entry.get("source") or "unknown", entry
 
                 local_ctkm, ctkm_runtime_source, ctkm_preview = resolve_runtime(
-                    primary_name, primary_sheet.df, main_mod.SCHEMA["fact_fields"],
-                    local_ctkm, sources.get("ctkm"),
+                    primary_name,
+                    primary_sheet.df,
+                    main_mod.SCHEMA["fact_fields"],
+                    local_ctkm,
+                    sources.get("ctkm"),
+                    confirmed_confidence.get("ctkm"),
                 )
                 local_pog, pog_runtime_source, pog_preview = resolve_runtime(
-                    selected_pog_sheet, pog_sheet.df, main_mod.SCHEMA["pog_fields"],
-                    local_pog, sources.get("pog"),
+                    selected_pog_sheet,
+                    pog_sheet.df,
+                    main_mod.SCHEMA["pog_fields"],
+                    local_pog,
+                    sources.get("pog"),
+                    confirmed_confidence.get("pog"),
                 )
 
-                if (
+                clearance_runtime_source = sources.get("clearance")
+                clearance_preview = None
+                if clearance_content is not None:
+                    local_clearance, clearance_runtime_source, clearance_preview = resolve_runtime(
+                        selected_clearance_sheet,
+                        clearance_sheet.df,
+                        main_mod.SCHEMA["fact_fields"],
+                        local_clearance,
+                        clearance_runtime_source,
+                        confirmed_confidence.get("clearance"),
+                    )
+
+                needs_confirmation = (
                     core_module._mapping_needs_confirmation(
                         ctkm_preview, main_mod.SCHEMA["fact_fields"]
                     )
                     or core_module._mapping_needs_confirmation(
                         pog_preview, main_mod.SCHEMA["pog_fields"]
                     )
-                ):
-                    current["mapping_confirmation"] = {
+                    or (
+                        clearance_preview is not None
+                        and core_module._mapping_needs_confirmation(
+                            clearance_preview, main_mod.SCHEMA["fact_fields"]
+                        )
+                    )
+                )
+                if needs_confirmation:
+                    confirmation = {
                         "ctkm": ctkm_preview,
                         "pog": pog_preview,
                         "ctkm_columns": list(primary_sheet.df.columns),
                         "pog_columns": list(pog_sheet.df.columns),
-                        "reason": "Mapping bắt buộc còn thiếu hoặc độ tin cậy chưa đủ.",
+                        "reason": (
+                            "Mapping bắt buộc còn thiếu hoặc bằng chứng tin cậy chưa đủ. "
+                            "Mapping từ giá trị mẫu/Gemini phải có confidence rõ ràng; "
+                            "thiếu confidence không được xem là 1.0."
+                        ),
                     }
+                    if clearance_preview is not None:
+                        confirmation["clearance"] = clearance_preview
+                        confirmation["clearance_columns"] = list(clearance_sheet.df.columns)
+                    current["mapping_confirmation"] = confirmation
                     current["resume_work"] = work
                     current["status"] = "awaiting_mapping_confirmation"
                     raise core_module.MappingConfirmationRequired()
 
                 sources["ctkm"] = ctkm_runtime_source
                 sources["pog"] = pog_runtime_source
+                if clearance_content is not None:
+                    sources["clearance"] = clearance_runtime_source
                 current["mapping_sources"] = sources
 
                 current.update(progress=45, message="Đang ghép dữ liệu và xuất Excel")
@@ -402,12 +450,16 @@ def install_input_contract(core_module) -> None:
                     pog_sheet_name=selected_pog_sheet,
                     clearance_filepath=(str(clearance_path) if clearance_content is not None else None),
                     clearance_sheet_name=selected_clearance_sheet,
-                    clearance_mapping_override=clearance_map,
+                    clearance_mapping_override=local_clearance,
                     business_date=business_date_value,
                     ctkm_mapping_source=ctkm_runtime_source,
                     pog_mapping_source=pog_runtime_source,
-                    clearance_mapping_source=(
-                        sources.get("clearance") if clearance_map else None
+                    clearance_mapping_source=clearance_runtime_source,
+                    ctkm_mapping_confidence=ctkm_preview.get("confidence") or {},
+                    pog_mapping_confidence=pog_preview.get("confidence") or {},
+                    clearance_mapping_confidence=(
+                        (clearance_preview.get("confidence") or {})
+                        if clearance_preview is not None else {}
                     ),
                 )
                 return result.summary, result.warnings
