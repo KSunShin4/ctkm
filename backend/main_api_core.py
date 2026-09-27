@@ -168,8 +168,11 @@ def _mapping_needs_confirmation(result: dict, schema_section: dict, threshold: f
         return False
 
     confidence = result.get("confidence") or {}
+    trusted_sources = {str(value) for value in (result.get("trusted_sources") or [])}
     for source, target in mapping.items():
         if target not in required:
+            continue
+        if source in trusted_sources:
             continue
         if source not in confidence:
             # Missing model/value-inference evidence is uncertainty, never 1.0.
