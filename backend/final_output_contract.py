@@ -189,20 +189,21 @@ def _normalized_cell(value):
 
 
 def _worksheet_records(ws) -> list[dict[str, object]]:
-    headers = [
-        "" if ws.cell(row=1, column=index).value is None
-        else str(ws.cell(row=1, column=index).value)
-        for index in range(1, (ws.max_column or 0) + 1)
-    ]
-    rows = [
-        [ws.cell(row=row, column=index).value for index in range(1, (ws.max_column or 0) + 1)]
-        for row in range(2, (ws.max_row or 0) + 1)
+    """Read worksheet records sequentially so production-slim validation can stream."""
+    iterator = ws.iter_rows(values_only=True)
+    try:
+        header_row = next(iterator)
+    except StopIteration:
+        return []
+    headers = ["" if value is None else str(value) for value in header_row]
+    rows = []
+    for row in iterator:
+        values = list(row)
         if any(
-            ws.cell(row=row, column=index).value is not None
-            and str(ws.cell(row=row, column=index).value).strip()
-            for index in range(1, (ws.max_column or 0) + 1)
-        )
-    ]
+            value is not None and str(value).strip()
+            for value in values
+        ):
+            rows.append(values)
     if is_empty_placeholder(headers, rows):
         return []
     return [dict(zip(headers, row)) for row in rows]
@@ -360,8 +361,13 @@ def validate_ctkm_workbook(path: str | Path, summary: dict | None) -> None:
 
     workbook = None
     try:
-        workbook = openpyxl.load_workbook(artifact, data_only=True, read_only=False)
+        # Read production-slim artifacts in streaming mode. Full workbooks still
+        # need mutable row/column metadata checks, so they are reopened normally.
+        workbook = openpyxl.load_workbook(artifact, data_only=True, read_only=True)
         profile = _workbook_profile(workbook)
+        if profile == "full":
+            workbook.close()
+            workbook = openpyxl.load_workbook(artifact, data_only=True, read_only=False)
         if not workbook.sheetnames or workbook.sheetnames[0] != "HƯỚNG DẪN":
             raise RuntimeError("Workbook kết quả không đặt HƯỚNG DẪN ở sheet đầu tiên.")
 
@@ -411,7 +417,11 @@ def validate_ctkm_workbook(path: str | Path, summary: dict | None) -> None:
         for summary_key, sheet_name in _SUMMARY_SHEET_COUNT_PAIRS:
             if summary_key not in summary_dict or sheet_name not in workbook.sheetnames:
                 continue
-            sheet_count = visible_data_row_count(workbook[sheet_name])
+            sheet_count = (
+                len(_worksheet_records(workbook[sheet_name]))
+                if profile == "production-slim"
+                else visible_data_row_count(workbook[sheet_name])
+            )
             if not _same_value(summary_dict[summary_key], sheet_count):
                 raise RuntimeError(
                     f"Summary '{summary_key}' không khớp sheet '{sheet_name}': "
@@ -426,7 +436,11 @@ def validate_ctkm_workbook(path: str | Path, summary: dict | None) -> None:
             if label not in guide_targets:
                 continue
             target = guide_targets[label]
-            expected_count = visible_data_row_count(workbook[target])
+            expected_count = (
+                len(_worksheet_records(workbook[target]))
+                if profile == "production-slim"
+                else visible_data_row_count(workbook[target])
+            )
             actual_count = guide.cell(row=row, column=2).value
             if not _same_value(expected_count, actual_count):
                 raise RuntimeError(
