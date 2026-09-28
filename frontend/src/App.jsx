@@ -308,6 +308,104 @@ const css = `
     .stat-num { font-size: 22px; }
   }
   @media (max-width: 900px) { .expiration-grid { grid-template-columns: 1fr; } }
+
+  /* ── Approved mockup alignment: one shared PharmaOps shell ─────────────── */
+  body { background:#f5f7fb; color:#17202a; }
+  .shell { min-height:calc(100vh - 58px); background:#f5f7fb; }
+  .ops-page-head { max-width:1180px; margin:0 auto; padding:24px 18px 14px; }
+  .ops-hero { display:flex; justify-content:space-between; align-items:flex-start; gap:24px;
+              padding:22px 24px; background:#fff; border:1px solid #e4e7ec;
+              border-radius:18px; box-shadow:0 2px 10px rgba(16,24,40,.04); }
+  .ops-hero-copy { min-width:0; max-width:680px; }
+  .ops-kicker { color:#087f5b; font-size:10px; font-weight:900; letter-spacing:.09em;
+                text-transform:uppercase; }
+  .ops-hero h1 { margin:6px 0 7px; font-size:28px; line-height:1.15; letter-spacing:-.65px;
+                 color:#17202a; font-weight:760; }
+  .ops-hero p { margin:0; color:#667085; font-size:12px; line-height:1.6; }
+  .ops-hero-side { min-width:290px; display:flex; flex-direction:column; align-items:flex-end; gap:10px; }
+  .ops-backend-status { margin-left:0; padding:6px 9px; border:1px solid #e4e7ec;
+                        border-radius:999px; background:#f9fafb; color:#667085; }
+  .admin-pill { padding:4px 7px; border-radius:999px; background:#ecfdf3; color:#067647;
+                font-size:9px; font-weight:900; letter-spacing:.04em; }
+  .auth-actions { justify-content:flex-end; }
+  .auth-input { background:#fff; border-color:#d0d5dd; }
+  .auth-button { color:#344054; border-color:#d0d5dd; }
+  .ops-tool-tabs { display:flex; align-items:center; gap:5px; margin-top:12px; padding:6px;
+                   background:#fff; border:1px solid #e4e7ec; border-radius:14px;
+                   box-shadow:0 1px 4px rgba(16,24,40,.03); overflow-x:auto; scrollbar-width:none; }
+  .ops-tool-tabs::-webkit-scrollbar { display:none; }
+  .ops-tool-tab,.ops-tool-link { display:inline-flex; align-items:center; gap:7px; min-height:38px;
+                                 flex:0 0 auto; padding:8px 11px; border:0; border-radius:10px;
+                                 background:transparent; color:#475467; text-decoration:none;
+                                 font:750 11px var(--font); cursor:pointer; white-space:nowrap; }
+  .ops-tool-tab:hover,.ops-tool-link:hover { background:#f2f4f7; color:#17202a; }
+  .ops-tool-tab.active { background:#eef4ff; color:#175cd3; box-shadow:inset 0 0 0 1px #d1e0ff; }
+  .ops-tool-icon { width:18px; height:18px; border-radius:6px; display:grid; place-items:center;
+                   background:#f2f4f7; font-size:10px; font-weight:900; }
+  .ops-tool-tab.active .ops-tool-icon { background:#dbeafe; color:#175cd3; }
+  .ops-tool-divider { width:1px; height:22px; background:#e4e7ec; margin:0 2px; flex:0 0 1px; }
+
+  .main { width:100%; max-width:1180px; margin:0 auto; padding:0 18px 80px;
+          display:grid; grid-template-columns:360px minmax(0,1fr); gap:14px;
+          height:auto; overflow:visible; align-items:start; }
+  .sidebar { border:0; background:transparent; padding:0; gap:12px; overflow:visible; }
+  .content { padding:0; overflow:visible; min-width:0; }
+  .card { border:1px solid #e4e7ec; border-radius:16px; padding:18px;
+          background:#fff; box-shadow:0 2px 10px rgba(16,24,40,.035); }
+  .card-title { color:#344054; font-size:12px; font-weight:800; margin-bottom:13px; }
+  .ctkm-mode .sidebar .card { border:1px solid #e4e7ec; border-radius:16px; padding:18px;
+                              background:#fff; box-shadow:0 2px 10px rgba(16,24,40,.035); }
+  .dropzone { background:#f9fafb; border-color:#d0d5dd; border-radius:11px; }
+  .dropzone:hover,.dropzone.over { border-color:#84adff; background:#f5f8ff; }
+  .dropzone.filled { border-color:#6ce9a6; background:#f6fef9; }
+  .btn { border-radius:10px; }
+  .btn-primary { background:#175cd3; }
+  .btn-primary:hover:not(:disabled) { background:#1849a9; }
+  .btn-ghost { background:#fff; border-color:#d0d5dd; color:#344054; }
+  .btn-ghost:hover { border-color:#84adff; color:#175cd3; }
+  .summary-grid { grid-template-columns:repeat(2,minmax(0,1fr)); gap:9px; }
+  .stat-box { background:#fff; border-color:#e4e7ec; border-radius:12px; }
+  .stat-num { color:#175cd3; font-size:24px; }
+  .tabs { background:#fff; border:1px solid #e4e7ec; border-radius:12px; padding:4px;
+          margin-bottom:12px; overflow-x:auto; }
+  .tab { border-radius:8px; border-bottom:0; padding:8px 11px; }
+  .tab.active { background:#eef4ff; color:#175cd3; border-bottom-color:transparent; }
+  .tab.active .tab-badge { background:#175cd3; color:#fff; }
+  .table-wrap { background:#fff; border-color:#e4e7ec; border-radius:12px; }
+  thead th { position:sticky; top:0; z-index:1; background:#f8fafc; color:#475467;
+             border-bottom-color:#e4e7ec; }
+  tbody td { border-bottom-color:#f0f1f3; }
+  tbody tr:hover td { background:#f9fafb; }
+  .expiration-card { background:#fff; border:1px solid #e4e7ec; border-radius:18px; padding:22px;
+                     box-shadow:0 2px 10px rgba(16,24,40,.04); }
+  .main.expiration-mode { display:block; max-width:1180px; height:auto; overflow:visible; }
+  .main.expiration-mode .content { width:100%; max-width:none; margin:0; }
+  .main.temr-mode { display:block; max-width:1180px; height:auto; overflow:visible; }
+  .main.temr-mode .sidebar { width:100%; max-width:760px; margin:0 auto; border:0;
+                            background:transparent; overflow:visible; padding:0; }
+
+  @media (max-width: 760px) {
+    body { padding-bottom:68px; }
+    .ops-page-head { padding:14px 10px 10px; }
+    .ops-hero { display:block; padding:17px 16px; border-radius:15px; }
+    .ops-hero h1 { font-size:22px; }
+    .ops-hero-side { min-width:0; width:100%; margin-top:14px; align-items:stretch; }
+    .ops-backend-status { align-self:flex-start; }
+    .auth-actions { width:100%; display:grid; grid-template-columns:1fr 1fr auto; gap:6px; justify-content:stretch; }
+    .auth-input { width:100%; min-width:0; }
+    .auth-error { grid-column:1 / -1; }
+    .ops-tool-tabs { position:sticky; top:52px; z-index:40; border-radius:12px; }
+    .main { display:flex; flex-direction:column; padding:0 10px 86px; gap:12px; }
+    .sidebar { order:1; padding:0; border:0; gap:12px; }
+    .content { order:2; padding:0; }
+    .card { border-radius:14px; padding:15px; }
+    .summary-grid { grid-template-columns:1fr 1fr; }
+  }
+  @media (max-width: 430px) {
+    .auth-actions { grid-template-columns:1fr; }
+    .summary-grid { grid-template-columns:1fr; }
+    .ops-tool-divider { display:none; }
+  }
 `
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -1301,56 +1399,82 @@ export default function App() {
       <style>{css}</style><style>{helpTipCss}</style><style>{assistantComponentCss}</style>
       <ProductNav current="ops"/>
       <div className="shell">
+        <div className="ops-page-head">
+          <section className="ops-hero" aria-labelledby="ops-page-title">
+            <div className="ops-hero-copy">
+              <div className="ops-kicker">CTKM / Tem</div>
+              <h1 id="ops-page-title">
+                {activeModule === "ctkm" && "Tổng hợp chương trình khuyến mãi"}
+                {activeModule === "expiration" && "Kiểm tra hạn dùng"}
+                {activeModule === "temr" && "Phân bổ Tem R"}
+              </h1>
+              <p>
+                {activeModule === "ctkm" && "Chuẩn bị file nguồn, kiểm tra mapping, đối chiếu POG và xuất workbook hành động."}
+                {activeModule === "expiration" && "Tra cứu mã sản phẩm, lô và hạn dùng trong một màn hình vận hành gọn."}
+                {activeModule === "temr" && "Đọc đúng giá trị đang hiển thị trong file nguồn và tạo file phân bổ Tem R."}
+              </p>
+            </div>
+            <div className="ops-hero-side">
+              <div className="backend-status ops-backend-status">
+                <span className={`status-dot ${
+                  backendStatus === "ok" ? "ok" : backendStatus === "checking" ? "warn" : "err"
+                }`} />
+                {backendStatus === "ok" && "Backend kết nối"}
+                {backendStatus === "checking" && "Đang kiểm tra backend…"}
+                {backendStatus === "offline" && "Mất kết nối backend"}
+              </div>
+              {isAdmin ? (
+                <div className="auth-actions">
+                  <span className="admin-pill">ADMIN</span>
+                  <button className="auth-button" onClick={logoutAdmin}>Đăng xuất</button>
+                </div>
+              ) : (
+                <form className="auth-actions" onSubmit={loginAdmin}>
+                  <input className="auth-input" value={adminUsername}
+                    onChange={e => setAdminUsername(e.target.value)} placeholder="Tài khoản quản trị" />
+                  <input className="auth-input" type="password" value={adminPassword}
+                    onChange={e => setAdminPassword(e.target.value)} placeholder="Mật khẩu" />
+                  <button className="auth-button" disabled={authLoading || !adminPassword}>
+                    {authLoading ? "Đang vào…" : "Quản trị"}
+                  </button>
+                  {authError && <span className="auth-error">{authError}</span>}
+                </form>
+              )}
+            </div>
+          </section>
 
-        {/* Topbar */}
-        <div className="topbar">
-          <div className="topbar-logo">Pharma<span>Ops</span></div>
-          <div className="topbar-sub">Kiểm tra hạn dùng và vận hành khuyến mãi</div>
-          <nav className="module-nav" aria-label="Chọn chức năng">
+          <nav className="ops-tool-tabs" aria-label="Công cụ CTKM và Tem">
             <button
-              className={activeModule === "expiration" ? "active" : ""}
-              onClick={() => setActiveModule("expiration")}
-            >
-              Kiểm tra hạn dùng
-            </button>
-            <button
-              className={activeModule === "ctkm" ? "active" : ""}
+              className={`ops-tool-tab ${activeModule === "ctkm" ? "active" : ""}`}
               onClick={() => { stopCamera(); setActiveModule("ctkm") }}
             >
-              Công cụ CTKM
+              <span className="ops-tool-icon">✓</span>
+              Tổng hợp CTKM
             </button>
             <button
-              className={activeModule === "temr" ? "active" : ""}
+              className={`ops-tool-tab ${activeModule === "expiration" ? "active" : ""}`}
+              onClick={() => setActiveModule("expiration")}
+            >
+              <span className="ops-tool-icon">⌕</span>
+              Kiểm hạn dùng
+            </button>
+            <button
+              className={`ops-tool-tab ${activeModule === "temr" ? "active" : ""}`}
               onClick={() => { stopCamera(); setActiveModule("temr") }}
             >
+              <span className="ops-tool-icon">R</span>
               Phân bổ Tem R
             </button>
+            <span className="ops-tool-divider" aria-hidden="true" />
+            <a className="ops-tool-link" href="/scan-tem">
+              <span className="ops-tool-icon">▣</span>
+              Kiểm tem
+            </a>
+            <a className="ops-tool-link" href="/scan-tem?mode=shelf">
+              <span className="ops-tool-icon">▤</span>
+              Kiểm theo kệ
+            </a>
           </nav>
-          <div className="backend-status">
-            <span className={`status-dot ${
-              backendStatus === "ok" ? "ok" : backendStatus === "checking" ? "warn" : "err"
-            }`} />
-            {backendStatus === "ok" && "Backend kết nối"}
-            {backendStatus === "checking" && "Đang kiểm tra backend…"}
-            {backendStatus === "offline" && "Mất kết nối backend — hệ thống sẽ tự thử lại"}
-          </div>
-          {isAdmin ? (
-            <div className="auth-actions">
-              <span style={{fontSize:11,color:"var(--green)",fontWeight:650}}>ADMIN</span>
-              <button className="auth-button" onClick={logoutAdmin}>Đăng xuất</button>
-            </div>
-          ) : (
-            <form className="auth-actions" onSubmit={loginAdmin}>
-              <input className="auth-input" value={adminUsername}
-                onChange={e => setAdminUsername(e.target.value)} placeholder="Admin (preset/cấu hình)" />
-              <input className="auth-input" type="password" value={adminPassword}
-                onChange={e => setAdminPassword(e.target.value)} placeholder="Mật khẩu" />
-              <button className="auth-button" disabled={authLoading || !adminPassword}>
-                {authLoading ? "Đang vào…" : "Quản trị"}
-              </button>
-              {authError && <span className="auth-error">{authError}</span>}
-            </form>
-          )}
         </div>
 
         <div className={`main ${activeModule}-mode`}>
