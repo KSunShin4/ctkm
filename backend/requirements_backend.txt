@@ -9,3 +9,4 @@ rapidocr==3.9.2
 onnxruntime>=1.18.0,<2.0.0
 zxing-cpp==3.1.1
 ortools>=9.10,<10.0
+XlsxWriter>=3.2.0,<4.0.0
