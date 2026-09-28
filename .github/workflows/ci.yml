@@ -36,6 +36,18 @@ jobs:
         run: python -m compileall -q main.py main_core.py backend modules tests
       - name: Run test suite
         run: pytest -q
+      - name: Upload performance-fix source
+        uses: actions/upload-artifact@v4
+        with:
+          name: ctkm-performance-source
+          path: |
+            main.py
+            main_core.py
+            requirements.txt
+            modules
+            backend
+            config
+          if-no-files-found: error
 
   frontend-build:
     runs-on: ubuntu-latest
