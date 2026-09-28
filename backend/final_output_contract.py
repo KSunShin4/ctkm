@@ -352,11 +352,206 @@ def _validate_export_completeness(workbook) -> None:
         )
 
 
+def _stream_sheet_records(ws) -> tuple[list[str], list[dict[str, object]]]:
+    rows = ws.iter_rows(values_only=True)
+    try:
+        first = next(rows)
+    except StopIteration:
+        return [], []
+    headers = ["" if value is None else str(value) for value in first]
+    values = [
+        list(row) for row in rows
+        if any(value is not None and str(value).strip() for value in row)
+    ]
+    if is_empty_placeholder(headers, values):
+        return headers, []
+    return headers, [dict(zip(headers, row)) for row in values]
+
+
+def _stream_sheet_count(ws) -> int:
+    rows = ws.iter_rows(values_only=True)
+    try:
+        first = next(rows)
+    except StopIteration:
+        return 0
+    headers = ["" if value is None else str(value) for value in first]
+    count = 0
+    only_row = None
+    for row in rows:
+        if not any(value is not None and str(value).strip() for value in row):
+            continue
+        count += 1
+        if count == 1:
+            only_row = list(row)
+    if count == 1 and is_empty_placeholder(headers, [only_row]):
+        return 0
+    return count
+
+
+def _validate_slim_export_completeness_streaming(workbook) -> dict[str, int]:
+    _, audit_records = _stream_sheet_records(workbook["Audit hành động"])
+    work_records = _scoped_work_records(audit_records)
+    counts: dict[str, int] = {}
+
+    total_headers, total_records = _stream_sheet_records(workbook["TỔNG HỢP - TEM"])
+    audit_headers = set(audit_records[0].keys()) if audit_records else set()
+    common_headers = [header for header in total_headers if header in audit_headers]
+
+    scoped_raw = [
+        record for record in audit_records
+        if _record_value(record, "in_report_scope") is None
+        or _truthy_cell(_record_value(record, "in_report_scope"))
+    ]
+    grouped: dict[tuple, list[dict[str, object]]] = {}
+    for position, record in enumerate(scoped_raw):
+        task = str(_record_value(record, "task_id") or "").strip()
+        lineage = list(dict.fromkeys([
+            *_lineage_parts(_record_value(record, "source_row_ids")),
+            *_lineage_parts(_record_value(record, "source_row_id")),
+        ]))
+        key = ("task_source", task, tuple(lineage)) if task and lineage else ("row", position)
+        grouped.setdefault(key, []).append(record)
+    for key, records in grouped.items():
+        if len(records) <= 1 or not common_headers:
+            continue
+        if len(_projection_counter(records, common_headers)) != 1:
+            raise RuntimeError(
+                "Export completeness invariant failed; cùng task/lineage nhưng "
+                f"dữ liệu nghiệp vụ khác nhau: {key}"
+            )
+
+    if len(total_records) != len(work_records):
+        raise RuntimeError(
+            "Export completeness invariant failed; TỔNG HỢP - TEM không đủ "
+            f"work rows: total={len(total_records)}, expected={len(work_records)}"
+        )
+    if common_headers and (
+        _projection_counter(total_records, common_headers)
+        != _projection_counter(work_records, common_headers)
+    ):
+        raise RuntimeError(
+            "Export completeness invariant failed; TỔNG HỢP - TEM lệch dữ liệu "
+            "so với Audit hành động in-scope."
+        )
+    counts["TỔNG HỢP - TEM"] = len(total_records)
+
+    scheduled_groups = {
+        "Gắn tem": {"gan tem", "gan tem fefo"},
+        "Tháo tem": {"thao tem", "thao tem fefo", "thao rem fefo"},
+        "Chờ gắn": {"cho gan tem"},
+    }
+    for sheet_name, accepted in scheduled_groups.items():
+        _, actual = _stream_sheet_records(workbook[sheet_name])
+        expected = [
+            record for record in work_records
+            if _normalize_text(_record_value(record, "scheduled_action")) in accepted
+        ]
+        if Counter(map(_action_identity, actual)) != Counter(map(_action_identity, expected)):
+            raise RuntimeError(
+                f"Export completeness invariant failed; sheet '{sheet_name}' "
+                "không khớp scheduled_action trong Audit hành động."
+            )
+        counts[sheet_name] = len(actual)
+
+    _, review_actual = _stream_sheet_records(workbook["Cần review"])
+    review_expected = []
+    for record in work_records:
+        review_value = _record_value(record, "review_required")
+        needs_review = (
+            _truthy_cell(review_value)
+            if review_value is not None
+            else _normalize_text(_record_value(record, "scheduled_action")) == "review"
+        )
+        if needs_review:
+            review_expected.append(record)
+    if Counter(map(_action_identity, review_actual)) != Counter(map(_action_identity, review_expected)):
+        raise RuntimeError(
+            "Export completeness invariant failed; sheet 'Cần review' không khớp "
+            "review_required trong Audit hành động."
+        )
+    counts["Cần review"] = len(review_actual)
+    return counts
+
+
+def _validate_slim_workbook_fast(workbook, summary: dict | None) -> None:
+    if not workbook.sheetnames or workbook.sheetnames[0] != "HƯỚNG DẪN":
+        raise RuntimeError("Workbook kết quả không đặt HƯỚNG DẪN ở sheet đầu tiên.")
+    if not _SLIM_REQUIRED_CTKM_SHEETS.issubset(set(workbook.sheetnames)):
+        missing = sorted(_SLIM_REQUIRED_CTKM_SHEETS - set(workbook.sheetnames))
+        raise RuntimeError(
+            "Workbook kết quả thiếu sheet bắt buộc cho profile vận hành: " + ", ".join(missing)
+        )
+    if workbook["POG không có CTKM"].sheet_state != "hidden":
+        raise RuntimeError("POG không có CTKM là compatibility sheet và phải được ẩn.")
+    for metadata_name in ("POG metadata", "KM metadata"):
+        if metadata_name in workbook.sheetnames and workbook[metadata_name].sheet_state != "hidden":
+            raise RuntimeError(f"{metadata_name} phải được ẩn trong workbook kết quả.")
+
+    counts = _validate_slim_export_completeness_streaming(workbook)
+    summary_dict = summary if isinstance(summary, dict) else {}
+
+    for legacy_key, canonical_key in _LEGACY_CANONICAL_PAIRS:
+        if legacy_key in summary_dict and canonical_key in summary_dict:
+            if not _same_value(summary_dict[legacy_key], summary_dict[canonical_key]):
+                raise RuntimeError(
+                    f"Summary legacy '{legacy_key}' lệch canonical '{canonical_key}'."
+                )
+
+    for summary_key, sheet_name in _SUMMARY_SHEET_COUNT_PAIRS:
+        if summary_key not in summary_dict or sheet_name not in workbook.sheetnames:
+            continue
+        sheet_count = counts.get(sheet_name)
+        if sheet_count is None:
+            sheet_count = _stream_sheet_count(workbook[sheet_name])
+            counts[sheet_name] = sheet_count
+        if not _same_value(summary_dict[summary_key], sheet_count):
+            raise RuntimeError(
+                f"Summary '{summary_key}' không khớp sheet '{sheet_name}': "
+                f"API={summary_dict[summary_key]!r}, rows={sheet_count}"
+            )
+
+    guide = workbook["HƯỚNG DẪN"]
+    seen_targets: set[str] = set()
+    for row in guide.iter_rows(values_only=True):
+        label = row[0] if row else None
+        if label not in _SLIM_GUIDE_TARGETS:
+            continue
+        target = _SLIM_GUIDE_TARGETS[label]
+        expected_count = counts.get(target)
+        if expected_count is None:
+            expected_count = _stream_sheet_count(workbook[target])
+            counts[target] = expected_count
+        actual_count = row[1] if len(row) > 1 else None
+        if not _same_value(expected_count, actual_count):
+            raise RuntimeError(
+                f"HƯỚNG DẪN không khớp sheet '{target}': "
+                f"card={actual_count!r}, rows={expected_count}"
+            )
+        seen_targets.add(target)
+    missing_cards = sorted(set(_SLIM_GUIDE_TARGETS.values()) - seen_targets)
+    if missing_cards:
+        raise RuntimeError("HƯỚNG DẪN thiếu card cho sheet: " + ", ".join(missing_cards))
+
+
 def validate_ctkm_workbook(path: str | Path, summary: dict | None) -> None:
     """Reject an unreadable/inconsistent full or production-slim workbook."""
     artifact = Path(path)
     if not artifact.is_file():
         raise RuntimeError("Pipeline không tạo được file Excel kết quả.")
+
+    probe = None
+    try:
+        probe = openpyxl.load_workbook(artifact, data_only=True, read_only=True)
+        if _SLIM_REQUIRED_CTKM_SHEETS.issubset(set(probe.sheetnames)):
+            _validate_slim_workbook_fast(probe, summary)
+            return
+    except RuntimeError:
+        raise
+    except Exception as exc:
+        raise RuntimeError(f"Workbook kết quả không đọc được: {exc}") from exc
+    finally:
+        if probe is not None:
+            probe.close()
 
     workbook = None
     try:

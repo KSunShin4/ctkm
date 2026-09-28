@@ -19,6 +19,7 @@ from modules.all_km_reconciliation import (
     build_all_km_reconciliation_frames,
 )
 from modules.ctkm_performance import align_task_summary_with_work_rows
+from backend.fast_slim_excel import write_slim_workbook
 
 
 SLIM_SHEET_ORDER = [
@@ -339,110 +340,27 @@ def install_slim_output_contract(core_module) -> None:
         pog_metadata = _metadata_from(df_pog_review, "pog_metadata")
         km_metadata = _metadata_from(df_ctkm_clearance_confirmation, "fact_metadata")
 
-        with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
-            total.to_excel(writer, sheet_name="TỔNG HỢP - TEM", index=False)
-            _safe_frame(exporter, gan, "Không có CTKM cần gắn tem.").to_excel(
-                writer, sheet_name="Gắn tem", index=False
-            )
-            _safe_frame(exporter, thao, "Không có CTKM cần tháo tem.").to_excel(
-                writer, sheet_name="Tháo tem", index=False
-            )
-            _safe_frame(exporter, wait, "Không có CTKM đang chờ đến ngày gắn.").to_excel(
-                writer, sheet_name="Chờ gắn", index=False
-            )
-            _safe_frame(exporter, review, "Không có CTKM cần review.").to_excel(
-                writer, sheet_name="Cần review", index=False
-            )
-            _safe_frame(
-                exporter, location_issues, "Không có công việc nào cần kiểm tra vị trí POG."
-            ).to_excel(writer, sheet_name="CTKM thieu vi tri ke", index=False)
-            _safe_frame(
-                exporter, location_review, "Không có vị trí POG nào cần review."
-            ).to_excel(writer, sheet_name="POG cần kiểm tra", index=False)
-
-            _safe_frame(
-                exporter, matched_all, "Không có KM nào khớp POG."
-            ).to_excel(writer, sheet_name="Tong hop", index=False)
-            _safe_frame(
-                exporter, missing_all_km, "Không có POG nào thiếu KM."
-            ).to_excel(writer, sheet_name="POG không có KM", index=False)
-            _safe_frame(
-                exporter, df_pog_only, "Không có POG nào thiếu Monthly CTKM."
-            ).to_excel(writer, sheet_name="POG không có Monthly CTKM", index=False)
-            _safe_frame(
-                exporter, pog_review, "Không có dòng POG business nào cần review."
-            ).to_excel(writer, sheet_name="POG cần review", index=False)
-
-            _safe_frame(exporter, audit, "Không có dữ liệu hành động để audit.").to_excel(
-                writer, sheet_name="Audit hành động", index=False
-            )
-            _mapping_log_frame(mapping_logs).to_excel(
-                writer, sheet_name="Mapping log", index=False
-            )
-
-            # Compatibility only: same true all-KM gap, never Monthly-only.
-            _safe_frame(
-                exporter, missing_all_km, "Không có POG nào thiếu KM."
-            ).to_excel(writer, sheet_name="POG không có CTKM", index=False)
-            writer.sheets["POG không có CTKM"].sheet_state = "hidden"
-
-            _write_hidden_metadata(writer, "POG metadata", pog_metadata)
-            _write_hidden_metadata(writer, "KM metadata", km_metadata)
-
-            business_date = (
-                reconciliation_summary.get("Ngay nghiep vu")
-                if isinstance(reconciliation_summary, dict) else None
-            )
-            for sheet_name, frame in (
-                ("Gắn tem", gan), ("Tháo tem", thao),
-                ("Chờ gắn", wait), ("Cần review", review),
-            ):
-                exporter._add_remaining_days_formula(
-                    writer.sheets[sheet_name], frame, business_date, "so_ngay_con_lai"
-                )
-
-            exporter._create_guide_sheet(
-                writer.book, gan, thao, wait, review, location_issues,
-                reconciliation_summary, None, location_review, pog_review,
-            )
-            _trim_guide_to_slim_profile(writer.book)
-
-            styled_frames = (
-                ("TỔNG HỢP - TEM", total),
-                ("Gắn tem", gan), ("Tháo tem", thao),
-                ("Chờ gắn", wait), ("Cần review", review),
-                ("CTKM thieu vi tri ke", location_issues),
-                ("POG cần kiểm tra", location_review),
-            )
-            for sheet_name, frame in styled_frames:
-                ws = writer.sheets[sheet_name]
-                exporter._apply_professional_style(ws, sheet_name, frame)
-                if sheet_name != "TỔNG HỢP - TEM":
-                    exporter._apply_alternating_shelf_colors(ws, frame)
-                exporter._hide_technical_columns(
-                    ws, action_sheet=sheet_name in {"Gắn tem", "Tháo tem", "Chờ gắn", "Cần review"}
-                )
-                if sheet_name in {"TỔNG HỢP - TEM", "Gắn tem", "Tháo tem", "Chờ gắn", "Cần review"}:
-                    _apply_selected_output_visibility(ws, exporter, selected)
-                exporter._apply_bilingual_headers(ws)
-
-            for sheet_name in (
-                "Tong hop", "POG không có KM", "POG không có Monthly CTKM",
-                "POG cần review", "POG không có CTKM",
-            ):
-                _lightweight_audit_style(writer.sheets[sheet_name], exporter)
-
-            for sheet_name in ("Gắn tem", "Tháo tem", "Chờ gắn", "Cần review"):
-                exporter._configure_action_inputs(writer.sheets[sheet_name])
-
-            _lightweight_audit_style(writer.sheets["Audit hành động"], exporter)
-            _lightweight_audit_style(writer.sheets["Mapping log"], exporter)
-
-            writer.book._sheets = [
-                writer.book[name] for name in SLIM_SHEET_ORDER if name in writer.book.sheetnames
-            ]
-
-        return str(output_path)
+        return write_slim_workbook(
+            output_path=output_path,
+            exporter=exporter,
+            total=total,
+            gan=gan,
+            thao=thao,
+            wait=wait,
+            review=review,
+            location_issues=location_issues,
+            location_review=location_review,
+            matched_all=matched_all,
+            missing_all_km=missing_all_km,
+            monthly_pog_only=df_pog_only,
+            pog_review=pog_review,
+            audit=audit,
+            mapping_log=_mapping_log_frame(mapping_logs),
+            reconciliation_summary=reconciliation_summary,
+            selected=selected,
+            pog_metadata=pog_metadata,
+            km_metadata=km_metadata,
+        )
 
     exporter.export_final_report = export_final_report_slim
     # main_core.run_pipeline holds the same exporter module object, so replacing
