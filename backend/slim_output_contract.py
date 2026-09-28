@@ -303,10 +303,7 @@ def install_slim_output_contract(core_module) -> None:
         df_ctkm_clearance_confirmation=None,
         df_pog_review=None,
     ) -> str:
-        # These are intentionally unused in slim presentation, but do not discard
-        # df_matched/df_pog_only: they are required for all-KM reconciliation.
-        del df_ctkm_only, overlap_warnings
-        del snapshot_alignment_warning
+        del df_ctkm_only, overlap_warnings, snapshot_alignment_warning
 
         matched_all, missing_all_km, added_keys = build_all_km_reconciliation_frames(
             main_core, df_matched, df_pog_only, df_fefo_actions
@@ -327,120 +324,296 @@ def install_slim_output_contract(core_module) -> None:
             exporter, df_fefo_actions
         )
 
-        # selected_output_columns is presentation-only; all workbook data columns
-        # remain present so audit/identity validation cannot be weakened by a UI choice.
         selected = {
             str(column).strip().lower()
             for column in (selected_output_columns or [])
             if str(column).strip()
         }
-
         pog_review = df_pog_review.copy() if df_pog_review is not None else pd.DataFrame()
         pog_metadata = _metadata_from(df_pog_review, "pog_metadata")
         km_metadata = _metadata_from(df_ctkm_clearance_confirmation, "fact_metadata")
 
-        with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
-            total.to_excel(writer, sheet_name="TỔNG HỢP - TEM", index=False)
-            _safe_frame(exporter, gan, "Không có CTKM cần gắn tem.").to_excel(
-                writer, sheet_name="Gắn tem", index=False
-            )
-            _safe_frame(exporter, thao, "Không có CTKM cần tháo tem.").to_excel(
-                writer, sheet_name="Tháo tem", index=False
-            )
-            _safe_frame(exporter, wait, "Không có CTKM đang chờ đến ngày gắn.").to_excel(
-                writer, sheet_name="Chờ gắn", index=False
-            )
-            _safe_frame(exporter, review, "Không có CTKM cần review.").to_excel(
-                writer, sheet_name="Cần review", index=False
-            )
-            _safe_frame(
-                exporter, location_issues, "Không có công việc nào cần kiểm tra vị trí POG."
-            ).to_excel(writer, sheet_name="CTKM thieu vi tri ke", index=False)
-            _safe_frame(
-                exporter, location_review, "Không có vị trí POG nào cần review."
-            ).to_excel(writer, sheet_name="POG cần kiểm tra", index=False)
+        business_date = (
+            reconciliation_summary.get("Ngay nghiep vu")
+            if isinstance(reconciliation_summary, dict) else None
+        )
+        report_date = pd.to_datetime(business_date, errors="coerce")
+        if pd.notna(report_date):
+            report_date = report_date.normalize()
+            for frame in (gan, thao, wait, review):
+                if "so_ngay_con_lai" in frame.columns and "promo_to" in frame.columns:
+                    promo_to = pd.to_datetime(frame["promo_to"], errors="coerce")
+                    remaining = (promo_to.dt.normalize() - report_date).dt.days.clip(lower=0)
+                    frame["so_ngay_con_lai"] = remaining.where(promo_to.notna(), "")
 
-            _safe_frame(
-                exporter, matched_all, "Không có KM nào khớp POG."
-            ).to_excel(writer, sheet_name="Tong hop", index=False)
-            _safe_frame(
-                exporter, missing_all_km, "Không có POG nào thiếu KM."
-            ).to_excel(writer, sheet_name="POG không có KM", index=False)
-            _safe_frame(
-                exporter, df_pog_only, "Không có POG nào thiếu Monthly CTKM."
-            ).to_excel(writer, sheet_name="POG không có Monthly CTKM", index=False)
-            _safe_frame(
-                exporter, pog_review, "Không có dòng POG business nào cần review."
-            ).to_excel(writer, sheet_name="POG cần review", index=False)
+        action_names = {"Gắn tem", "Tháo tem", "Chờ gắn", "Cần review"}
+        audit_names = {
+            "Tong hop", "POG không có KM", "POG không có Monthly CTKM",
+            "POG cần review", "POG không có CTKM", "Audit hành động", "Mapping log",
+        }
+        tab_colors = {
+            "TỔNG HỢP - TEM": "#4F81BD",
+            "Gắn tem": "#2E7D32",
+            "Tháo tem": "#F28C00",
+            "Chờ gắn": "#C79B00",
+            "Cần review": "#7030A0",
+            "CTKM thieu vi tri ke": "#C0504D",
+            "POG cần kiểm tra": "#C0504D",
+            "Tong hop": "#4F81BD",
+            "POG không có KM": "#9BBB59",
+            "POG không có Monthly CTKM": "#9BBB59",
+            "POG cần review": "#C65911",
+            "Audit hành động": "#5B5EA6",
+            "Mapping log": "#5B5EA6",
+        }
 
-            _safe_frame(exporter, audit, "Không có dữ liệu hành động để audit.").to_excel(
-                writer, sheet_name="Audit hành động", index=False
-            )
-            _mapping_log_frame(mapping_logs).to_excel(
-                writer, sheet_name="Mapping log", index=False
-            )
+        def display_header(raw):
+            raw = str(raw or "")
+            base = raw.split("__", 1)[0]
+            exact = getattr(exporter, "_BILINGUAL_HEADERS", {}).get(raw)
+            base_label = getattr(exporter, "_BILINGUAL_HEADERS", {}).get(base)
+            if exact:
+                return exact
+            if base_label:
+                return base_label if raw == base else f"{base_label.split(' (', 1)[0]} ({raw})"
+            return raw
 
-            # Compatibility only: same true all-KM gap, never Monthly-only.
-            _safe_frame(
-                exporter, missing_all_km, "Không có POG nào thiếu KM."
-            ).to_excel(writer, sheet_name="POG không có CTKM", index=False)
-            writer.sheets["POG không có CTKM"].sheet_state = "hidden"
-
-            _write_hidden_metadata(writer, "POG metadata", pog_metadata)
-            _write_hidden_metadata(writer, "KM metadata", km_metadata)
-
-            business_date = (
-                reconciliation_summary.get("Ngay nghiep vu")
-                if isinstance(reconciliation_summary, dict) else None
-            )
-            for sheet_name, frame in (
-                ("Gắn tem", gan), ("Tháo tem", thao),
-                ("Chờ gắn", wait), ("Cần review", review),
-            ):
-                exporter._add_remaining_days_formula(
-                    writer.sheets[sheet_name], frame, business_date, "so_ngay_con_lai"
+        def is_technical(raw, *, action_sheet=False):
+            raw = str(raw or "")
+            normalized = exporter._normalize_action_text(raw)
+            while normalized.startswith("extra__"):
+                normalized = normalized[len("extra__"):]
+            if normalized in {
+                "channel", "key channel", "kenh ap dung", "kenh ban", "sales channel",
+            }:
+                return False
+            return (
+                raw.startswith("extra__")
+                or raw.startswith("source_sheet__")
+                or (
+                    action_sheet
+                    and raw in {"target_month", "source_sheet", "pog_snapshot_month"}
                 )
-
-            exporter._create_guide_sheet(
-                writer.book, gan, thao, wait, review, location_issues,
-                reconciliation_summary, None, location_review, pog_review,
             )
-            _trim_guide_to_slim_profile(writer.book)
 
-            styled_frames = (
-                ("TỔNG HỢP - TEM", total),
-                ("Gắn tem", gan), ("Tháo tem", thao),
-                ("Chờ gắn", wait), ("Cần review", review),
-                ("CTKM thieu vi tri ke", location_issues),
-                ("POG cần kiểm tra", location_review),
+        with pd.ExcelWriter(
+            output_path,
+            engine="xlsxwriter",
+            engine_kwargs={"options": {"strings_to_urls": False}},
+        ) as writer:
+            book = writer.book
+            header_blue = book.add_format({
+                "bold": True, "font_color": "#FFFFFF", "bg_color": "#1F4E78",
+                "align": "center", "valign": "vcenter", "text_wrap": True,
+                "border": 1, "border_color": "#D0D7DE",
+            })
+            header_audit = book.add_format({
+                "bold": True, "font_color": "#FFFFFF", "bg_color": "#5B5EA6",
+                "align": "center", "valign": "vcenter", "text_wrap": True,
+            })
+            date_format = book.add_format({"num_format": "dd/mm/yyyy"})
+            unlocked = book.add_format({"locked": False, "bg_color": "#FFF2CC"})
+            unlocked_datetime = book.add_format({
+                "locked": False, "bg_color": "#FFF2CC",
+                "num_format": "dd/mm/yyyy hh:mm",
+            })
+            done_fill = book.add_format({"bg_color": "#E2F0D9"})
+            missing_fill = book.add_format({"bg_color": "#FFC7CE"})
+            gan_fill = book.add_format({"bg_color": "#E8F5E9"})
+            thao_fill = book.add_format({"bg_color": "#FFF3E0"})
+            warning_fill = book.add_format({"bg_color": "#FFF2CC"})
+
+            guide = book.add_worksheet("HƯỚNG DẪN")
+            writer.sheets["HƯỚNG DẪN"] = guide
+            title_format = book.add_format({
+                "bold": True, "font_color": "#FFFFFF", "bg_color": "#1F4E78",
+                "font_size": 18, "align": "center", "valign": "vcenter",
+            })
+            card_format = book.add_format({"bold": True, "bg_color": "#DDEBF7"})
+            guide.merge_range("A1:F2", "DANH SÁCH THAO TÁC TEM KHUYẾN MÃI", title_format)
+            guide.write("A4", "Tháng báo cáo")
+            guide.write(
+                "B4",
+                reconciliation_summary.get("Thang bao cao", "")
+                if isinstance(reconciliation_summary, dict) else "",
             )
-            for sheet_name, frame in styled_frames:
-                ws = writer.sheets[sheet_name]
-                exporter._apply_professional_style(ws, sheet_name, frame)
-                if sheet_name != "TỔNG HỢP - TEM":
-                    exporter._apply_alternating_shelf_colors(ws, frame)
-                exporter._hide_technical_columns(
-                    ws, action_sheet=sheet_name in {"Gắn tem", "Tháo tem", "Chờ gắn", "Cần review"}
-                )
-                if sheet_name in {"TỔNG HỢP - TEM", "Gắn tem", "Tháo tem", "Chờ gắn", "Cần review"}:
-                    _apply_selected_output_visibility(ws, exporter, selected)
-                exporter._apply_bilingual_headers(ws)
-
-            for sheet_name in (
-                "Tong hop", "POG không có KM", "POG không có Monthly CTKM",
-                "POG cần review", "POG không có CTKM",
-            ):
-                _lightweight_audit_style(writer.sheets[sheet_name], exporter)
-
-            for sheet_name in ("Gắn tem", "Tháo tem", "Chờ gắn", "Cần review"):
-                exporter._configure_action_inputs(writer.sheets[sheet_name])
-
-            _lightweight_audit_style(writer.sheets["Audit hành động"], exporter)
-            _lightweight_audit_style(writer.sheets["Mapping log"], exporter)
-
-            writer.book._sheets = [
-                writer.book[name] for name in SLIM_SHEET_ORDER if name in writer.book.sheetnames
+            guide.write("A5", "Ngày nghiệp vụ")
+            if pd.notna(report_date):
+                guide.write_datetime("B5", report_date.to_pydatetime(), date_format)
+            else:
+                guide.write("B5", business_date if business_date is not None else "")
+            guide.write("D4", "Cách sử dụng", card_format)
+            instructions = [
+                "1. Lọc KEY Channel trước, sau đó lọc Channel.",
+                "2. Lọc tiếp Cửa hàng → Mã kệ → Vị trí kệ.",
+                "3. POG chỉ cung cấp vị trí; không quyết định Gắn/Tháo/Chờ.",
+                "4. Cập nhật các ô màu vàng sau khi xử lý tại quầy.",
             ]
+            for offset, instruction in enumerate(instructions, start=5):
+                guide.write(offset - 1, 3, instruction)
+            cards = [
+                ("Gắn tem", len(gan), "Gắn tem"),
+                ("Tháo tem", len(thao), "Tháo tem"),
+                ("Chờ gắn", len(wait), "Chờ gắn"),
+                ("Cần review", len(review), "Cần review"),
+                ("Thiếu vị trí", len(location_issues), "CTKM thieu vi tri ke"),
+                ("Review vị trí", len(location_review), "POG cần kiểm tra"),
+                ("POG cần review", len(pog_review), "POG cần review"),
+            ]
+            for row_index, (label, count, target) in enumerate(cards, start=5):
+                guide.write_url(
+                    row_index, 0, f"internal:'{target}'!A1",
+                    card_format, string=label,
+                )
+                guide.write(row_index, 1, count)
+            guide.write(
+                "D10",
+                "Bản production slim: giữ reconciliation và source audit, "
+                "giảm formatting theo từng ô để xuất file nhanh hơn.",
+            )
+            guide.set_column("A:A", 24)
+            guide.set_column("B:B", 22)
+            guide.set_column("D:D", 60)
+            guide.hide_gridlines(2)
+            guide.set_tab_color("#1F4E78")
+
+            frames = [
+                ("TỔNG HỢP - TEM", total, "Không có dữ liệu tổng hợp."),
+                ("Gắn tem", gan, "Không có CTKM cần gắn tem."),
+                ("Tháo tem", thao, "Không có CTKM cần tháo tem."),
+                ("Chờ gắn", wait, "Không có CTKM đang chờ đến ngày gắn."),
+                ("Cần review", review, "Không có CTKM cần review."),
+                ("CTKM thieu vi tri ke", location_issues, "Không có công việc nào cần kiểm tra vị trí POG."),
+                ("POG cần kiểm tra", location_review, "Không có vị trí POG nào cần review."),
+                ("Tong hop", matched_all, "Không có KM nào khớp POG."),
+                ("POG không có KM", missing_all_km, "Không có POG nào thiếu KM."),
+                ("POG không có Monthly CTKM", df_pog_only, "Không có POG nào thiếu Monthly CTKM."),
+                ("POG cần review", pog_review, "Không có dòng POG business nào cần review."),
+                ("Audit hành động", audit, "Không có dữ liệu hành động để audit."),
+                ("Mapping log", _mapping_log_frame(mapping_logs), "Chưa có mapping log."),
+                ("POG không có CTKM", missing_all_km, "Không có POG nào thiếu KM."),
+            ]
+
+            for sheet_name, frame, empty_message in frames:
+                if sheet_name in {"TỔNG HỢP - TEM", "Mapping log"}:
+                    safe = frame.copy() if frame is not None else pd.DataFrame()
+                    if safe.empty and sheet_name == "Mapping log":
+                        safe = pd.DataFrame({"Ghi chu": [empty_message]})
+                else:
+                    safe = _safe_frame(exporter, frame, empty_message)
+
+                safe.to_excel(writer, sheet_name=sheet_name, index=False)
+                ws = writer.sheets[sheet_name]
+                action_sheet = sheet_name in action_names
+                ws.hide_gridlines(2)
+                ws.freeze_panes(1, 2 if action_sheet else 0)
+                if len(safe.columns):
+                    ws.autofilter(0, 0, max(0, len(safe)), len(safe.columns) - 1)
+                ws.set_tab_color(tab_colors.get(sheet_name, "#4F81BD"))
+
+                header_format = header_audit if sheet_name in audit_names else header_blue
+                raw_headers = [str(column) for column in safe.columns]
+                for col_index, raw in enumerate(raw_headers):
+                    label = display_header(raw)
+                    ws.write(0, col_index, label, header_format)
+                    width = getattr(exporter, "_COLUMN_WIDTHS", {}).get(
+                        raw, min(30, max(12, len(label) + 2))
+                    )
+                    hidden = is_technical(raw, action_sheet=action_sheet)
+                    if sheet_name in {
+                        "TỔNG HỢP - TEM", "Gắn tem", "Tháo tem", "Chờ gắn", "Cần review",
+                    } and selected:
+                        if raw in _PINNED_PRESENTATION_FIELDS:
+                            hidden = False
+                        elif raw in _SELECTABLE_PRESENTATION_FIELDS:
+                            hidden = raw.lower() not in selected
+                    column_format = date_format if raw in {
+                        "promo_from", "promo_to", "ngay_gan_tem", "ngay_thao_tem",
+                    } else None
+                    if action_sheet and raw in {
+                        "processing_status", "processed_by", "processed_at", "staff_note",
+                    }:
+                        column_format = unlocked_datetime if raw == "processed_at" else unlocked
+                    ws.set_column(
+                        col_index, col_index, width, column_format,
+                        {"hidden": bool(hidden)},
+                    )
+
+                if action_sheet and len(safe.columns):
+                    max_row = len(safe)
+                    if "processing_status" in raw_headers and max_row:
+                        status_col = raw_headers.index("processing_status")
+                        ws.data_validation(
+                            1, status_col, max_row, status_col,
+                            {
+                                "validate": "list",
+                                "source": [
+                                    "Chưa xử lý", "Đã xong",
+                                    "Không tìm thấy", "Không thực hiện được",
+                                ],
+                                "ignore_blank": False,
+                            },
+                        )
+                        status_letter = exporter.get_column_letter(status_col + 1)
+                        ws.conditional_format(
+                            1, 0, max_row, len(raw_headers) - 1,
+                            {
+                                "type": "formula",
+                                "criteria": f'=${status_letter}2="Đã xong"',
+                                "format": done_fill,
+                            },
+                        )
+                        ws.conditional_format(
+                            1, 0, max_row, len(raw_headers) - 1,
+                            {
+                                "type": "formula",
+                                "criteria": f'=${status_letter}2="Không tìm thấy"',
+                                "format": missing_fill,
+                            },
+                        )
+                    if "action" in raw_headers and max_row:
+                        action_col = raw_headers.index("action")
+                        action_letter = exporter.get_column_letter(action_col + 1)
+                        ws.conditional_format(
+                            1, 0, max_row, len(raw_headers) - 1,
+                            {
+                                "type": "formula",
+                                "criteria": f'=ISNUMBER(SEARCH("gắn",${action_letter}2))',
+                                "format": gan_fill,
+                            },
+                        )
+                        ws.conditional_format(
+                            1, 0, max_row, len(raw_headers) - 1,
+                            {
+                                "type": "formula",
+                                "criteria": f'=ISNUMBER(SEARCH("tháo",${action_letter}2))',
+                                "format": thao_fill,
+                            },
+                        )
+                    if "has_multiple_promotions_at_position" in raw_headers and max_row:
+                        flag_col = raw_headers.index("has_multiple_promotions_at_position")
+                        ws.conditional_format(
+                            1, flag_col, max_row, flag_col,
+                            {
+                                "type": "cell", "criteria": "==",
+                                "value": True, "format": warning_fill,
+                            },
+                        )
+                    ws.protect("", {"autofilter": True, "sort": True})
+
+                if sheet_name == "POG không có CTKM":
+                    ws.hide()
+
+            for metadata_name, metadata in (
+                ("POG metadata", pog_metadata),
+                ("KM metadata", km_metadata),
+            ):
+                if metadata is None or metadata.empty:
+                    continue
+                metadata.to_excel(writer, sheet_name=metadata_name, index=False)
+                ws = writer.sheets[metadata_name]
+                ws.hide()
+                ws.freeze_panes(1, 0)
 
         return str(output_path)
 
