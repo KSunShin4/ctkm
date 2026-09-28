@@ -45,6 +45,7 @@ jobs:
             main_core.py
             requirements.txt
             modules
+            backend
             config
           if-no-files-found: error
 
