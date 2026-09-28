@@ -36,6 +36,19 @@ jobs:
         run: python -m compileall -q main.py main_core.py backend modules tests
       - name: Run test suite
         run: pytest -q
+      - name: Upload source snapshot for real-file audit
+        uses: actions/upload-artifact@v4
+        with:
+          name: ctkm-source-309527
+          path: |
+            main.py
+            main_core.py
+            modules
+            backend
+            config
+            requirements-dev.txt
+          if-no-files-found: error
+          retention-days: 1
 
   frontend-build:
     runs-on: ubuntu-latest
