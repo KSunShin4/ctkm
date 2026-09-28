@@ -149,32 +149,46 @@ def _mapping_candidate(
                 "trusted_sources": list(candidate.get("trusted_sources") or []),
             }
 
-    prompt_version = main_mod.cfg.GEMINI_CONFIG.get(
-        "prompt_version", "column-mapping-v2"
-    )
-    sample_rows = main_mod.cfg.GEMINI_CONFIG.get("sample_rows_per_column", 8)
-    cached = main_mod.MC.get_cached_mapping(
-        list(df.columns),
-        schema_section,
-        prompt_version,
-        dataframe=df,
-        sheet_name=sheet_name,
-        sample_rows_per_column=sample_rows,
-    )
-    if isinstance(cached, dict) and cached.get("mapping"):
-        try:
-            mapping = validate_manual_mapping(
-                cached.get("mapping") or {}, df, schema_section
-            )
-        except ValueError:
-            mapping = None
-        if mapping is not None:
+    validated_cache = getattr(main_mod, "_get_validated_cached_mapping", None)
+    if callable(validated_cache):
+        cached_result = validated_cache(
+            str(sheet_name or kind.upper()), df, schema_section
+        )
+        if cached_result is not None:
+            mapping, cached = cached_result
             return {
                 "mapping": mapping,
                 "source": "cache",
                 "confidence": dict(cached.get("confidence") or {}),
                 "trusted_sources": [],
             }
+    else:
+        prompt_version = main_mod.cfg.GEMINI_CONFIG.get(
+            "prompt_version", "column-mapping-v2"
+        )
+        sample_rows = main_mod.cfg.GEMINI_CONFIG.get("sample_rows_per_column", 8)
+        cached = main_mod.MC.get_cached_mapping(
+            list(df.columns),
+            schema_section,
+            prompt_version,
+            dataframe=df,
+            sheet_name=sheet_name,
+            sample_rows_per_column=sample_rows,
+        )
+        if isinstance(cached, dict) and cached.get("mapping"):
+            try:
+                mapping = validate_manual_mapping(
+                    cached.get("mapping") or {}, df, schema_section
+                )
+            except ValueError:
+                mapping = None
+            if mapping is not None:
+                return {
+                    "mapping": mapping,
+                    "source": "cache",
+                    "confidence": dict(cached.get("confidence") or {}),
+                    "trusted_sources": [],
+                }
 
     return {
         "mapping": None,
