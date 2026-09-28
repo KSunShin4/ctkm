@@ -101,7 +101,9 @@ def validate_output_columns(value, schema: dict) -> list[str] | None:
     return cleaned
 
 
-def _mapping_candidate(main_mod, df, schema_section, explicit, preset, *, kind: str):
+def _mapping_candidate(
+    main_mod, df, schema_section, explicit, preset, *, kind: str, sheet_name=None
+):
     if explicit is not None:
         mapping = validate_manual_mapping(explicit, df, schema_section)
         return {
@@ -146,6 +148,48 @@ def _mapping_candidate(main_mod, df, schema_section, explicit, preset, *, kind: 
                 "confidence": dict(candidate.get("confidence") or {}),
                 "trusted_sources": list(candidate.get("trusted_sources") or []),
             }
+
+    validated_cache = getattr(main_mod, "_get_validated_cached_mapping", None)
+    if callable(validated_cache):
+        cached_result = validated_cache(
+            str(sheet_name or kind.upper()), df, schema_section
+        )
+        if cached_result is not None:
+            mapping, cached = cached_result
+            return {
+                "mapping": mapping,
+                "source": "cache",
+                "confidence": dict(cached.get("confidence") or {}),
+                "trusted_sources": [],
+            }
+    else:
+        prompt_version = main_mod.cfg.GEMINI_CONFIG.get(
+            "prompt_version", "column-mapping-v2"
+        )
+        sample_rows = main_mod.cfg.GEMINI_CONFIG.get("sample_rows_per_column", 8)
+        cached = main_mod.MC.get_cached_mapping(
+            list(df.columns),
+            schema_section,
+            prompt_version,
+            dataframe=df,
+            sheet_name=sheet_name,
+            sample_rows_per_column=sample_rows,
+        )
+        if isinstance(cached, dict) and cached.get("mapping"):
+            try:
+                mapping = validate_manual_mapping(
+                    cached.get("mapping") or {}, df, schema_section
+                )
+            except ValueError:
+                mapping = None
+            if mapping is not None:
+                return {
+                    "mapping": mapping,
+                    "source": "cache",
+                    "confidence": dict(cached.get("confidence") or {}),
+                    "trusted_sources": [],
+                }
+
     return {
         "mapping": None,
         "source": "gemini-required",
@@ -154,9 +198,12 @@ def _mapping_candidate(main_mod, df, schema_section, explicit, preset, *, kind: 
     }
 
 
-def _mapping_or_none(main_mod, df, schema_section, explicit, preset, *, kind: str):
+def _mapping_or_none(
+    main_mod, df, schema_section, explicit, preset, *, kind: str, sheet_name=None
+):
     candidate = _mapping_candidate(
-        main_mod, df, schema_section, explicit, preset, kind=kind
+        main_mod, df, schema_section, explicit, preset,
+        kind=kind, sheet_name=sheet_name,
     )
     return candidate["mapping"], candidate["source"]
 
@@ -317,11 +364,13 @@ def install_input_contract(core_module) -> None:
 
             ctkm_candidate = _mapping_candidate(
                 main_mod, primary_sheet.df, main_mod.SCHEMA["fact_fields"],
-                raw_ctkm_override, preset.get("ctkm_mapping"), kind="fact",
+                raw_ctkm_override, preset.get("ctkm_mapping"),
+                kind="fact", sheet_name=primary_name,
             )
             pog_candidate = _mapping_candidate(
                 main_mod, pog_sheet.df, main_mod.SCHEMA["pog_fields"],
-                raw_pog_override, preset.get("pog_mapping"), kind="pog",
+                raw_pog_override, preset.get("pog_mapping"),
+                kind="pog", sheet_name=selected_pog_sheet,
             )
             ctkm_map, ctkm_source = ctkm_candidate["mapping"], ctkm_candidate["source"]
             pog_map, pog_source = pog_candidate["mapping"], pog_candidate["source"]
@@ -342,7 +391,7 @@ def install_input_contract(core_module) -> None:
                 )
                 clearance_candidate = _mapping_candidate(
                     main_mod, clearance_sheet.df, main_mod.SCHEMA["fact_fields"],
-                    None, None, kind="fact",
+                    None, None, kind="fact", sheet_name=clearance_name,
                 )
                 clearance_map = clearance_candidate["mapping"]
                 clearance_source = clearance_candidate["source"]
@@ -611,7 +660,8 @@ def install_input_contract(core_module) -> None:
                         warnings.append(f"Preset {sheet_name} không còn hợp lệ: {exc}")
 
                 candidate = _mapping_candidate(
-                    main_mod, df, schema_section, None, None, kind=kind
+                    main_mod, df, schema_section, None, None,
+                    kind=kind, sheet_name=sheet_name,
                 )
                 inferred, source = candidate["mapping"], candidate["source"]
                 if inferred is not None:
