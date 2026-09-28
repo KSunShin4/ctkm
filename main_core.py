@@ -108,16 +108,30 @@ def _select_primary_ctkm_sheet(wb_ctkm, selected_sheet_name: str | None = None):
 def _get_or_map(sheet_name, df, schema_section, mapping_logs):
     cols = list(df.columns)
     prompt_version = cfg.GEMINI_CONFIG.get("prompt_version", "column-mapping-v2")
-    cached = MC.get_cached_mapping(cols, schema_section, prompt_version)
+    sample_rows = cfg.GEMINI_CONFIG.get("sample_rows_per_column", 8)
+    cache_kwargs = {
+        "dataframe": df,
+        "sheet_name": sheet_name,
+        "sample_rows_per_column": sample_rows,
+    }
+    cached = MC.get_cached_mapping(
+        cols, schema_section, prompt_version, **cache_kwargs
+    )
     if cached:
         cached["source"] = "cache"
         entry = {**cached, "sheet_name": sheet_name}
         mapping_logs.append(entry)
         return cached["mapping"]
     result = CM.map_columns_with_gemini(sheet_name, df, schema_section)
-    rdict  = MC.mapping_result_to_dict_safe(result)
+    rdict = MC.mapping_result_to_dict_safe(result)
     rdict["source"] = "gemini"
-    MC.save_mapping(cols, MC.mapping_result_to_dict_safe(result), schema_section, prompt_version)
+    MC.save_mapping(
+        cols,
+        MC.mapping_result_to_dict_safe(result),
+        schema_section,
+        prompt_version,
+        **cache_kwargs,
+    )
     mapping_logs.append({**rdict, "sheet_name": sheet_name})
     return result.mapping
 

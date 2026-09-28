@@ -18,7 +18,16 @@ def install_mapping_result_contract(core_module, validate_mapping) -> None:
     if main_core is None:
         raise RuntimeError("Không tìm thấy _ctkm_main_core để cài mapping result contract")
 
-    def evict_cache(df, schema_section) -> None:
+    def _cache_context(sheet_name, df) -> dict:
+        return {
+            "dataframe": df,
+            "sheet_name": sheet_name,
+            "sample_rows_per_column": main_mod.cfg.GEMINI_CONFIG.get(
+                "sample_rows_per_column", 8
+            ),
+        }
+
+    def evict_cache(sheet_name, df, schema_section) -> None:
         compute_signature = getattr(main_mod.MC, "compute_signature", None)
         lock = getattr(main_mod.MC, "_CACHE_LOCK", None)
         load_unlocked = getattr(main_mod.MC, "_load_unlocked", None)
@@ -32,7 +41,10 @@ def install_mapping_result_contract(core_module, validate_mapping) -> None:
             "prompt_version", "column-mapping-v2"
         )
         signature = compute_signature(
-            list(df.columns), schema_section, prompt_version
+            list(df.columns),
+            schema_section,
+            prompt_version,
+            **_cache_context(sheet_name, df),
         )
         with lock:
             cache = load_unlocked()
@@ -89,6 +101,33 @@ def install_mapping_result_contract(core_module, validate_mapping) -> None:
         validate_business_presence(sheet_name, df, checked, schema_section)
         return checked
 
+
+    def get_validated_cached_mapping(sheet_name, df, schema_section):
+        prompt_version = main_mod.cfg.GEMINI_CONFIG.get(
+            "prompt_version", "column-mapping-v2"
+        )
+        cached = main_mod.MC.get_cached_mapping(
+            list(df.columns),
+            schema_section,
+            prompt_version,
+            **_cache_context(sheet_name, df),
+        )
+        if not isinstance(cached, dict) or not cached.get("mapping"):
+            return None
+        try:
+            checked = validate_resolved(
+                sheet_name, df, schema_section, cached["mapping"]
+            )
+        except ValueError as exc:
+            if "subtotal/Total/control" in str(exc) or "Total/filter metadata" in str(exc):
+                raise
+            evict_cache(sheet_name, df, schema_section)
+            return None
+        return checked, cached
+
+    main_mod._get_validated_cached_mapping = get_validated_cached_mapping
+    main_core._get_validated_cached_mapping = get_validated_cached_mapping
+
     def recover_or_validate(original, sheet_name, df, schema_section, mapping_logs):
         before = len(mapping_logs)
         mapping = original(sheet_name, df, schema_section, mapping_logs)
@@ -99,7 +138,7 @@ def install_mapping_result_contract(core_module, validate_mapping) -> None:
             source = str(entry.get("source") or "") if isinstance(entry, dict) else ""
             # The historical mapper writes Gemini output to cache before this new
             # validator runs. Never retain a mapping that failed the contract.
-            evict_cache(df, schema_section)
+            evict_cache(sheet_name, df, schema_section)
             if source != "cache":
                 raise ValueError(
                     f"Mapping cho sheet '{sheet_name}' không đủ an toàn: {exc}"
@@ -115,7 +154,11 @@ def install_mapping_result_contract(core_module, validate_mapping) -> None:
             result.mapping = checked
             safe = main_mod.MC.mapping_result_to_dict_safe(result)
             main_mod.MC.save_mapping(
-                list(df.columns), safe, schema_section, prompt_version
+                list(df.columns),
+                safe,
+                schema_section,
+                prompt_version,
+                **_cache_context(sheet_name, df),
             )
             if len(mapping_logs) > before:
                 mapping_logs.pop()
@@ -164,19 +207,28 @@ def install_mapping_result_contract(core_module, validate_mapping) -> None:
     # company mapping -> validated mapping cache. Only then is Gemini required.
     from backend import input_contract
 
-    def mapping_or_none(main_module, df, schema_section, explicit, preset, *, kind: str):
-        sheet_label = str(getattr(df, "attrs", {}).get("sheet_name") or kind.upper())
+    def mapping_or_none(
+        main_module, df, schema_section, explicit, preset, *, kind: str, sheet_name=None
+    ):
+        sheet_label = str(
+            sheet_name
+            or getattr(df, "attrs", {}).get("sheet_name")
+            or kind.upper()
+        )
         if explicit is not None:
-            return validate_resolved(sheet_label, df, schema_section, explicit), "manual"
+            return validate_resolved(
+                sheet_label, df, schema_section, explicit
+            ), "manual"
         if preset:
             try:
-                checked = validate_resolved(sheet_label, df, schema_section, preset)
+                checked = validate_resolved(
+                    sheet_label, df, schema_section, preset
+                )
                 return checked, "saved-preset"
             except ValueError as exc:
-                # A structurally stale preset may be ignored, but a control-only
-                # sheet must not silently fall through to another mapper.
                 if "subtotal/Total/control" in str(exc) or "Total/filter metadata" in str(exc):
                     raise
+
         infer = (
             main_module._infer_standard_fact_mapping
             if kind == "fact" else main_module._infer_standard_pog_mapping
@@ -184,28 +236,37 @@ def install_mapping_result_contract(core_module, validate_mapping) -> None:
         inferred = infer(df)
         if inferred:
             suffix = "-after-stale-preset" if preset else ""
-            checked = validate_resolved(sheet_label, df, schema_section, inferred)
+            checked = validate_resolved(
+                sheet_label, df, schema_section, inferred
+            )
             return checked, f"standard-{kind}{suffix}"
 
-        prompt_version = main_module.cfg.GEMINI_CONFIG.get(
-            "prompt_version", "column-mapping-v2"
-        )
-        cached = main_module.MC.get_cached_mapping(
-            list(df.columns), schema_section, prompt_version
-        )
-        if isinstance(cached, dict) and cached.get("mapping"):
-            try:
+        local_infer = getattr(main_module, "_infer_local_value_mapping", None)
+        if callable(local_infer):
+            candidate = local_infer(df, kind)
+            if candidate:
                 checked = validate_resolved(
-                    sheet_label, df, schema_section, cached["mapping"]
+                    sheet_label,
+                    df,
+                    schema_section,
+                    candidate.get("mapping") or {},
                 )
                 suffix = "-after-stale-preset" if preset else ""
-                return checked, f"cache{suffix}"
-            except ValueError as exc:
-                if "subtotal/Total/control" in str(exc) or "Total/filter metadata" in str(exc):
-                    raise
-                evict_cache(df, schema_section)
+                return checked, f"{candidate.get('source') or f'local-value-{kind}'}{suffix}"
 
-        return None, "gemini-required-after-stale-preset" if preset else "gemini-required"
+        cached_result = get_validated_cached_mapping(
+            sheet_label, df, schema_section
+        )
+        if cached_result is not None:
+            checked, _cached = cached_result
+            suffix = "-after-stale-preset" if preset else ""
+            return checked, f"cache{suffix}"
+
+        return (
+            None,
+            "gemini-required-after-stale-preset"
+            if preset else "gemini-required",
+        )
 
     input_contract._mapping_or_none = mapping_or_none
     core_module.app.state.mapping_result_contract_v1 = True
