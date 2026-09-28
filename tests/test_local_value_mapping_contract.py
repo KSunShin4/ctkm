@@ -165,3 +165,72 @@ def test_local_pog_refuses_multiple_store_like_candidates():
 
     assert candidate["mapping"] is None
     assert candidate["source"] == "gemini-required"
+
+
+
+def test_local_value_inference_precedes_mapping_cache(monkeypatch):
+    frame = pd.DataFrame({
+        "Mystery SKU": ["P1001", "P1002", "P1003", "P1004"],
+        "Campaign": ["A", "B", "C", "D"],
+        "From": ["2026-09-01"] * 4,
+        "To": ["2026-09-30"] * 4,
+    })
+
+    def cache_must_not_run(*_args, **_kwargs):
+        raise AssertionError("High-evidence local inference must precede cache lookup")
+
+    monkeypatch.setattr(
+        main, "_get_validated_cached_mapping", cache_must_not_run, raising=False
+    )
+    candidate = input_contract._mapping_candidate(
+        main, frame, FACT_SCHEMA, None, None,
+        kind="fact", sheet_name="Monthly",
+    )
+
+    assert candidate["source"] == "local-value-fact"
+    assert candidate["mapping"]["Mystery SKU"] == "item_id"
+
+
+def test_low_confidence_cache_hit_still_requires_confirmation(monkeypatch):
+    frame = pd.DataFrame({
+        "Mystery SKU": ["X1", "X2", "X3"],
+        "Campaign": ["A", "B", "C"],
+        "From": ["2026-09-01"] * 3,
+        "To": ["2026-09-30"] * 3,
+    })
+    cached_mapping = {
+        "Mystery SKU": "item_id",
+        "Campaign": "campaign_name",
+        "From": "promo_from",
+        "To": "promo_to",
+    }
+
+    monkeypatch.setattr(main, "_infer_local_value_mapping", lambda *_args: None)
+    monkeypatch.setattr(
+        main,
+        "_get_validated_cached_mapping",
+        lambda *_args, **_kwargs: (
+            cached_mapping,
+            {
+                "mapping": cached_mapping,
+                "confidence": {
+                    "Mystery SKU": 0.62,
+                    "Campaign": 0.93,
+                    "From": 0.95,
+                    "To": 0.95,
+                },
+                "unmapped": [],
+                "source": "cache",
+            },
+        ),
+        raising=False,
+    )
+
+    candidate = input_contract._mapping_candidate(
+        main, frame, FACT_SCHEMA, None, None,
+        kind="fact", sheet_name="Monthly",
+    )
+
+    assert candidate["source"] == "cache"
+    assert candidate["confidence"]["Mystery SKU"] == 0.62
+    assert main_api._mapping_needs_confirmation(candidate, FACT_SCHEMA)
