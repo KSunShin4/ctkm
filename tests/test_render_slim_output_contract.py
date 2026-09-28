@@ -6,6 +6,7 @@ from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 
 import main
+import backend.final_output_contract as final_output_contract
 from backend.final_output_contract import validate_ctkm_workbook
 from backend.slim_output_contract import SLIM_SHEET_ORDER, install_slim_output_contract
 
@@ -606,5 +607,98 @@ def test_slim_workbook_keeps_mapping_provenance_labels(tmp_path):
             assert ("(KHONG MAP DUOC)", "user-confirmed", None) in values
         finally:
             workbook.close()
+    finally:
+        main.EX.export_final_report = original_export
+
+
+
+def test_slim_export_bypasses_openpyxl_per_cell_style_helpers(monkeypatch, tmp_path):
+    original_export = main.EX.export_final_report
+    try:
+        _install_on_fake_backend()
+        output = tmp_path / "fast-slim.xlsx"
+        actions = _actions()
+
+        def should_not_run(*_args, **_kwargs):
+            raise AssertionError("production-slim must not use openpyxl per-cell styling")
+
+        for name in (
+            "_apply_professional_style",
+            "_apply_alternating_shelf_colors",
+            "_configure_action_inputs",
+        ):
+            monkeypatch.setattr(main.EX, name, should_not_run)
+
+        summary = {
+            "Thang bao cao": "2026-09",
+            "Ngay nghiep vu": pd.Timestamp("2026-09-05"),
+            "So dong KM thieu vi tri POG": 1,
+            "So dong can kiem tra vi tri": 1,
+            "So dong cho gan": 1,
+            "So dong can review": 1,
+            "So dong POG khong co KM phu hop": 0,
+        }
+        main.EX.export_final_report(
+            output_path=output,
+            df_matched=pd.DataFrame([{"item_id": "P1001"}]),
+            df_ctkm_only=pd.DataFrame(),
+            df_pog_only=pd.DataFrame(),
+            overlap_warnings=[],
+            mapping_logs=[],
+            reconciliation_summary=summary,
+            df_fefo_actions=actions,
+            df_pog_review=pd.DataFrame(),
+        )
+
+        workbook = load_workbook(output)
+        try:
+            assert workbook["Gắn tem"].data_validations.count == 1
+            assert workbook["Gắn tem"].protection.sheet is True
+            assert workbook["Gắn tem"].protection.autoFilter is False
+            assert workbook["Gắn tem"].protection.sort is False
+        finally:
+            workbook.close()
+    finally:
+        main.EX.export_final_report = original_export
+
+
+def test_slim_validator_uses_read_only_fast_path(monkeypatch, tmp_path):
+    original_export = main.EX.export_final_report
+    try:
+        _install_on_fake_backend()
+        output = tmp_path / "stream-validated.xlsx"
+        actions = _actions()
+        summary = {
+            "Thang bao cao": "2026-09",
+            "Ngay nghiep vu": pd.Timestamp("2026-09-05"),
+            "So dong KM thieu vi tri POG": 1,
+            "So dong can kiem tra vi tri": 1,
+            "So dong cho gan": 1,
+            "So dong can review": 1,
+            "So dong POG khong co KM phu hop": 0,
+        }
+        main.EX.export_final_report(
+            output_path=output,
+            df_matched=pd.DataFrame([{"item_id": "P1001"}]),
+            df_ctkm_only=pd.DataFrame(),
+            df_pog_only=pd.DataFrame(),
+            overlap_warnings=[],
+            mapping_logs=[],
+            reconciliation_summary=summary,
+            df_fefo_actions=actions,
+            df_pog_review=pd.DataFrame(),
+        )
+
+        real_load = final_output_contract.openpyxl.load_workbook
+        calls = []
+
+        def tracked_load(*args, **kwargs):
+            calls.append(kwargs.get("read_only"))
+            return real_load(*args, **kwargs)
+
+        monkeypatch.setattr(final_output_contract.openpyxl, "load_workbook", tracked_load)
+        final_output_contract.validate_ctkm_workbook(output, summary)
+
+        assert calls == [True]
     finally:
         main.EX.export_final_report = original_export
