@@ -28,5 +28,7 @@ def test_hmr_reuses_react_root_and_replaces_observer():
     assert "compat.labelObserver?.disconnect?.()" in source
     assert "compat.labelObserver = labelObserver" in source
     assert "if (!compat.reactRoot) compat.reactRoot = ReactDOM.createRoot(rootElement)" in source
-    assert "compat.reactRoot.render(<App />)" in source
+    assert "compat.reactRoot.render(" in source
+    assert "<UiPreferenceRoot>" in source
+    assert "<App />" in source
     assert "ReactDOM.createRoot(rootElement).render(<App />)" not in source

@@ -1,6 +1,7 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import App from './App.jsx'
+import {UiPreferenceRoot, uiPreferenceCss} from './ui-preferences.js'
 
 // Compatibility patches must stay flat across Vite HMR/module re-execution.
 // Keep only native browser primitives and the React root globally; recreate the
@@ -235,5 +236,10 @@ labelObserver.observe(rootElement, { childList: true, subtree: true, characterDa
 compat.labelObserver = labelObserver
 
 if (!compat.reactRoot) compat.reactRoot = ReactDOM.createRoot(rootElement)
-compat.reactRoot.render(<App />)
+compat.reactRoot.render(
+  <UiPreferenceRoot>
+    <style>{uiPreferenceCss}</style>
+    <App />
+  </UiPreferenceRoot>
+)
 queueMicrotask(() => rewriteLegacyUiText(rootElement))
