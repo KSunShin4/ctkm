@@ -36,6 +36,17 @@ jobs:
         run: python -m compileall -q main.py main_core.py backend modules tests
       - name: Run test suite
         run: pytest -q
+      - name: Upload HEAD source for local real-file audit
+        uses: actions/upload-artifact@v4
+        with:
+          name: ctkm-head-source
+          path: |
+            main.py
+            main_core.py
+            requirements.txt
+            modules
+            config
+          if-no-files-found: error
 
   frontend-build:
     runs-on: ubuntu-latest
