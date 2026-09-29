@@ -332,7 +332,7 @@ def _build_inventory_inspection(
         counts = {"ok": 0, "stock_missing": 0, "stock_conflict": 0, "location_missing": 0}
         for row in grouped.values():
             stock_values = row["stock_values"]
-            has_location = bool(row["pog_codes"] and row["fixel_ids"] and row["location_ids"])
+            has_location = bool(row["positions"])
             if not stock_values:
                 status = "stock_missing"
                 stock = None
