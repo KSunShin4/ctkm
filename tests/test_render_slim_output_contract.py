@@ -608,3 +608,49 @@ def test_slim_workbook_keeps_mapping_provenance_labels(tmp_path):
             workbook.close()
     finally:
         main.EX.export_final_report = original_export
+
+
+
+def test_slim_export_does_not_use_pandas_to_excel_cell_writer(tmp_path, monkeypatch):
+    """Production-slim writes frames directly; pandas ExcelFormatter is not on the hot path."""
+    original_export = main.EX.export_final_report
+    try:
+        _install_on_fake_backend()
+        output = tmp_path / "direct-openpyxl-write.xlsx"
+        actions = _actions().iloc[:1].copy()
+        summary = {
+            "Thang bao cao": "2026-09",
+            "Ngay nghiep vu": pd.Timestamp("2026-09-17"),
+            "So dong KM thieu vi tri POG": 0,
+            "So dong can kiem tra vi tri": 0,
+            "So dong cho gan": 0,
+            "So dong can review": 1,
+            "So dong POG khong co KM phu hop": 0,
+        }
+
+        def forbidden_to_excel(*_args, **_kwargs):
+            raise AssertionError("production-slim must not call DataFrame.to_excel")
+
+        monkeypatch.setattr(pd.DataFrame, "to_excel", forbidden_to_excel)
+        main.EX.export_final_report(
+            output_path=output,
+            df_matched=pd.DataFrame([{"item_id": "P1001"}]),
+            df_ctkm_only=pd.DataFrame(),
+            df_pog_only=pd.DataFrame(),
+            overlap_warnings=[],
+            mapping_logs=[],
+            reconciliation_summary=summary,
+            df_fefo_actions=actions,
+            df_pog_review=pd.DataFrame(),
+        )
+
+        workbook = load_workbook(output, data_only=True)
+        try:
+            assert "Audit hành động" in workbook.sheetnames
+            assert workbook["Audit hành động"].max_row == 2
+            assert workbook["Gắn tem"].max_row == 2
+        finally:
+            workbook.close()
+        validate_ctkm_workbook(output, summary)
+    finally:
+        main.EX.export_final_report = original_export
