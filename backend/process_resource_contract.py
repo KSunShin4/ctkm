@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
-"""Render resource guard for process-local heavy Excel jobs.
+"""Process resource guard for process-local heavy Excel jobs.
 
 The CTKM endpoint performs a mapping preflight before it submits the real job.
-On small Render instances that preflight can temporarily retain upload bytes and
+On constrained container instances, preflight can temporarily retain upload bytes and
 DataFrames until the request coroutine returns. Starting the worker immediately
 creates a needless peak where preflight objects and full pipeline objects coexist.
 
@@ -70,8 +70,8 @@ def _shrink_known_upload_closure(work) -> None:
                 pass
 
 
-def install_render_resource_contract(core_module) -> None:
-    if getattr(core_module.app.state, "render_resource_contract_v1", False):
+def install_process_resource_contract(core_module) -> None:
+    if getattr(core_module.app.state, "process_resource_contract_v1", False):
         return
 
     queue = core_module._heavy_queue
@@ -177,4 +177,4 @@ def install_render_resource_contract(core_module) -> None:
 
     core_module._run_queued_job = run_queued_job
     core_module._submit_job = submit_job
-    core_module.app.state.render_resource_contract_v1 = True
+    core_module.app.state.process_resource_contract_v1 = True

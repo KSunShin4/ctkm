@@ -70,19 +70,45 @@ Swagger: `http://localhost:8000/docs`
 
 ## Deploy
 
-Docker/Render chạy một Uvicorn worker:
+Production chuẩn dùng **Google Cloud Run** với Dockerfile hiện tại và một Uvicorn
+worker:
 
 ```text
 python -m uvicorn backend.main_api:app --host 0.0.0.0 --port $PORT
 ```
 
-Queue/job state hiện là process-local, vì vậy không tăng `--workers` nếu chưa
-chuyển queue/job store sang shared storage. Render Blueprint dùng `render.yaml` và
-Dockerfile hiện tại. Blueprint đặt `autoDeployTrigger: checksPass`, vì vậy deploy
-tự động chỉ bắt đầu sau khi CI của commit trên branch liên kết đã pass.
+Queue/job state hiện là **process-local** và heavy job tiếp tục chạy sau khi API trả
+`202`. Vì vậy workflow Cloud Run tại
+`.github/workflows/deploy-cloud-run.yml` khóa ba điều kiện correctness:
 
-Admin workflows cần `ADMIN_PASSWORD` và `ADMIN_SESSION_SECRET`. `GEMINI_API_KEY`
-chỉ cần nếu muốn hỗ trợ mapping AI fallback. `/api/health` trả thêm:
+- `--min-instances=1`: tránh scale-to-zero làm mất job/queue đang giữ trong RAM;
+- `--max-instances=1`: tránh request status/download rơi sang instance khác;
+- `--no-cpu-throttling`: background worker vẫn có CPU sau khi request tạo job kết thúc.
+
+Các ràng buộc này có chi phí nền trên Cloud Run. Chỉ được nới sau khi queue/job state
+được chuyển sang shared durable storage và heavy work không còn phụ thuộc process
+hiện tại.
+
+Deploy tự động chạy **sau khi workflow `CI` của branch `main` PASS**. Workflow
+checkout đúng `head_sha` đã qua CI, authenticate bằng Workload Identity Federation,
+deploy source bằng `google-github-actions/deploy-cloudrun@v3`, chuyển 100% traffic
+sang revision mới rồi smoke-test `/api/health`.
+
+Repository cần các GitHub Actions Variables sau:
+
+- `GCP_PROJECT_ID`
+- `GCP_REGION`
+- `GCP_CLOUD_RUN_SERVICE`
+- `GCP_WORKLOAD_IDENTITY_PROVIDER`
+- `GCP_SERVICE_ACCOUNT`
+
+Cloud Run service phải được cấu hình runtime secrets/environment riêng. Tối thiểu:
+`ADMIN_PASSWORD`, `ADMIN_SESSION_SECRET`; `GEMINI_API_KEY` chỉ cần khi dùng AI
+fallback. `HEAVY_JOB_QUEUE_SIZE=1` được workflow merge vào service mỗi lần deploy.
+Với web store-facing, quyền public/unauthenticated của Cloud Run là cấu hình IAM một
+lần ở service; workflow không tự thay IAM.
+
+`/api/health` trả thêm:
 
 ```json
 {
@@ -103,15 +129,17 @@ Lịch làm việc không được lưu trên server; Excel là đầu ra cần 
 cảnh báo/gợi ý nghiệp vụ; nếu người dùng chủ động xuất thì workbook vẫn được tạo từ đúng
 lịch hiện tại. Chỉ lỗi kỹ thuật/dữ liệu cấu trúc không đủ để dựng workbook mới dừng export.
 
-### Lưu ý persistence trên Render Free
+### Lưu ý persistence trên Cloud Run
 
-`render.yaml` hiện dùng plan `free`. Workflow preset và mapping cache đang lưu file
-local lần lượt tại `logs/workflow_presets.json` và `logs/mapping_cache.json`.
-Filesystem của Render Free là ephemeral, nên các file này có thể mất khi service
-spin-down, restart hoặc redeploy. Mapping deterministic cho file Pharmacity chuẩn
-không phụ thuộc hai file này; nhưng nếu cần giữ custom preset/cache lâu dài thì phải
-chuyển chúng sang shared durable storage trước khi coi “mapping đã lưu” là dữ liệu
-bền vững qua vòng đời instance.
+Workflow preset và mapping cache hiện vẫn lưu file local lần lượt tại
+`logs/workflow_presets.json` và `logs/mapping_cache.json`. Filesystem/container
+lifecycle của Cloud Run không phải durable storage; dữ liệu local có thể mất khi
+instance restart hoặc khi deploy revision mới.
+
+`min-instances=1` giúp tránh scale-to-zero trong vận hành bình thường nhưng **không**
+biến local filesystem/RAM thành persistent storage. Mapping deterministic cho file
+Pharmacity chuẩn không phụ thuộc hai file này; nếu cần giữ custom preset/cache hoặc
+job history lâu dài thì phải chuyển chúng sang shared durable storage.
 
 ### Quyền truy cập CTKM / Tem
 
