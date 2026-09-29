@@ -538,10 +538,31 @@ const css = `
   .inventory-stat.ok{background:#f4fff9!important}.inventory-stat.bad{background:#fff5f5!important}.inventory-stat.warn{background:#fff9ee!important}
   .inventory-tools input,.inventory-tools select{min-height:42px!important;border-radius:11px!important}
 
+  .main.expiration-mode{max-width:1260px!important;padding:0 20px 90px!important}
+  .main.expiration-mode .content{width:100%!important;max-width:1100px!important;margin:0 auto!important}
+  .expiration-card{position:relative;overflow:hidden;padding:20px!important;border:1px solid #d8edf1!important;border-radius:22px!important;
+    background:radial-gradient(circle at 96% 0%,rgba(165,235,239,.30),transparent 25%),linear-gradient(145deg,#fff,#f7fdfe 66%,#fff8fb)!important;
+    box-shadow:0 14px 36px rgba(37,125,139,.07)!important}
+  .expiration-header{align-items:center!important;margin-bottom:13px!important}.expiration-title-wrap{display:flex;align-items:center;gap:12px}.expiration-title-wrap .mascot-avatar{width:50px;height:50px;border-radius:17px}
+  .expiration-kicker{font-size:8px!important;font-weight:950!important;letter-spacing:.12em!important;color:#1590a3!important}.expiration-title{font-size:22px!important;letter-spacing:-.4px!important;color:#243a54!important}.expiration-subtitle{font-size:10px!important;color:#7a8ca4!important;line-height:1.5}
+  .format-pill{background:#ecfbfd!important;border:1px solid #cceef2!important;color:#247d8a!important;border-radius:10px!important;padding:7px 9px!important}
+  .expiration-rule-row{display:grid;grid-template-columns:repeat(4,1fr);gap:7px;margin:0 0 14px}
+  .expiration-rule-row span{padding:8px 9px;border:1px solid #dceff2;border-radius:11px;background:rgba(255,255,255,.82);color:#5b7f88;font-size:8px;font-weight:850;text-align:center}
+  .expiration-grid{grid-template-columns:minmax(0,.9fr) minmax(0,1.1fr)!important;gap:14px!important}
+  .expiration-source-panel,.expiration-entry-panel{padding:14px;border:1px solid #e2edf2;border-radius:16px;background:rgba(255,255,255,.84);box-shadow:0 6px 18px rgba(37,90,120,.035)}
+  .expiration-panel-label{margin-bottom:9px;font-size:8px;letter-spacing:.1em;font-weight:950;color:#1590a3}.expiration-entry-help{margin:-2px 0 8px;color:#8495aa;font-size:8.5px;line-height:1.45}
+  .expiration-source-panel .dropzone{min-height:150px;display:flex;flex-direction:column;align-items:center;justify-content:center;border:1.5px dashed #c8e4ea!important;border-radius:14px!important;background:linear-gradient(180deg,#fff,#f6fcfd)!important}
+  .expiration-source-panel .dropzone-icon{font-size:29px;color:#1590a3}.expiration-camera-note{margin-top:9px;padding:8px 9px;border-radius:10px;background:#f6fbfd;border:1px solid #e1eff3;color:#718a96;font-size:8px;font-weight:800}
+  .expiration-entry-panel .entry-input{min-height:190px!important;border:1px solid #d8e7ec!important;border-radius:14px!important;background:#fff!important;padding:12px!important}
+  .expiration-entry-panel .btn-primary{min-height:48px;background:linear-gradient(135deg,#1aa6b8,#4c91e7)!important;box-shadow:0 9px 22px rgba(26,166,184,.18)!important}
+  .expiration-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:12px 0}.expiration-stats>div{padding:10px 11px;border:1px solid #e4edf2;border-radius:13px;background:#fff}.expiration-stats span{display:block;font-size:8px;color:#8495aa}.expiration-stats strong{display:block;margin-top:3px;font-size:20px;color:#324b69}.expiration-stats .ok{background:#f1fff8}.expiration-stats .ok strong{color:#0e9561}.expiration-stats .warn{background:#fff8ed}.expiration-stats .warn strong{color:#c87819}
+  .expiration-card .table-wrap{border-radius:14px!important}.expiration-card .sheet-select{min-height:42px!important;border-radius:11px!important}
+
   @media(max-width:760px){
     .ops-page-head{padding:10px 10px 8px!important}.ops-hero{min-height:auto!important;padding:13px!important;border-radius:16px!important}.ops-hero-side{display:none!important}.ops-hero p{margin-left:0!important}.ops-hero h1{font-size:19px!important}
-    .main.temr-mode,.main.inventory-mode{padding:0 10px 82px!important}.tem-r-card,.inventory-card{padding:14px!important;border-radius:17px!important}
-    .temr-rule-row{grid-template-columns:1fr 1fr}.temr-head-side{display:none}.inventory-head{display:block!important}.inventory-title-wrap{align-items:flex-start}.inventory-rule{margin-top:10px!important;max-width:none!important}
+    .main.temr-mode,.main.inventory-mode,.main.expiration-mode{padding:0 10px 82px!important}.tem-r-card,.inventory-card,.expiration-card{padding:14px!important;border-radius:17px!important}
+    .temr-rule-row,.expiration-rule-row{grid-template-columns:1fr 1fr}.temr-head-side{display:none}.inventory-head{display:block!important}.inventory-title-wrap{align-items:flex-start}.inventory-rule{margin-top:10px!important;max-width:none!important}
+    .expiration-header{display:block!important}.expiration-title-wrap{align-items:flex-start}.expiration-header .format-pill{display:inline-flex;margin-top:10px}.expiration-grid{grid-template-columns:1fr!important}.expiration-stats{grid-template-columns:1fr 1fr}.expiration-stats>div:first-child{grid-column:1/-1}
   }
 `
 
@@ -2252,15 +2273,22 @@ export default function App() {
             </section>
             <div className="card expiration-card" style={{marginBottom:20}}>
               <div className="expiration-header">
-                <div>
-                  <div className="expiration-kicker">Kiểm tra hạn dùng</div>
-                  <h1 className="expiration-title">Quét và đối chiếu sản phẩm</h1>
-                  <div className="expiration-subtitle">Tải dữ liệu tồn kho, sau đó nhập tay hoặc quét mã trên sản phẩm.</div>
+                <div className="expiration-title-wrap">
+                  <Mascot state={expirationLoading ? "thinking" : expirationResult ? "success" : expirationError ? "warning" : "guide"} />
+                  <div>
+                    <div className="expiration-kicker">Kiểm tra hạn dùng</div>
+                    <h1 className="expiration-title">Đối chiếu lô và hạn dùng</h1>
+                    <div className="expiration-subtitle">Tải file tồn kho, nhập danh sách cần kiểm. Camera chỉ hỗ trợ nhập mã nhanh khi thuận tiện.</div>
+                  </div>
                 </div>
                 <div className="format-pill">MÃ_P;SỐ_LÔ;DD/MM/YYYY</div>
               </div>
+              <div className="expiration-rule-row">
+                <span>① Tải file tồn</span><span>② Nhập mã/lô/HSD</span><span>③ Đối chiếu</span><span>④ Xem kết quả</span>
+              </div>
               <div className="expiration-grid">
-                <div>
+                <div className="expiration-source-panel">
+                  <div className="expiration-panel-label">DỮ LIỆU NGUỒN</div>
                   <Dropzone
                     label="File hạn dùng (.xlsx)"
                     sub="Cần có ITEMID, BATCHNUMER, EXPDATE"
@@ -2270,6 +2298,7 @@ export default function App() {
                   <div className="sheet-hint" style={{marginTop:8}}>
                     Quét QR/barcode có nội dung: MÃ_P;SỐ_LÔ;DD/MM/YYYY
                   </div>
+                  <div className="expiration-camera-note">📷 Camera là cách nhập nhanh, không bắt buộc.</div>
                   <div className="camera-actions">
                     {!cameraActive ? (
                       <button className="btn btn-ghost" onClick={startCamera}>Mở camera</button>
@@ -2297,7 +2326,9 @@ export default function App() {
                     <div className="status-strip error" style={{marginTop:10}}>⚠ {cameraError}</div>
                   )}
                 </div>
-                <div>
+                <div className="expiration-entry-panel">
+                  <div className="expiration-panel-label">DANH SÁCH CẦN KIỂM</div>
+                  <div className="expiration-entry-help">Nhập tay hoặc dán nhiều dòng. Mỗi sản phẩm một dòng theo đúng định dạng.</div>
                   <textarea
                     className="entry-input"
                     value={expirationEntries}
@@ -2321,6 +2352,11 @@ export default function App() {
                 <div style={{marginTop:18}}>
                   <div className={`status-strip ${expirationResult.unmatched ? "warn" : "success"}`}>
                     Sheet {expirationResult.sheet_name}: khớp {expirationResult.matched}/{expirationResult.total} dòng
+                  </div>
+                  <div className="expiration-stats">
+                    <div><span>Tổng dòng</span><strong>{expirationResult.total}</strong></div>
+                    <div className="ok"><span>Khớp chính xác</span><strong>{expirationResult.matched}</strong></div>
+                    <div className={expirationResult.unmatched ? "warn" : "ok"}><span>Chưa khớp</span><strong>{expirationResult.unmatched || 0}</strong></div>
                   </div>
                   <div style={{display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginTop:12}}>
                     <select className="sheet-select" style={{marginTop:0}} value={expirationFilter} onChange={e => setExpirationFilter(e.target.value)}>
