@@ -3,11 +3,14 @@ import assert from "node:assert/strict"
 import {readFile} from "node:fs/promises"
 const read=p=>readFile(new URL(p,import.meta.url),"utf8")
 
-test("shared store shell prioritizes real store workflows and five mobile tabs",async()=>{
+test("shared store shell keeps four primary mobile tabs plus a More sheet",async()=>{
   const s=await read("./ProductNav.jsx")
-  for(const x of ["Tổng quan","CTKM","Kiểm kệ","Tem R","Kiểm hạn dùng","portal-mobile-nav"])assert.match(s,new RegExp(x))
-  for(const x of ["/overview","/?module=ctkm","/scan-tem?mode=shelf","/?module=temr","/?module=expiration"])assert.ok(s.includes(x))
+  for(const x of ["Tổng quan","CTKM","Kiểm kệ","Tem R","Kiểm tồn kho","Kiểm hạn dùng","Xếp lịch","Hướng dẫn","Cài đặt","portal-mobile-nav","portal-mobile-more-sheet"])assert.match(s,new RegExp(x))
+  for(const x of ["/overview","/?module=ctkm","/scan-tem?mode=shelf","/?module=temr","/?module=inventory","/?module=expiration","/schedule","/guide","/settings"])assert.ok(s.includes(x))
   assert.match(s,/grid-template-columns:repeat\(5,1fr\)/)
+  assert.match(s,/mobilePrimary/)
+  assert.match(s,/mobileMore/)
+  assert.match(s,/>Thêm</)
 })
 test("legacy CTKM and scheduling screens keep shared navigation",async()=>{const app=await read("./App.jsx");assert.match(app,/ProductNav current=\{activeModule\}/);assert.doesNotMatch(app,/className="ops-tool-tabs"/);assert.match(await read("./SchedulingApp.jsx"),/ProductNav current="schedule"/)})
 test("index routes shell modules and preserves CTKM root",async()=>{const s=await read("../index.html");for(const x of ["overview","guide","assistant","settings"])assert.ok(s.includes(`pathname.startsWith('/${x}')`));assert.ok(s.includes("import('/src/portal-main.jsx')"));assert.ok(s.includes("import('/src/main.jsx')"))})
@@ -83,4 +86,13 @@ test("expiration workspace matches pastel module language without changing check
   assert.match(app,/Camera chỉ hỗ trợ nhập mã nhanh/)
   assert.match(app,/expirationResult\.matched/)
   assert.match(app,/expirationResult\.unmatched/)
+})
+
+
+test("mobile More sheet exposes inventory and expiration instead of dropping store features",async()=>{
+  const s=await read("./ProductNav.jsx")
+  assert.match(s,/\["inventory","expiration","schedule","guide","settings"\]/)
+  assert.match(s,/aria-expanded=\{moreOpen\}/)
+  assert.match(s,/Thêm chức năng/)
+  assert.match(s,/moreActive/)
 })
