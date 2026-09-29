@@ -29,7 +29,7 @@ from backend.preview_contract import install_preview_contract
 CONTRACT_ORDER = (
     "runtime",
     "input",
-    "render-resource",
+    "process-resource",
     "mapping-result",
     "gemini-availability",
     "tem-r-resource",
@@ -44,7 +44,7 @@ CONTRACT_ORDER = (
 _STATE_FLAGS = {
     "runtime": "runtime_contract_v1",
     "input": "input_contract_v1",
-    "render-resource": "render_resource_contract_v1",
+    "process-resource": "process_resource_contract_v1",
     "mapping-result": "mapping_result_contract_v1",
     "gemini-availability": "gemini_availability_contract_v1",
     "tem-r-resource": "tem_r_resource_contract_v1",
@@ -183,7 +183,7 @@ def install_contract_suite(core_module) -> None:
 
     install_runtime_contract(core_module)
     install_input_contract(core_module)
-    install_render_resource_contract(core_module)
+    install_process_resource_contract(core_module)
     install_mapping_result_contract(core_module, validate_manual_mapping)
     install_gemini_availability_contract(core_module)
     install_tem_r_resource_contract(core_module)
