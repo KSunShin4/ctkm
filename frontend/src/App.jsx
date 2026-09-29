@@ -1482,7 +1482,7 @@ export default function App() {
   return (
     <>
       <style>{css}</style><style>{helpTipCss}</style><style>{assistantComponentCss}</style>
-      <ProductNav current="ops"/>
+      <ProductNav current={activeModule}/>
       <div className="shell">
         <div className="ops-page-head">
           <section className="ops-hero" aria-labelledby="ops-page-title">
@@ -1530,45 +1530,6 @@ export default function App() {
             </div>
           </section>
 
-          <nav className="ops-tool-tabs" aria-label="Công cụ CTKM và Tem">
-            <button
-              className={`ops-tool-tab ${activeModule === "ctkm" ? "active" : ""}`}
-              onClick={() => { stopCamera(); setActiveModule("ctkm") }}
-            >
-              <span className="ops-tool-icon">✓</span>
-              Tổng hợp CTKM
-            </button>
-            <button
-              className={`ops-tool-tab ${activeModule === "expiration" ? "active" : ""}`}
-              onClick={() => setActiveModule("expiration")}
-            >
-              <span className="ops-tool-icon">⌕</span>
-              Kiểm hạn dùng
-            </button>
-            <button
-              className={`ops-tool-tab ${activeModule === "temr" ? "active" : ""}`}
-              onClick={() => { stopCamera(); setActiveModule("temr") }}
-            >
-              <span className="ops-tool-icon">R</span>
-              Phân bổ Tem R
-            </button>
-            <button
-              className={`ops-tool-tab ${activeModule === "inventory" ? "active" : ""}`}
-              onClick={() => { stopCamera(); setActiveModule("inventory") }}
-            >
-              <span className="ops-tool-icon">▣</span>
-              Kiểm tồn kho
-            </button>
-            <span className="ops-tool-divider" aria-hidden="true" />
-            <a className="ops-tool-link" href="/scan-tem">
-              <span className="ops-tool-icon">▣</span>
-              Kiểm tem
-            </a>
-            <a className="ops-tool-link" href="/scan-tem?mode=shelf">
-              <span className="ops-tool-icon">▤</span>
-              Kiểm theo kệ
-            </a>
-          </nav>
         </div>
 
         <div className={`main ${activeModule}-mode`}>
