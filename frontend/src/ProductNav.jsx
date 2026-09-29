@@ -1,7 +1,6 @@
 import React,{useState} from "react"
 
 export const PORTAL_MODULES=[
-  {id:"overview",label:"Tổng quan",short:"Trang chủ",href:"/overview",icon:"⌂"},
   {id:"ctkm",label:"CTKM",short:"CTKM",href:"/?module=ctkm",icon:"✦"},
   {id:"shelf",label:"Kiểm kệ",short:"Kiểm kệ",href:"/scan-tem?mode=shelf",icon:"✓"},
   {id:"temr",label:"Tem R",short:"Tem R",href:"/?module=temr",icon:"◇"},
@@ -32,7 +31,6 @@ const css=[
 export function currentPortalModule(pathname=window.location.pathname,search=window.location.search){
   const p=String(pathname||"/")
   const q=new URLSearchParams(search||"")
-  if(p.startsWith("/overview"))return"overview"
   if(p.startsWith("/scan-tem")&&q.get("mode")==="shelf")return"shelf"
   if(p.startsWith("/schedule"))return"schedule"
   if(p.startsWith("/history"))return"history"
@@ -51,13 +49,13 @@ export function currentPortalModule(pathname=window.location.pathname,search=win
 export default function ProductNav({current}){
   const active=current||currentPortalModule()
   const [moreOpen,setMoreOpen]=useState(false)
-  const mobilePrimary=PORTAL_MODULES.filter(x=>["overview","ctkm","shelf","temr"].includes(x.id))
+  const mobilePrimary=PORTAL_MODULES.filter(x=>["ctkm","shelf","temr","inventory"].includes(x.id))
   const mobileMore=PORTAL_MODULES.filter(x=>["inventory","expiration","schedule","history","guide","settings"].includes(x.id))
   const moreActive=mobileMore.some(x=>x.id===active)
   return <>
     <style>{css}</style>
     <nav className="portal-nav" aria-label="Điều hướng vận hành">
-      <a className="portal-nav-brand" href="/overview"><span className="portal-brand-mark">✚</span><span className="portal-brand-name">Pharma<span>city</span></span></a>
+      <a className="portal-nav-brand" href="/?module=ctkm"><span className="portal-brand-mark">✚</span><span className="portal-brand-name">Pharma<span>city</span></span></a>
       <div className="portal-nav-links">{PORTAL_MODULES.map(x=><a key={x.id} aria-current={active===x.id?"page":undefined} className={"portal-nav-link "+(active===x.id?"active":"")} href={x.href}><span className="portal-nav-icon">{x.icon}</span><span>{x.label}</span></a>)}</div>
       <div className="portal-nav-spacer"/>
       <div className="portal-nav-cute" aria-hidden="true"><b>💊</b>Hôm nay<br/>cố lên nhé ✨</div>
