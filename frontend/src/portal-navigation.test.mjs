@@ -35,3 +35,15 @@ test("shelf workflow uses shared shell and keeps camera explicitly beta",async()
   assert.match(shelf,/chỉ hỗ trợ tìm\/đọc tem/)
   assert.match(shelf,/Sai & Review/)
 })
+
+
+test("inventory is a first-class desktop module backed by real inspection",async()=>{
+  const nav=await read("./ProductNav.jsx")
+  const app=await read("./App.jsx")
+  assert.match(nav,/Kiểm tồn kho/)
+  assert.match(nav,/\?module=inventory/)
+  assert.match(app,/\/api\/inspect-inventory/)
+  assert.match(app,/Tồn store-level ↔ vị trí POG/)
+  assert.match(app,/stock_conflict/)
+  assert.match(app,/Không cộng tồn lặp/)
+})

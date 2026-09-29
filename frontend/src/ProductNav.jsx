@@ -5,6 +5,7 @@ export const PORTAL_MODULES=[
   {id:"ctkm",label:"CTKM",short:"CTKM",href:"/?module=ctkm",icon:"✦"},
   {id:"shelf",label:"Kiểm kệ",short:"Kiểm kệ",href:"/scan-tem?mode=shelf",icon:"✓"},
   {id:"temr",label:"Tem R",short:"Tem R",href:"/?module=temr",icon:"◇"},
+  {id:"inventory",label:"Kiểm tồn kho",short:"Kiểm tồn",href:"/?module=inventory",icon:"▣"},
   {id:"expiration",label:"Kiểm hạn dùng",short:"Hạn dùng",href:"/?module=expiration",icon:"◷"},
   {id:"schedule",label:"Xếp lịch",short:"Lịch",href:"/schedule",icon:"▦"},
   {id:"guide",label:"Hướng dẫn",short:"Hướng dẫn",href:"/guide",icon:"?"},
@@ -38,6 +39,7 @@ export function currentPortalModule(pathname=window.location.pathname,search=win
   if(p==="/"){
     const module=q.get("module")
     if(module==="temr")return"temr"
+    if(module==="inventory")return"inventory"
     if(module==="expiration")return"expiration"
     return"ctkm"
   }
