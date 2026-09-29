@@ -133,3 +133,28 @@ test("history is a first-class portal module and mobile More destination",async(
   assert.match(portal,/startsWith\("\/history"\)/)
   assert.match(index,/pathname\.startsWith\('\/history'\)/)
 })
+
+
+test("scheduling uses the shared sidebar without a duplicate horizontal topbar",async()=>{
+  const s=await read("./SchedulingApp.jsx")
+  assert.match(s,/ProductNav current="schedule"/)
+  assert.match(s,/schedule-hero/)
+  assert.match(s,/schedule-flow/)
+  assert.match(s,/XẾP LỊCH NHÂN VIÊN/)
+  assert.doesNotMatch(s,/<header className="sched-top"/)
+  assert.match(s,/export-dock/)
+  assert.match(s,/generate/)
+  assert.match(s,/exportExcel/)
+})
+
+test("settings keeps local-only preferences while matching the shared pastel shell",async()=>{
+  const s=await read("./SettingsApp.jsx")
+  assert.match(s,/settings-hero/)
+  assert.match(s,/settings-grid/)
+  assert.match(s,/Mascot/)
+  assert.match(s,/localStorage/)
+  assert.match(s,/readUiPreferences/)
+  assert.match(s,/writeUiPreferences/)
+  assert.match(s,/DEFAULT_UI_PREFERENCES/)
+  assert.doesNotMatch(s,/fetch\(/)
+})
