@@ -10,9 +10,9 @@ from modules.mapping_validation import validate_manual_mapping
 
 from backend import input_contract
 from backend.runtime_contract import install_runtime_contract
-from backend.render_resource_contract import (
+from backend.process_resource_contract import (
     current_rss_mb,
-    install_render_resource_contract,
+    install_process_resource_contract,
 )
 from backend.input_contract import install_input_contract
 from backend.mapping_result_contract import install_mapping_result_contract
