@@ -34,3 +34,12 @@ test("portal main renders GuideApp only for guide-side entrypoint",async()=>{
   assert.ok(source.includes("render(<GuideApp/>)"))
   assert.match(source,/UiPreferenceRoot/)
 })
+
+
+test("guide uses shared pastel assistant language and links to current store modules",async()=>{
+  const source=await read("./GuideApp.jsx")
+  assert.match(source,/Mascot/)
+  assert.match(source,/assistantComponentCss/)
+  assert.match(source,/guide-hero-main/)
+  for(const href of ["?module=ctkm","mode=shelf","?module=temr","?module=inventory","?module=expiration","/schedule"])assert.ok(source.includes(href))
+})
