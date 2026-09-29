@@ -172,10 +172,36 @@ def _metadata_from(frame: pd.DataFrame | None, attr_name: str) -> pd.DataFrame |
     return metadata.copy() if isinstance(metadata, pd.DataFrame) and not metadata.empty else None
 
 
+def _excel_cell_value(value):
+    """Convert pandas scalar sentinels without changing visible business values."""
+    try:
+        missing = pd.isna(value)
+        if not hasattr(missing, "__len__") and bool(missing):
+            return None
+    except (TypeError, ValueError):
+        pass
+    if isinstance(value, pd.Timestamp):
+        return value.to_pydatetime()
+    item = getattr(value, "item", None)
+    if callable(item) and type(value).__module__.startswith("numpy"):
+        return item()
+    return value
+
+
+def _write_frame(writer, sheet_name: str, frame: pd.DataFrame) -> None:
+    """Write a frame directly to openpyxl, avoiding pandas' per-cell Excel layer."""
+    if sheet_name in writer.book.sheetnames:
+        del writer.book[sheet_name]
+    ws = writer.book.create_sheet(sheet_name)
+    ws.append([_excel_cell_value(column) for column in frame.columns])
+    for row in frame.itertuples(index=False, name=None):
+        ws.append([_excel_cell_value(value) for value in row])
+
+
 def _write_hidden_metadata(writer, sheet_name: str, frame: pd.DataFrame | None) -> None:
     if frame is None or frame.empty:
         return
-    frame.to_excel(writer, sheet_name=sheet_name, index=False)
+    _write_frame(writer, sheet_name, frame)
     ws = writer.sheets[sheet_name]
     ws.freeze_panes = "A2"
     if ws.max_row >= 1 and ws.max_column >= 1:
@@ -340,50 +366,72 @@ def install_slim_output_contract(core_module) -> None:
         km_metadata = _metadata_from(df_ctkm_clearance_confirmation, "fact_metadata")
 
         with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
-            total.to_excel(writer, sheet_name="TỔNG HỢP - TEM", index=False)
-            _safe_frame(exporter, gan, "Không có CTKM cần gắn tem.").to_excel(
-                writer, sheet_name="Gắn tem", index=False
+            _write_frame(writer, "TỔNG HỢP - TEM", total)
+            _write_frame(
+                writer, "Gắn tem",
+                _safe_frame(exporter, gan, "Không có CTKM cần gắn tem."),
             )
-            _safe_frame(exporter, thao, "Không có CTKM cần tháo tem.").to_excel(
-                writer, sheet_name="Tháo tem", index=False
+            _write_frame(
+                writer, "Tháo tem",
+                _safe_frame(exporter, thao, "Không có CTKM cần tháo tem."),
             )
-            _safe_frame(exporter, wait, "Không có CTKM đang chờ đến ngày gắn.").to_excel(
-                writer, sheet_name="Chờ gắn", index=False
+            _write_frame(
+                writer, "Chờ gắn",
+                _safe_frame(exporter, wait, "Không có CTKM đang chờ đến ngày gắn."),
             )
-            _safe_frame(exporter, review, "Không có CTKM cần review.").to_excel(
-                writer, sheet_name="Cần review", index=False
+            _write_frame(
+                writer, "Cần review",
+                _safe_frame(exporter, review, "Không có CTKM cần review."),
             )
-            _safe_frame(
-                exporter, location_issues, "Không có công việc nào cần kiểm tra vị trí POG."
-            ).to_excel(writer, sheet_name="CTKM thieu vi tri ke", index=False)
-            _safe_frame(
-                exporter, location_review, "Không có vị trí POG nào cần review."
-            ).to_excel(writer, sheet_name="POG cần kiểm tra", index=False)
+            _write_frame(
+                writer, "CTKM thieu vi tri ke",
+                _safe_frame(
+                    exporter, location_issues,
+                    "Không có công việc nào cần kiểm tra vị trí POG.",
+                ),
+            )
+            _write_frame(
+                writer, "POG cần kiểm tra",
+                _safe_frame(
+                    exporter, location_review,
+                    "Không có vị trí POG nào cần review.",
+                ),
+            )
 
-            _safe_frame(
-                exporter, matched_all, "Không có KM nào khớp POG."
-            ).to_excel(writer, sheet_name="Tong hop", index=False)
-            _safe_frame(
-                exporter, missing_all_km, "Không có POG nào thiếu KM."
-            ).to_excel(writer, sheet_name="POG không có KM", index=False)
-            _safe_frame(
-                exporter, df_pog_only, "Không có POG nào thiếu Monthly CTKM."
-            ).to_excel(writer, sheet_name="POG không có Monthly CTKM", index=False)
-            _safe_frame(
-                exporter, pog_review, "Không có dòng POG business nào cần review."
-            ).to_excel(writer, sheet_name="POG cần review", index=False)
+            _write_frame(
+                writer, "Tong hop",
+                _safe_frame(exporter, matched_all, "Không có KM nào khớp POG."),
+            )
+            _write_frame(
+                writer, "POG không có KM",
+                _safe_frame(exporter, missing_all_km, "Không có POG nào thiếu KM."),
+            )
+            _write_frame(
+                writer, "POG không có Monthly CTKM",
+                _safe_frame(
+                    exporter, df_pog_only,
+                    "Không có POG nào thiếu Monthly CTKM.",
+                ),
+            )
+            _write_frame(
+                writer, "POG cần review",
+                _safe_frame(
+                    exporter, pog_review,
+                    "Không có dòng POG business nào cần review.",
+                ),
+            )
 
-            _safe_frame(exporter, audit, "Không có dữ liệu hành động để audit.").to_excel(
-                writer, sheet_name="Audit hành động", index=False
+            _write_frame(
+                writer, "Audit hành động",
+                _safe_frame(exporter, audit, "Không có dữ liệu hành động để audit."),
             )
-            _mapping_log_frame(mapping_logs).to_excel(
-                writer, sheet_name="Mapping log", index=False
-            )
+            _write_frame(writer, "Mapping log", _mapping_log_frame(mapping_logs))
 
             # Compatibility only: same true all-KM gap, never Monthly-only.
-            _safe_frame(
-                exporter, missing_all_km, "Không có POG nào thiếu KM."
-            ).to_excel(writer, sheet_name="POG không có CTKM", index=False)
+            _write_frame(
+                writer, "POG không có CTKM",
+                _safe_frame(exporter, missing_all_km, "Không có POG nào thiếu KM."),
+            )
             writer.sheets["POG không có CTKM"].sheet_state = "hidden"
 
             _write_hidden_metadata(writer, "POG metadata", pog_metadata)
