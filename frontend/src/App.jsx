@@ -313,6 +313,73 @@ const css = `
     .stat-num { font-size: 22px; }
   }
   @media (max-width: 900px) { .expiration-grid { grid-template-columns: 1fr; } }
+  /* ── Cute operations mockup alignment ─────────────────────────────────── */
+  .ops-page-head{max-width:1260px;padding:18px 20px 12px}
+  .ops-hero{min-height:112px;padding:17px 20px;border:1px solid #dfe9f7;border-radius:22px;
+            background:
+              radial-gradient(circle at 92% 15%,rgba(255,196,225,.34),transparent 26%),
+              radial-gradient(circle at 72% 120%,rgba(176,229,255,.42),transparent 30%),
+              linear-gradient(135deg,#ffffff 0%,#f7fbff 58%,#fff7fb 100%);
+            box-shadow:0 14px 40px rgba(54,92,142,.08)}
+  .ops-hero-titleline{display:flex;align-items:center;gap:13px}
+  .ops-hero-titleline .mascot-avatar{width:48px;height:48px;border-radius:16px}
+  .ops-hero h1{font-size:25px;margin:2px 0 0}
+  .ops-hero p{margin:7px 0 0 61px;max-width:650px;font-size:11px}
+  .ops-hero-side{min-width:250px;gap:8px}
+  .ops-backend-status{background:rgba(255,255,255,.78);backdrop-filter:blur(8px)}
+  .auth-input{height:34px}.auth-button{height:34px}
+  .main.ctkm-mode{display:block;max-width:1260px;padding:0 20px 90px}
+  .ctkm-mode .sidebar{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;width:100%;max-width:none;padding:0;border:0;background:transparent}
+  .ctkm-setup-intro{grid-column:1/-1;display:flex;align-items:end;justify-content:space-between;gap:20px;padding:7px 4px 1px}
+  .ctkm-section-kicker{font-size:9px;letter-spacing:.12em;font-weight:950;color:#7b61ff}
+  .ctkm-setup-intro h2{margin:2px 0 3px;font-size:18px;letter-spacing:-.35px}
+  .ctkm-setup-intro p{margin:0;max-width:620px;color:#7b8da6;font-size:10px}
+  .ctkm-mini-steps{display:flex;align-items:center;gap:6px;flex-wrap:wrap;color:#8191a8;font-size:9px;font-weight:800}
+  .ctkm-mini-steps span{display:flex;align-items:center;gap:4px;padding:5px 7px;border-radius:999px;background:#fff;border:1px solid #e6edf7}
+  .ctkm-mini-steps b{display:grid;place-items:center;width:17px;height:17px;border-radius:50%;background:#eef4ff;color:#1769ff;font-size:8px}
+  .ctkm-mini-steps i{font-style:normal;color:#b5c0ce}
+  .ctkm-mode .sidebar .ctkm-source-card,.ctkm-mode .sidebar .ctkm-period-card{
+    min-height:205px;padding:16px;border-radius:18px;border:1px solid #e0e8f4;position:relative;overflow:hidden;
+    box-shadow:0 10px 26px rgba(44,83,132,.055);background:#fff}
+  .ctkm-mode .sidebar .ctkm-source-card:after,.ctkm-mode .sidebar .ctkm-period-card:after{
+    content:"";position:absolute;width:92px;height:92px;border-radius:50%;right:-42px;top:-42px;pointer-events:none}
+  .ctkm-file-card:after{background:#dfeaff}.clearance-file-card:after{background:#f4e6ff}.pog-file-card:after{background:#e3f8ef}.ctkm-period-card:after{background:#fff0d9}
+  .ctkm-source-card .card-title,.ctkm-period-card .card-title{display:flex;align-items:center;gap:7px;color:#24344e;font-size:11px;margin-bottom:13px}
+  .source-step{display:grid;place-items:center;width:23px;height:23px;border-radius:8px;background:#eef4ff;color:#1769ff;font-size:9px;font-weight:950}
+  .clearance-file-card .source-step{background:#f5ecff;color:#8b4de8}.pog-file-card .source-step{background:#e9fbf3;color:#129264}.ctkm-period-card .source-step{background:#fff4df;color:#cc7a16}
+  .required-pill,.optional-pill{margin-left:auto;font-size:7px;padding:3px 6px;border-radius:999px;font-weight:900;letter-spacing:.03em}
+  .required-pill{background:#edf4ff;color:#1769ff}.optional-pill{background:#f6f0ff;color:#8b4de8}
+  .ctkm-source-card .dropzone{min-height:126px;display:flex;flex-direction:column;align-items:center;justify-content:center;border-radius:14px;border:1.5px dashed #cedaec;background:linear-gradient(180deg,#fbfdff,#f7faff)}
+  .clearance-file-card .dropzone{background:linear-gradient(180deg,#fffaff,#fbf7ff)}
+  .pog-file-card .dropzone{background:linear-gradient(180deg,#fbfffd,#f5fcf9)}
+  .ctkm-source-card .dropzone-icon{font-size:28px}.ctkm-source-card .dropzone-label{font-weight:800}.ctkm-source-card .dropzone-sub{font-size:9px}
+  .ctkm-period-card{grid-column:1/-1;min-height:auto!important;display:grid;grid-template-columns:minmax(220px,.55fr) 1fr;gap:12px;align-items:center}
+  .ctkm-period-card .card-title{margin:0}.ctkm-period-card .month-input{height:44px;border-radius:12px;background:#fff;border-color:#d7e0ed}
+  .ctkm-advanced-toggle{grid-column:1/-1;justify-self:start;margin:0;padding:8px 12px;border-radius:10px;background:#fff;border:1px solid #e1e9f4;color:#657894}
+  .ctkm-advanced-card{grid-column:1/-1}
+  .ctkm-run-button{grid-column:1/-1;min-height:50px;border-radius:14px;background:linear-gradient(135deg,#1769ff,#5a7cff);box-shadow:0 10px 24px rgba(23,105,255,.20);font-size:13px}
+  .ctkm-run-button:hover:not(:disabled){background:linear-gradient(135deg,#0e5be7,#4969e9)}
+  .ctkm-mode .content{margin-top:14px}
+  .ctkm-welcome{display:grid;grid-template-columns:1.45fr .65fr;gap:18px;align-items:stretch;padding:22px;border:1px solid #e0e8f4;border-radius:20px;background:
+      radial-gradient(circle at 92% 12%,rgba(255,205,229,.44),transparent 24%),
+      linear-gradient(135deg,#ffffff,#f8fbff 60%,#fff8fc);box-shadow:0 12px 34px rgba(46,82,128,.055)}
+  .welcome-pill{display:inline-flex;padding:5px 8px;border-radius:999px;background:#fff1f7;color:#c34d83;font-size:8px;font-weight:900}
+  .ctkm-welcome h2{font-size:21px;margin:9px 0 5px;letter-spacing:-.45px}
+  .ctkm-welcome p{margin:0;color:#7587a0;font-size:10px;line-height:1.65;max-width:720px}
+  .ctkm-welcome-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin-top:16px}
+  .ctkm-welcome-grid>div{padding:10px;border:1px solid #e6edf7;border-radius:13px;background:rgba(255,255,255,.82)}
+  .ctkm-welcome-grid b{display:block;color:#1769ff;font-size:16px}.ctkm-welcome-grid span{display:block;margin-top:2px;font-size:9px;font-weight:900;color:#34455f}.ctkm-welcome-grid small{display:block;margin-top:2px;font-size:7.5px;color:#8a9bb0;line-height:1.35}
+  .ctkm-welcome-mascot{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;min-height:185px}
+  .ctkm-welcome-mascot .mascot-avatar{width:72px;height:72px;border-radius:24px 24px 28px 28px;background:linear-gradient(145deg,#fff,#edf4ff);box-shadow:0 12px 28px rgba(69,101,150,.12)}
+  .ctkm-welcome-mascot .mascot-hair{height:22px;left:9px;right:9px;border-radius:18px 18px 9px 9px;background:linear-gradient(180deg,#30445f,#1f2f48)}
+  .ctkm-welcome-mascot .mascot-face{font-size:15px;color:#33455f}
+  .ctkm-welcome-mascot .mascot-face:before,.ctkm-welcome-mascot .mascot-face:after{content:"";position:absolute;top:10px;width:8px;height:4px;border-radius:50%;background:#ffc4d7;opacity:.75}
+  .ctkm-welcome-mascot .mascot-face:before{left:-14px}.ctkm-welcome-mascot .mascot-face:after{right:-14px}
+  .speech-card{position:relative;max-width:220px;padding:10px 12px;border-radius:13px;background:#fff;border:1px solid #e6edf7;color:#7486a0;font-size:8.5px;line-height:1.5;text-align:center;box-shadow:0 7px 18px rgba(45,74,115,.05)}
+  .speech-card:before{content:"";position:absolute;top:-5px;left:50%;width:9px;height:9px;background:#fff;border-left:1px solid #e6edf7;border-top:1px solid #e6edf7;transform:translateX(-50%) rotate(45deg)}
+  @media(max-width:980px){.ctkm-mode .sidebar{grid-template-columns:1fr 1fr}.ctkm-file-card,.pog-file-card{grid-column:auto}.clearance-file-card{grid-column:1/-1}.ctkm-period-card{grid-column:1/-1}.ctkm-welcome{grid-template-columns:1fr}.ctkm-welcome-mascot{min-height:auto}.ctkm-welcome-grid{grid-template-columns:1fr 1fr}}
+  @media(max-width:760px){.ops-page-head{padding:10px 10px 8px}.ops-hero{min-height:auto;padding:13px;border-radius:16px}.ops-hero-side{display:none}.ops-hero p{margin-left:0}.ops-hero-titleline .mascot-avatar{width:42px;height:42px}.ops-hero h1{font-size:19px}.main.ctkm-mode{padding:0 10px 82px}.ctkm-mode .sidebar{grid-template-columns:1fr}.ctkm-setup-intro{display:block}.ctkm-mini-steps{margin-top:9px}.ctkm-file-card,.clearance-file-card,.pog-file-card,.ctkm-period-card{grid-column:1!important}.ctkm-period-card{display:block}.ctkm-period-card .card-title{margin-bottom:10px}.ctkm-welcome{padding:15px}.ctkm-welcome-grid{grid-template-columns:1fr 1fr}.ctkm-welcome-mascot{display:none}}
+
 
   /* ── Approved mockup alignment: one shared PharmaOps shell ─────────────── */
   body { background:#f5f7fb; color:#17202a; }
@@ -1482,18 +1549,23 @@ export default function App() {
   return (
     <>
       <style>{css}</style><style>{helpTipCss}</style><style>{assistantComponentCss}</style>
-      <ProductNav current="ops"/>
+      <ProductNav current={activeModule}/>
       <div className="shell">
         <div className="ops-page-head">
           <section className="ops-hero" aria-labelledby="ops-page-title">
             <div className="ops-hero-copy">
-              <div className="ops-kicker">CTKM / Tem</div>
-              <h1 id="ops-page-title">
+              <div className="ops-hero-titleline">
+                <Mascot state={backendStatus === "offline" ? "warning" : step === STEPS.running ? "thinking" : step === STEPS.done ? "success" : "idle"} />
+                <div>
+                  <div className="ops-kicker">PharmaOps · Vận hành cửa hàng</div>
+                  <h1 id="ops-page-title">
                 {activeModule === "ctkm" && "Tổng hợp chương trình khuyến mãi"}
                 {activeModule === "expiration" && "Kiểm tra hạn dùng"}
                 {activeModule === "temr" && "Phân bổ Tem R"}
                 {activeModule === "inventory" && "Kiểm tồn kho"}
-              </h1>
+                  </h1>
+                </div>
+              </div>
               <p>
                 {activeModule === "ctkm" && "Chuẩn bị file nguồn, kiểm tra mapping, đối chiếu POG và xuất workbook hành động."}
                 {activeModule === "expiration" && "Tra cứu mã sản phẩm, lô và hạn dùng trong một màn hình vận hành gọn."}
@@ -1530,55 +1602,28 @@ export default function App() {
             </div>
           </section>
 
-          <nav className="ops-tool-tabs" aria-label="Công cụ CTKM và Tem">
-            <button
-              className={`ops-tool-tab ${activeModule === "ctkm" ? "active" : ""}`}
-              onClick={() => { stopCamera(); setActiveModule("ctkm") }}
-            >
-              <span className="ops-tool-icon">✓</span>
-              Tổng hợp CTKM
-            </button>
-            <button
-              className={`ops-tool-tab ${activeModule === "expiration" ? "active" : ""}`}
-              onClick={() => setActiveModule("expiration")}
-            >
-              <span className="ops-tool-icon">⌕</span>
-              Kiểm hạn dùng
-            </button>
-            <button
-              className={`ops-tool-tab ${activeModule === "temr" ? "active" : ""}`}
-              onClick={() => { stopCamera(); setActiveModule("temr") }}
-            >
-              <span className="ops-tool-icon">R</span>
-              Phân bổ Tem R
-            </button>
-            <button
-              className={`ops-tool-tab ${activeModule === "inventory" ? "active" : ""}`}
-              onClick={() => { stopCamera(); setActiveModule("inventory") }}
-            >
-              <span className="ops-tool-icon">▣</span>
-              Kiểm tồn kho
-            </button>
-            <span className="ops-tool-divider" aria-hidden="true" />
-            <a className="ops-tool-link" href="/scan-tem">
-              <span className="ops-tool-icon">▣</span>
-              Kiểm tem
-            </a>
-            <a className="ops-tool-link" href="/scan-tem?mode=shelf">
-              <span className="ops-tool-icon">▤</span>
-              Kiểm theo kệ
-            </a>
-          </nav>
         </div>
 
         <div className={`main ${activeModule}-mode`}>
 
           {/* ── Sidebar ─────────────────────────────────────────────────────── */}
           <div className="sidebar">
+            {activeModule === "ctkm" && (
+              <div className="ctkm-setup-intro">
+                <div>
+                  <span className="ctkm-section-kicker">BẮT ĐẦU</span>
+                  <h2>Chuẩn bị dữ liệu tháng này</h2>
+                  <p>Chọn 3 nguồn dữ liệu bên dưới. Hệ thống tự nhận diện mapping chuẩn; chỉ hỏi lại khi thật sự cần.</p>
+                </div>
+                <div className="ctkm-mini-steps" aria-label="Quy trình CTKM">
+                  <span><b>1</b> Upload</span><i>→</i><span><b>2</b> Mapping</span><i>→</i><span><b>3</b> Xử lý</span><i>→</i><span><b>4</b> Kiểm kệ</span>
+                </div>
+              </div>
+            )}
 
             {/* File CTKM */}
-            <div className="card">
-              <div className="card-title">1 · File chương trình KM</div>
+            <div className="card ctkm-source-card ctkm-file-card">
+              <div className="card-title"><span className="source-step">1</span> File chương trình KM <span className="required-pill">Bắt buộc</span></div>
               <Dropzone
                 label="File CTKM (.xlsx)"
                 sub="Kéo thả hoặc click để chọn"
@@ -1640,8 +1685,8 @@ export default function App() {
               )}
             </div>
 
-            <div className="card">
-              <div className="card-title">1b · File Clearance (tùy chọn)</div>
+            <div className="card ctkm-source-card clearance-file-card">
+              <div className="card-title"><span className="source-step">+</span> File Clearance <span className="optional-pill">Tùy chọn</span></div>
               <Dropzone
                 label="File Clearance (.xlsx)"
                 sub="Bổ sung để tạo sheet xác nhận CTKM / Clearance"
@@ -1781,8 +1826,8 @@ export default function App() {
             )}
 
             {/* File POG */}
-            <div className="card">
-              <div className="card-title">2 · File vị trí kệ (POG)</div>
+            <div className="card ctkm-source-card pog-file-card">
+              <div className="card-title"><span className="source-step">2</span> File vị trí kệ (POG) <span className="required-pill">Bắt buộc</span></div>
               <Dropzone
                 label="File POG (.xlsx)"
                 sub="Snapshot tháng tương ứng"
@@ -1823,8 +1868,8 @@ export default function App() {
             </div>
 
             {/* Tháng + options */}
-            <div className="card">
-              <div className="card-title">3 · Tháng báo cáo</div>
+            <div className="card ctkm-period-card">
+              <div className="card-title"><span className="source-step">3</span> Tháng báo cáo</div>
               <input
                 type="month"
                 className="month-input"
@@ -1861,11 +1906,11 @@ export default function App() {
               )}
             </div>
 
-            <button className="advanced-toggle" onClick={() => setCtkmAdvanced(value => !value)}>
+            <button className="advanced-toggle ctkm-advanced-toggle" onClick={() => setCtkmAdvanced(value => !value)}>
               {ctkmAdvanced ? "− Ẩn thiết lập nâng cao" : "+ Thiết lập nâng cao"}
             </button>
 
-            <div className={`card advanced-card ${ctkmAdvanced ? "" : "hidden"}`}>
+            <div className={`card advanced-card ctkm-advanced-card ${ctkmAdvanced ? "" : "hidden"}`}>
               <div className="card-title">4 · Cột output mong muốn</div>
               <div className="sheet-hint">
                 Chọn cột cần giữ trong file kết quả. Để trống nghĩa là dùng mặc định toàn bộ cột.
@@ -1888,7 +1933,7 @@ export default function App() {
               </div>
             </div>
 
-            <div className={`card advanced-card ${ctkmAdvanced ? "" : "hidden"}`}>
+            <div className={`card advanced-card ctkm-advanced-card ${ctkmAdvanced ? "" : "hidden"}`}>
               <div className="card-title">5 · Preset đã lưu</div>
               <div className="sheet-hint">
                 Các mapping và output đã chốt sẽ được lưu ở backend theo signature workbook.
@@ -2052,7 +2097,7 @@ export default function App() {
 
             {/* Run button */}
             <button
-              className="btn btn-primary"
+              className="btn btn-primary ctkm-run-button"
               disabled={!canRun}
               onClick={handleRun}
             >
@@ -2262,13 +2307,23 @@ export default function App() {
 
             {/* Idle state */}
             {step === STEPS.idle && (
-              <div className="empty">
-                <div className="empty-icon">📊</div>
-                <div className="empty-title">Chọn file và tháng để bắt đầu</div>
-                <div style={{fontSize:13,color:"var(--text3)",marginTop:6}}>
-                  Upload file CTKM + file POG, chọn tháng báo cáo rồi nhấn Chạy pipeline
+              <section className="ctkm-welcome">
+                <div className="ctkm-welcome-copy">
+                  <span className="welcome-pill">✨ Sẵn sàng cho tháng mới</span>
+                  <h2>Upload xong là hệ thống lo phần còn lại</h2>
+                  <p>CTKM và POG là bắt buộc. Clearance chỉ cần khi tháng này có chương trình clearance. Sau khi xử lý, bạn có thể đi thẳng sang Kiểm kệ mà không cần mở Excel.</p>
+                  <div className="ctkm-welcome-grid">
+                    <div><b>①</b><span>Nhận diện cột</span><small>Tự map khi file đúng chuẩn</small></div>
+                    <div><b>②</b><span>Ghép POG</span><small>Giữ đầy đủ vị trí kệ</small></div>
+                    <div><b>③</b><span>Tạo hành động</span><small>Gắn · Tháo · Review</small></div>
+                    <div><b>④</b><span>Đi kiểm kệ</span><small>Camera chỉ là Beta phụ trợ</small></div>
+                  </div>
                 </div>
-              </div>
+                <div className="ctkm-welcome-mascot">
+                  <Mascot state="guide" showLabel={true}/>
+                  <div className="speech-card">Chỉ cần chuẩn bị đúng file. Những phần kỹ thuật mình sẽ để ở <b>Thiết lập nâng cao</b> nha ✦</div>
+                </div>
+              </section>
             )}
 
             {/* Running state */}
