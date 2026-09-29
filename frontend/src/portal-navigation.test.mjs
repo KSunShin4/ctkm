@@ -50,3 +50,26 @@ test("inventory is a first-class desktop module backed by real inspection",async
   assert.match(app,/stock_conflict/)
   assert.match(app,/Không cộng tồn lặp/)
 })
+
+
+test("final pastel theme overrides legacy shell styles instead of being overwritten",async()=>{
+  const app=await read("./App.jsx")
+  const finalTheme=app.lastIndexOf("FINAL THEME OVERRIDES")
+  const legacyTheme=app.lastIndexOf("Approved mockup alignment: one shared PharmaOps shell")
+  assert.ok(finalTheme>legacyTheme)
+  assert.match(app,/temr-head/)
+  assert.match(app,/temr-rule-row/)
+  assert.match(app,/inventory-title-wrap/)
+  assert.match(app,/main\.temr-mode/)
+  assert.match(app,/main\.inventory-mode/)
+})
+
+test("Tem R and inventory redesign keeps existing deterministic data paths",async()=>{
+  const app=await read("./App.jsx")
+  assert.match(app,/handleTemR/)
+  assert.match(app,/handleInventoryInspect/)
+  assert.match(app,/\/api\/inspect-inventory/)
+  assert.match(app,/temRStockColumn/)
+  assert.match(app,/stock_conflict/)
+  assert.match(app,/Không cộng tồn lặp/)
+})

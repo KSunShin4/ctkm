@@ -490,6 +490,59 @@ const css = `
     .summary-grid { grid-template-columns:1fr; }
     .ops-tool-divider { display:none; }
   }
+
+  /* ── FINAL THEME OVERRIDES — must remain last ────────────────────────── */
+  .ops-page-head{max-width:1260px!important;padding:18px 20px 12px!important}
+  .ops-hero{min-height:110px!important;padding:16px 20px!important;border:1px solid #dce8f7!important;border-radius:22px!important;
+    background:radial-gradient(circle at 92% 8%,rgba(255,196,225,.38),transparent 27%),radial-gradient(circle at 72% 120%,rgba(178,230,255,.46),transparent 31%),linear-gradient(135deg,#fff 0%,#f7fbff 58%,#fff7fb 100%)!important;
+    box-shadow:0 14px 40px rgba(54,92,142,.08)!important}
+  .ops-hero-titleline{display:flex!important;align-items:center!important;gap:13px!important}
+  .ops-hero h1{font-size:25px!important;margin:2px 0 0!important;color:#19324f!important}
+  .ops-hero p{margin:7px 0 0 61px!important;max-width:680px!important;color:#71859f!important;font-size:11px!important}
+  .ops-hero-side{min-width:250px!important;gap:8px!important}
+  .ops-backend-status{background:rgba(255,255,255,.82)!important;border-color:#dfe8f4!important;backdrop-filter:blur(8px)}
+  .shell{background:linear-gradient(180deg,#f6f9ff 0%,#f5f8ff 55%,#fff9fc 100%)!important}
+  .main{max-width:1260px!important}
+
+  .main.temr-mode{max-width:1260px!important;padding:0 20px 90px!important;overflow:visible!important}
+  .main.temr-mode .sidebar{width:100%!important;max-width:1060px!important;margin:0 auto!important;padding:0!important}
+  .tem-r-card{position:relative;overflow:hidden;border:1px solid #e7dcf7!important;border-radius:22px!important;padding:20px!important;
+    background:radial-gradient(circle at 96% 0%,rgba(213,183,255,.28),transparent 24%),linear-gradient(145deg,#fff,#fdfaff 66%,#faf7ff)!important;
+    box-shadow:0 14px 36px rgba(92,63,135,.07)!important}
+  .tem-r-card:after{content:"R";position:absolute;right:-8px;top:-24px;font-size:118px;font-weight:950;color:#8b4de8;opacity:.045;pointer-events:none}
+  .temr-head{display:flex;align-items:center;justify-content:space-between;gap:18px;margin-bottom:13px;position:relative;z-index:1}
+  .temr-head-copy{min-width:0}.temr-kicker{font-size:8px;font-weight:950;letter-spacing:.12em;color:#8b4de8}
+  .temr-head h2{margin:3px 0 4px;font-size:22px;letter-spacing:-.4px;color:#283951}.temr-head p{margin:0;max-width:620px;color:#7f8fa5;font-size:10px;line-height:1.55}
+  .temr-head-side{display:flex;align-items:center;gap:9px}.temr-head-side .mascot-avatar{width:50px;height:50px;border-radius:17px}
+  .temr-rule-row{display:grid;grid-template-columns:repeat(4,1fr);gap:7px;margin:0 0 14px}
+  .temr-rule-row span{padding:8px 9px;border:1px solid #ebe3f7;border-radius:11px;background:rgba(255,255,255,.82);color:#78688f;font-size:8px;font-weight:850;text-align:center}
+  .tem-r-card>.dropzone{min-height:142px;display:flex;flex-direction:column;justify-content:center;align-items:center;border:1.5px dashed #d8c8ef!important;border-radius:16px!important;background:linear-gradient(180deg,#fff,#fbf7ff)!important;margin-bottom:12px}
+  .tem-r-card>.dropzone .dropzone-icon{font-size:30px;color:#8b4de8}.tem-r-card>.dropzone .dropzone-label{font-weight:850}
+  .tem-r-card .sheet-select,.tem-r-card .month-input{border-color:#e1d7ef!important;background:#fff!important;border-radius:11px!important;min-height:42px}
+  .tem-r-card .mapping-row{padding:7px 9px;border:1px solid #eee7f7;border-radius:11px;background:rgba(255,255,255,.75);margin-bottom:7px}
+  .tem-r-card .btn-primary{background:linear-gradient(135deg,#8b4de8,#6f68ee)!important;box-shadow:0 9px 22px rgba(139,77,232,.18)!important;min-height:48px}
+  .tem-r-card .btn-ghost{border-color:#ded2ee!important;background:#fff!important;color:#715a8d!important}
+
+  .main.inventory-mode{max-width:1260px!important;padding:0 20px 90px!important}
+  .main.inventory-mode .content{max-width:1100px!important}
+  .inventory-card{position:relative;overflow:hidden;border:1px solid #f1dfc8!important;border-radius:22px!important;padding:20px!important;
+    background:radial-gradient(circle at 95% 0%,rgba(255,206,145,.30),transparent 25%),linear-gradient(145deg,#fff,#fffaf4)!important;
+    box-shadow:0 14px 36px rgba(144,88,28,.07)!important}
+  .inventory-title-wrap{display:flex;align-items:center;gap:12px}.inventory-title-wrap .mascot-avatar{width:50px;height:50px;border-radius:17px}
+  .inventory-head{align-items:center!important}.inventory-head h1{font-size:22px!important;letter-spacing:-.4px}.inventory-head p{font-size:10px!important}
+  .inventory-rule{max-width:390px!important;padding:10px 12px!important;border-radius:12px!important;background:rgba(255,248,235,.92)!important}
+  .inventory-setup{gap:14px!important}.inventory-setup>.dropzone{min-height:180px;display:flex;flex-direction:column;align-items:center;justify-content:center;border:1.5px dashed #efd7ba!important;border-radius:16px!important;background:linear-gradient(180deg,#fff,#fffaf4)!important}
+  .inventory-config{border-color:#efe5d8!important;border-radius:16px!important;padding:15px!important;box-shadow:0 7px 18px rgba(120,82,36,.035)}
+  .inventory-run{min-height:46px;background:linear-gradient(135deg,#f09a3e,#e47a20)!important;box-shadow:0 8px 20px rgba(232,121,24,.16)!important}
+  .inventory-stat{padding:12px!important;border-radius:14px!important;box-shadow:0 5px 15px rgba(70,90,115,.03)}
+  .inventory-stat.ok{background:#f4fff9!important}.inventory-stat.bad{background:#fff5f5!important}.inventory-stat.warn{background:#fff9ee!important}
+  .inventory-tools input,.inventory-tools select{min-height:42px!important;border-radius:11px!important}
+
+  @media(max-width:760px){
+    .ops-page-head{padding:10px 10px 8px!important}.ops-hero{min-height:auto!important;padding:13px!important;border-radius:16px!important}.ops-hero-side{display:none!important}.ops-hero p{margin-left:0!important}.ops-hero h1{font-size:19px!important}
+    .main.temr-mode,.main.inventory-mode{padding:0 10px 82px!important}.tem-r-card,.inventory-card{padding:14px!important;border-radius:17px!important}
+    .temr-rule-row{grid-template-columns:1fr 1fr}.temr-head-side{display:none}.inventory-head{display:block!important}.inventory-title-wrap{align-items:flex-start}.inventory-rule{margin-top:10px!important;max-width:none!important}
+  }
 `
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -1975,7 +2028,17 @@ export default function App() {
             </div>
 
             <div className="card tem-r-card">
-              <div className="card-title" style={{display:"flex",alignItems:"center",gap:7}}>Tem R · phân bổ theo tồn và vị trí kệ <HelpTip title="Tem R" text="Chọn đúng sheet, mã P và cột tồn kho theo giá trị đang hiển thị. Mapping chỉ xác định cột dùng để tính; không thay đổi dữ liệu nguồn."/></div>
+              <div className="temr-head">
+                <div className="temr-head-copy">
+                  <span className="temr-kicker">TEM R · TỒN KHO + POG</span>
+                  <h2>Phân bổ Tem R</h2>
+                  <p>Chọn file nguồn, xác nhận cột tồn đang hiển thị và để hệ thống phân bổ theo đúng vị trí kệ.</p>
+                </div>
+                <div className="temr-head-side"><Mascot state={temRLoading ? "thinking" : temRResult ? "success" : "guide"} /><HelpTip title="Tem R" text="Chọn đúng sheet, mã P và cột tồn kho theo giá trị đang hiển thị. Mapping chỉ xác định cột dùng để tính; không thay đổi dữ liệu nguồn."/></div>
+              </div>
+              <div className="temr-rule-row">
+                <span>① Giá trị hiển thị</span><span>② Xác nhận mapping</span><span>③ Phân bổ theo POG</span><span>④ Tải kết quả</span>
+              </div>
               <Dropzone
                 label="File Tem R (.xlsx)"
                 sub="Tải file lên rồi chọn các cột dùng để phân bổ"
@@ -2142,7 +2205,7 @@ export default function App() {
           <div className="content">
             <section className="inventory-card">
               <div className="inventory-head">
-                <div><div className="inventory-kicker">Kiểm tồn kho</div><h1>Tồn store-level ↔ vị trí POG</h1><p>Dùng cùng file nguồn Tem R/POG. Không cộng tồn lặp khi một SKU xuất hiện ở nhiều vị trí.</p></div>
+                <div className="inventory-title-wrap"><Mascot state={inventoryLoading ? "thinking" : inventoryResult ? "success" : "guide"} /><div><div className="inventory-kicker">Kiểm tồn kho</div><h1>Tồn store-level ↔ vị trí POG</h1><p>Dùng cùng file nguồn Tem R/POG. Không cộng tồn lặp khi một SKU xuất hiện ở nhiều vị trí.</p></div></div>
                 <div className="inventory-rule">Stock 0 là dữ liệu hợp lệ · stock thiếu/#N/A là lỗi · nhiều giá trị tồn cho cùng Store+ITEMID phải review.</div>
               </div>
               <div className="inventory-setup">
