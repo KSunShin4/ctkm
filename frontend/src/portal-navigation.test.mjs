@@ -19,3 +19,19 @@ test("ctkm root keeps approved workspace and supports deep links into real tools
   assert.doesNotMatch(app,/<div className="topbar">/);assert.doesNotMatch(app,/<nav className="module-nav"/)
 })
 test("ctkm root installs the same UI preference root as portal pages",async()=>{const main=await read("./main.jsx");assert.match(main,/UiPreferenceRoot/);assert.match(main,/uiPreferenceCss/)})
+
+
+test("ctkm operational workspace prioritizes action sheets without deleting audit sheets",async()=>{
+  const app=await read("./App.jsx")
+  for(const x of ["CTKM_OPERATIONAL_SHEETS","TỔNG HỢP - TEM","Gắn tem","Tháo tem","Chờ gắn","Cần review","Dữ liệu khác / audit","Kiểm theo kệ"])assert.match(app,new RegExp(x))
+  assert.match(app,/Tìm mã SP, tên sản phẩm, kệ, channel/)
+  assert.match(app,/Tìm kiếm chỉ thay đổi hiển thị, không thay đổi workbook/)
+})
+
+test("shelf workflow uses shared shell and keeps camera explicitly beta",async()=>{
+  const shelf=await read("./TagAuditShelfCheck.jsx")
+  assert.match(shelf,/ProductNav current="shelf"/)
+  assert.match(shelf,/Quét nhanh \(Beta\)/)
+  assert.match(shelf,/chỉ hỗ trợ tìm\/đọc tem/)
+  assert.match(shelf,/Sai & Review/)
+})
