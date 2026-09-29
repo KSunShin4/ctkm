@@ -28,12 +28,12 @@ test("overview does not render fake shelf percentages or decorative workload per
 test("inventory card links to the real store-level inventory workspace",async()=>{
   const s=await read("./OverviewDashboard.jsx")
   assert.match(s,/Tồn store-level ↔ POG/)
-  assert.match(s,/href="\/?module=inventory"/)
+  assert.match(s,/href="\/\?module=inventory"/)
   assert.doesNotMatch(s,/Đang nối dữ liệu thực|Sẽ mở ở FE-6/)
 })
 
 test("portal overview renders the real dashboard",async()=>{
   const s=await read("./portal-main.jsx")
   assert.match(s,/OverviewDashboard/)
-  assert.match(s,/root\.render\(<OverviewDashboard\/>\)/)
+  assert.match(s,/render\(<OverviewDashboard\/>\)/);assert.match(s,/UiPreferenceRoot/)
 })
