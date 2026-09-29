@@ -29,11 +29,24 @@ def test_compose_keeps_built_frontend_and_requires_admin_runtime_config():
     assert "- .:/app" not in compose
 
 
-def test_render_uses_the_same_docker_single_process_entrypoint_and_waits_for_ci():
-    render = (_repo_root() / "render.yaml").read_text(encoding="utf-8")
+def test_cloud_run_deploy_waits_for_ci_and_preserves_process_local_runtime_contract():
+    workflow_path = _repo_root() / ".github" / "workflows" / "deploy-cloud-run.yml"
+    workflow = workflow_path.read_text(encoding="utf-8")
 
-    assert "runtime: docker" in render
-    assert "dockerfilePath: ./Dockerfile" in render
-    assert "healthCheckPath: /api/health" in render
-    assert "autoDeployTrigger: checksPass" in render
-    assert "backend.main_api_core:app" not in render
+    assert "workflows: [\"CI\"]" in workflow
+    assert "github.event.workflow_run.conclusion == 'success'" in workflow
+    assert "github.event.workflow_run.head_branch == 'main'" in workflow
+    assert "google-github-actions/auth@v3" in workflow
+    assert "google-github-actions/deploy-cloudrun@v3" in workflow
+    assert "source: ." in workflow
+    assert "--min-instances=1" in workflow
+    assert "--max-instances=1" in workflow
+    assert "--no-cpu-throttling" in workflow
+    assert "HEAVY_JOB_QUEUE_SIZE=1" in workflow
+    assert "/api/health" in workflow
+    assert "contracts_ok" in workflow
+    assert "backend.main_api_core:app" not in workflow
+
+
+def test_render_blueprint_is_removed_after_cloud_run_migration():
+    assert not (_repo_root() / "render.yaml").exists()
