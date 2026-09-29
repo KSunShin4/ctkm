@@ -564,6 +564,22 @@ const css = `
     .temr-rule-row,.expiration-rule-row{grid-template-columns:1fr 1fr}.temr-head-side{display:none}.inventory-head{display:block!important}.inventory-title-wrap{align-items:flex-start}.inventory-rule{margin-top:10px!important;max-width:none!important}
     .expiration-header{display:block!important}.expiration-title-wrap{align-items:flex-start}.expiration-header .format-pill{display:inline-flex;margin-top:10px}.expiration-grid{grid-template-columns:1fr!important}.expiration-stats{grid-template-columns:1fr 1fr}.expiration-stats>div:first-child{grid-column:1/-1}
   }
+
+  /* ── FINAL INTERACTION POLISH ─────────────────────────────────────────── */
+  .ops-hero-side{position:relative!important;display:flex!important;align-items:flex-end!important}
+  .admin-entry{position:relative}
+  .admin-trigger{height:34px;padding:0 11px;border:1px solid #dce5f1;border-radius:10px;background:rgba(255,255,255,.86);color:#5d7290;font-size:9px;font-weight:900;cursor:pointer;box-shadow:0 4px 12px rgba(35,70,115,.04)}
+  .admin-trigger:hover,.admin-trigger[aria-expanded="true"]{border-color:#bfd2ee;background:#f5f9ff;color:#1769ff}
+  .auth-compact{display:flex;align-items:center!important;gap:6px!important}.auth-secondary{background:#fff!important;color:#697d97!important;border-color:#dbe4ef!important}
+  .auth-popover{position:absolute;right:0;top:42px;z-index:40;width:248px!important;display:grid!important;grid-template-columns:1fr!important;gap:8px!important;padding:12px!important;border:1px solid #dce5f1;border-radius:15px;background:#fff;box-shadow:0 18px 42px rgba(38,64,100,.16)}
+  .auth-popover-title{font-size:10px;font-weight:950;color:#304763}.auth-popover .auth-input{width:100%!important;height:38px!important;border-radius:10px!important}.auth-submit{width:100%;height:38px!important;background:linear-gradient(135deg,#1769ff,#5b79f2)!important;color:#fff!important;border:0!important}.auth-popover .auth-error{white-space:normal!important;font-size:8px!important}
+  .pipeline-state-card{margin-top:14px;padding:20px;border:1px solid #dfe8f4;border-radius:20px;background:radial-gradient(circle at 94% 10%,rgba(205,222,255,.36),transparent 27%),linear-gradient(145deg,#fff,#f8fbff);box-shadow:0 12px 30px rgba(43,80,126,.055)}
+  .pipeline-state-card.error{border-color:#f0d8dd;background:radial-gradient(circle at 94% 8%,rgba(255,203,218,.34),transparent 28%),linear-gradient(145deg,#fff,#fff8fa)}
+  .pipeline-state-main{display:flex;align-items:center;gap:13px}.pipeline-state-main .mascot-avatar{width:54px;height:54px;border-radius:18px}.pipeline-state-kicker{font-size:8px;font-weight:950;letter-spacing:.12em;color:#1769ff}.pipeline-state-card.error .pipeline-state-kicker{color:#cc4760}.pipeline-state-main h2{margin:3px 0 4px;font-size:19px;letter-spacing:-.35px;color:#2b405d}.pipeline-state-main p{margin:0;color:#7b8da5;font-size:9.5px;line-height:1.5}
+  .pipeline-step-list{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin-top:15px}.pipeline-step{display:flex;align-items:center;gap:8px;padding:9px 10px;border:1px solid #e6edf6;border-radius:11px;background:#fff;color:#92a0b3}.pipeline-step span{width:22px;height:22px;display:grid;place-items:center;border-radius:7px;background:#f1f4f8;font:850 8px var(--mono)}.pipeline-step b{font-size:8.5px}.pipeline-step.done{color:#16895d;background:#f5fff9;border-color:#dcefe5}.pipeline-step.done span{background:#e3f7ec;color:#16895d}.pipeline-step.active{color:#1769ff;background:#f5f9ff;border-color:#cdddf6;box-shadow:0 5px 14px rgba(23,105,255,.07)}.pipeline-step.active span{background:#e5efff;color:#1769ff}
+  .pipeline-error-message{margin-top:14px;padding:11px 12px;border:1px solid #f0d8dd;border-radius:11px;background:#fff;color:#bf4057;font:500 9.5px var(--mono);white-space:pre-wrap;overflow-wrap:anywhere}.pipeline-retry{width:auto!important;margin-top:12px!important}
+  .download-bar-polished{border-radius:17px!important;border-color:#d7e7df!important;background:linear-gradient(135deg,#f5fff9,#fff)!important;box-shadow:0 8px 22px rgba(28,133,87,.06)!important}.download-bar-polished .download-name{color:#244a3a!important;font-weight:900!important}.download-bar-polished .btn-primary{background:linear-gradient(135deg,#17a66e,#3f8fe9)!important;border:0!important}
+  @media(max-width:760px){.ops-hero-side{display:none!important}.pipeline-state-card{padding:14px;border-radius:16px}.pipeline-state-main{align-items:flex-start}.pipeline-state-main .mascot-avatar{width:46px;height:46px;border-radius:15px}.pipeline-step-list{grid-template-columns:1fr 1fr}.pipeline-step{padding:8px}.pipeline-step b{font-size:8px}.download-bar-polished{padding:13px!important}}
 `
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -789,6 +805,7 @@ export default function App() {
   const [adminPassword, setAdminPassword] = useState("")
   const [authLoading, setAuthLoading] = useState(false)
   const [authError, setAuthError] = useState("")
+  const [adminPanelOpen, setAdminPanelOpen] = useState(false)
   const [ctkmAdvanced, setCtkmAdvanced] = useState(false)
   const [ctkmFile, setCtkmFile]   = useState(null)
   const [clearanceFile, setClearanceFile] = useState(null)
@@ -884,6 +901,7 @@ export default function App() {
     setAdminToken("")
     setAdminPassword("")
     setAuthError("")
+    setAdminPanelOpen(false)
     setActiveModule("expiration")
   }, [])
 
@@ -900,6 +918,7 @@ export default function App() {
       sessionStorage.setItem("ctkm.admin.token", data.access_token)
       setAdminToken(data.access_token)
       setAdminPassword("")
+      setAdminPanelOpen(false)
     } catch (e) {
       setAuthError(e.message)
     } finally {
@@ -1657,21 +1676,25 @@ export default function App() {
                 {backendStatus === "offline" && "Mất kết nối backend"}
               </div>
               {isAdmin ? (
-                <div className="auth-actions">
+                <div className="auth-actions auth-compact">
                   <span className="admin-pill">ADMIN</span>
-                  <button className="auth-button" onClick={logoutAdmin}>Đăng xuất</button>
+                  <button className="auth-button auth-secondary" onClick={logoutAdmin}>Đăng xuất</button>
                 </div>
               ) : (
-                <form className="auth-actions" onSubmit={loginAdmin}>
-                  <input className="auth-input" value={adminUsername}
-                    onChange={e => setAdminUsername(e.target.value)} placeholder="Tài khoản quản trị" />
-                  <input className="auth-input" type="password" value={adminPassword}
-                    onChange={e => setAdminPassword(e.target.value)} placeholder="Mật khẩu" />
-                  <button className="auth-button" disabled={authLoading || !adminPassword}>
-                    {authLoading ? "Đang vào…" : "Quản trị"}
-                  </button>
-                  {authError && <span className="auth-error">{authError}</span>}
-                </form>
+                <div className="admin-entry">
+                  <button type="button" className="admin-trigger" aria-expanded={adminPanelOpen} onClick={()=>setAdminPanelOpen(value=>!value)}>⚙ Quản trị</button>
+                  {adminPanelOpen&&<form className="auth-actions auth-popover" onSubmit={loginAdmin}>
+                    <div className="auth-popover-title">Đăng nhập quản trị</div>
+                    <input className="auth-input" value={adminUsername}
+                      onChange={e => setAdminUsername(e.target.value)} placeholder="Tài khoản quản trị" />
+                    <input className="auth-input" type="password" value={adminPassword}
+                      onChange={e => setAdminPassword(e.target.value)} placeholder="Mật khẩu" autoFocus />
+                    <button className="auth-button auth-submit" disabled={authLoading || !adminPassword}>
+                      {authLoading ? "Đang đăng nhập…" : "Đăng nhập"}
+                    </button>
+                    {authError && <span className="auth-error">{authError}</span>}
+                  </form>}
+                </div>
               )}
             </div>
           </section>
@@ -2427,38 +2450,33 @@ export default function App() {
 
             {/* Running state */}
             {step === STEPS.running && (
-              <div className="empty">
-                <div className="empty-icon">⚙️</div>
-                <div className="empty-title">Pipeline đang chạy…</div>
-                <div style={{fontSize:13,color:"var(--text3)",marginTop:6}}>
-                  {queueHasWaiting
-                    ? `Tác vụ của bạn đang ở vị trí ${ownQueuePosition || waitingJobs} trong hàng chờ. Không cần bấm lại.`
-                    : `Gemini đang nhận diện cột, ghép CTKM với POG theo tháng ${month}`}
+              <section className="pipeline-state-card running">
+                <div className="pipeline-state-main">
+                  <Mascot state="thinking"/>
+                  <div>
+                    <span className="pipeline-state-kicker">ĐANG XỬ LÝ</span>
+                    <h2>Đang chuẩn bị danh sách CTKM</h2>
+                    <p>{queueHasWaiting
+                      ? `Tác vụ đang ở vị trí ${ownQueuePosition || waitingJobs} trong hàng chờ. Không cần bấm lại.`
+                      : `Hệ thống đang đọc dữ liệu và ghép CTKM ↔ POG cho tháng ${month}.`}</p>
+                  </div>
                 </div>
-                <div style={{maxWidth:320,margin:"20px auto 0"}}>
+                <div className="pipeline-step-list">
                   {STEP_LABELS.map((label, i) => (
-                    <div key={i} style={{
-                      display:"flex", alignItems:"center", gap:10,
-                      padding:"6px 0", fontSize:12.5,
-                      color: i < stepIdx ? "var(--green)"
-                           : i === stepIdx ? "var(--text)"
-                           : "var(--text3)"
-                    }}>
-                      <span style={{fontFamily:"var(--mono)", fontSize:11, width:20, textAlign:"right"}}>
-                        {i < stepIdx ? "✓" : i === stepIdx ? "▶" : String(i+1).padStart(2,"0")}
-                      </span>
-                      {label}
+                    <div key={i} className={"pipeline-step "+(i < stepIdx ? "done" : i === stepIdx ? "active" : "pending")}>
+                      <span>{i < stepIdx ? "✓" : i === stepIdx ? "▶" : String(i+1).padStart(2,"0")}</span>
+                      <b>{label}</b>
                     </div>
                   ))}
                 </div>
-              </div>
+              </section>
             )}
 
             {/* Done state */}
             {step === STEPS.done && result && (
               <>
                 {/* Download bar */}
-                <div className="download-bar">
+                <div className="download-bar download-bar-polished">
                   <div style={{fontSize:24}}>📥</div>
                   <div className="download-info">
                     <div className="download-name">tong_hop_ctkm_{month}.xlsx</div>
@@ -2495,22 +2513,14 @@ export default function App() {
 
             {/* Error state */}
             {step === STEPS.error && (
-              <div className="empty">
-                <div className="empty-icon">❌</div>
-                <div className="empty-title">Pipeline gặp lỗi</div>
-                <div style={{
-                  marginTop:12, padding:"12px 16px", background:"var(--surface2)",
-                  border:"1px solid var(--border)", borderRadius:"var(--radius)",
-                  fontFamily:"var(--mono)", fontSize:12.5, color:"var(--red)",
-                  maxWidth:560, margin:"12px auto 0"
-                }}>
-                  {error}
+              <section className="pipeline-state-card error">
+                <div className="pipeline-state-main">
+                  <Mascot state="warning"/>
+                  <div><span className="pipeline-state-kicker">CẦN XỬ LÝ</span><h2>Pipeline chưa hoàn tất</h2><p>Dữ liệu nguồn vẫn được giữ nguyên. Kiểm tra thông báo bên dưới rồi thử lại.</p></div>
                 </div>
-                <button className="btn btn-ghost" style={{width:"auto",padding:"10px 20px",marginTop:20}}
-                  onClick={() => setStep(STEPS.idle)}>
-                  Thử lại
-                </button>
-              </div>
+                <div className="pipeline-error-message">{error}</div>
+                <button className="btn btn-ghost pipeline-retry" onClick={() => setStep(STEPS.idle)}>↻ Quay lại và thử lại</button>
+              </section>
             )}
 
           </div>
