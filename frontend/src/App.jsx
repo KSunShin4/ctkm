@@ -580,6 +580,38 @@ const css = `
   .pipeline-error-message{margin-top:14px;padding:11px 12px;border:1px solid #f0d8dd;border-radius:11px;background:#fff;color:#bf4057;font:500 9.5px var(--mono);white-space:pre-wrap;overflow-wrap:anywhere}.pipeline-retry{width:auto!important;margin-top:12px!important}
   .download-bar-polished{border-radius:17px!important;border-color:#d7e7df!important;background:linear-gradient(135deg,#f5fff9,#fff)!important;box-shadow:0 8px 22px rgba(28,133,87,.06)!important}.download-bar-polished .download-name{color:#244a3a!important;font-weight:900!important}.download-bar-polished .btn-primary{background:linear-gradient(135deg,#17a66e,#3f8fe9)!important;border:0!important}
   @media(max-width:760px){.ops-hero-side{display:none!important}.pipeline-state-card{padding:14px;border-radius:16px}.pipeline-state-main{align-items:flex-start}.pipeline-state-main .mascot-avatar{width:46px;height:46px;border-radius:15px}.pipeline-step-list{grid-template-columns:1fr 1fr}.pipeline-step{padding:8px}.pipeline-step b{font-size:8px}.download-bar-polished{padding:13px!important}}
+
+  /* ── MOCKUP V2 — CTKM is the product home ───────────────────────────── */
+  .ops-page-head{max-width:1380px!important;width:100%!important;padding:18px 20px 10px!important}
+  .ctkm-hero{display:grid!important;grid-template-columns:minmax(0,1fr) auto auto!important;align-items:center!important;gap:18px!important;min-height:152px!important;padding:22px 24px!important;border-radius:26px!important;
+    background:radial-gradient(circle at 82% 0%,rgba(195,214,255,.54),transparent 27%),radial-gradient(circle at 96% 100%,rgba(255,198,226,.52),transparent 32%),linear-gradient(135deg,#ffffff 0%,#f4f8ff 56%,#fff5fb 100%)!important;
+    box-shadow:0 18px 46px rgba(48,79,124,.09)!important}
+  .ctkm-hero .ops-hero-copy{max-width:none!important}.ctkm-hero .ops-kicker{color:#7a5ce6!important;font-size:9px!important}.ctkm-hero h1{font-size:30px!important;letter-spacing:-.7px!important}.ctkm-hero p{margin:6px 0 0!important;max-width:660px!important;font-size:10.5px!important}
+  .ctkm-hero-flow{display:flex;align-items:center;gap:5px;flex-wrap:wrap;margin-top:13px}.ctkm-hero-flow span{display:flex;align-items:center;gap:5px;padding:6px 8px;border:1px solid rgba(210,221,241,.92);border-radius:999px;background:rgba(255,255,255,.78);color:#687d99;font-size:8px;font-weight:900}.ctkm-hero-flow b{display:grid;place-items:center;width:18px;height:18px;border-radius:50%;background:#e9efff;color:#5470e8;font-size:7px}.ctkm-hero-flow i{font-style:normal;color:#a7b5ca}
+  .ctkm-hero-art{display:flex;align-items:center;gap:10px;padding:10px 12px 10px 14px;border:1px solid rgba(220,226,242,.9);border-radius:20px;background:rgba(255,255,255,.66);box-shadow:0 10px 26px rgba(66,83,125,.06);backdrop-filter:blur(8px)}
+  .ctkm-hero-art .mascot-avatar{width:88px!important;height:94px!important;border-radius:31px 31px 26px 26px!important}.ctkm-hero-art .mascot-hair{left:12px!important;right:12px!important;top:8px!important;height:34px!important}.ctkm-hero-art .mascot-face{font-size:17px!important;margin-top:9px!important}.ctkm-hero-art .mascot-body{left:22px!important;right:22px!important;bottom:-8px!important;height:24px!important}.ctkm-hero-art .mascot-mark{width:27px!important;height:27px!important;font-size:11px!important}
+  .ctkm-hero-speech{max-width:160px}.ctkm-hero-speech b{display:block;color:#425474;font-size:10px}.ctkm-hero-speech span{display:block;margin-top:4px;color:#8090a8;font-size:8px;line-height:1.45}
+  .ctkm-hero .ops-hero-side{min-width:132px!important;align-items:flex-end!important}.ctkm-hero .ops-backend-status{font-size:8px!important}.ctkm-hero .auth-button,.ctkm-hero .admin-trigger{font-size:8px!important}
+
+  .main.ctkm-mode{max-width:1380px!important;width:100%!important;padding:0 20px 92px!important}
+  .ctkm-mode .sidebar{display:grid!important;grid-template-columns:repeat(3,minmax(0,1fr))!important;gap:12px!important;width:100%!important;padding:17px!important;border:1px solid #e0e8f5!important;border-radius:26px!important;
+    background:linear-gradient(180deg,rgba(255,255,255,.96),rgba(249,252,255,.96))!important;box-shadow:0 16px 42px rgba(44,77,122,.07)!important}
+  .ctkm-setup-intro{grid-column:1/-1!important;align-items:center!important;padding:2px 3px 12px!important;border-bottom:1px solid #edf1f7!important}.ctkm-setup-intro h2{font-size:20px!important}.ctkm-setup-intro p{font-size:9.5px!important}.ctkm-mini-steps{display:none!important}
+  .ctkm-mode .sidebar .ctkm-source-card{min-height:190px!important;padding:15px!important;border-radius:18px!important;box-shadow:none!important}
+  .ctkm-file-card{border-color:#d7e4ff!important;background:linear-gradient(155deg,#fff,#f5f8ff)!important}.clearance-file-card{border-color:#ead9f7!important;background:linear-gradient(155deg,#fff,#fff7fe)!important}.pog-file-card{border-color:#d7eee4!important;background:linear-gradient(155deg,#fff,#f4fcf8)!important}
+  .ctkm-mode .ctkm-source-card .dropzone{min-height:122px!important;border-radius:15px!important;background:rgba(255,255,255,.72)!important}.ctkm-source-card .dropzone-icon{font-size:30px!important}
+  .ctkm-period-card{grid-column:1/2!important;min-height:86px!important;display:flex!important;flex-direction:column!important;justify-content:center!important;gap:8px!important;padding:13px 14px!important;border-radius:17px!important;box-shadow:none!important}.ctkm-period-card .card-title{margin:0!important}.ctkm-period-card .month-input{height:40px!important}
+  .ctkm-advanced-toggle{grid-column:2/3!important;justify-self:stretch!important;align-self:stretch!important;min-height:86px!important;margin:0!important;border-radius:17px!important;border:1px solid #e6def4!important;background:linear-gradient(145deg,#fff,#faf7ff)!important;color:#765c9a!important;font-size:10px!important;font-weight:900!important}
+  .ctkm-run-button{grid-column:3/4!important;align-self:stretch!important;min-height:86px!important;border-radius:17px!important;background:linear-gradient(135deg,#587cf5,#8368eb)!important;box-shadow:0 12px 28px rgba(91,103,228,.22)!important;font-size:13px!important;letter-spacing:.01em}.ctkm-run-button:hover:not(:disabled){background:linear-gradient(135deg,#4f71e8,#775bdd)!important}.ctkm-run-button:disabled{background:linear-gradient(135deg,#d7e2fb,#d9d9f3)!important;color:#8b99b0!important}
+  .ctkm-advanced-card{grid-column:1/-1!important;border-radius:18px!important;box-shadow:none!important}
+  .ctkm-mode .content{margin-top:12px!important}
+  .ctkm-welcome{padding:20px!important;border-radius:24px!important;border-color:#e3e6f4!important;background:radial-gradient(circle at 90% 10%,rgba(255,194,224,.48),transparent 26%),radial-gradient(circle at 72% 100%,rgba(198,221,255,.44),transparent 32%),linear-gradient(135deg,#fff,#f8faff 58%,#fff8fc)!important}.ctkm-welcome h2{font-size:23px!important}.ctkm-welcome-grid>div{border-radius:14px!important}.ctkm-welcome-mascot .mascot-avatar{width:92px!important;height:98px!important;border-radius:31px 31px 28px 28px!important}
+
+  @media(max-width:1080px){.ctkm-hero{grid-template-columns:minmax(0,1fr) auto!important}.ctkm-hero-art{display:none!important}.ctkm-hero .ops-hero-side{min-width:140px!important}}
+  @media(max-width:760px){
+    .ops-page-head{padding:9px 10px 8px!important}.ctkm-hero{display:block!important;min-height:auto!important;padding:15px!important;border-radius:18px!important}.ctkm-hero h1{font-size:21px!important}.ctkm-hero p{font-size:9.5px!important}.ctkm-hero-flow{overflow-x:auto;flex-wrap:nowrap;padding-bottom:2px;scrollbar-width:none}.ctkm-hero-flow::-webkit-scrollbar{display:none}.ctkm-hero-flow span{flex:0 0 auto}.ctkm-hero-flow i{display:none}
+    .main.ctkm-mode{padding:0 10px 84px!important}.ctkm-mode .sidebar{grid-template-columns:1fr!important;padding:11px!important;border-radius:18px!important}.ctkm-setup-intro{display:block!important;padding-bottom:10px!important}.ctkm-file-card,.clearance-file-card,.pog-file-card,.ctkm-period-card,.ctkm-advanced-toggle,.ctkm-run-button{grid-column:1!important}.ctkm-period-card{min-height:auto!important}.ctkm-advanced-toggle,.ctkm-run-button{min-height:52px!important}.ctkm-welcome{padding:14px!important}.ctkm-welcome h2{font-size:19px!important}.ctkm-welcome-grid{grid-template-columns:1fr 1fr!important}
+  }
 `
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -1645,10 +1677,10 @@ export default function App() {
       <ProductNav current={activeModule}/>
       <div className="shell">
         <div className="ops-page-head">
-          <section className="ops-hero" aria-labelledby="ops-page-title">
+          <section className={`ops-hero ${activeModule === "ctkm" ? "ctkm-hero" : ""}`} aria-labelledby="ops-page-title">
             <div className="ops-hero-copy">
               <div className="ops-hero-titleline">
-                <Mascot state={backendStatus === "offline" ? "warning" : step === STEPS.running ? "thinking" : step === STEPS.done ? "success" : "idle"} />
+                {activeModule !== "ctkm" && <Mascot state={backendStatus === "offline" ? "warning" : step === STEPS.running ? "thinking" : step === STEPS.done ? "success" : "idle"} />}
                 <div>
                   <div className="ops-kicker">PharmaOps · Vận hành cửa hàng</div>
                   <h1 id="ops-page-title">
@@ -1665,7 +1697,9 @@ export default function App() {
                 {activeModule === "temr" && "Đọc đúng giá trị đang hiển thị trong file nguồn và tạo file phân bổ Tem R."}
                 {activeModule === "inventory" && "Kiểm tồn store-level và coverage POG mà không cộng lặp tồn giữa nhiều vị trí kệ."}
               </p>
+              {activeModule === "ctkm" && <div className="ctkm-hero-flow" aria-label="Quy trình CTKM"><span><b>1</b> Upload</span><i>→</i><span><b>2</b> Mapping</span><i>→</i><span><b>3</b> Xử lý</span><i>→</i><span><b>4</b> Kiểm kệ</span></div>}
             </div>
+            {activeModule === "ctkm" && <div className="ctkm-hero-art" aria-hidden="true"><Mascot state={backendStatus === "offline" ? "warning" : step === STEPS.running ? "thinking" : step === STEPS.done ? "success" : "guide"} /><div className="ctkm-hero-speech"><b>CTKM tháng này ✦</b><span>Chọn file đúng, phần còn lại để hệ thống xử lý.</span></div></div>}
             <div className="ops-hero-side">
               <div className="backend-status ops-backend-status">
                 <span className={`status-dot ${
