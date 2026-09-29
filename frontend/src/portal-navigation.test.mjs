@@ -47,3 +47,24 @@ test("inventory is a first-class desktop module backed by real inspection",async
   assert.match(app,/stock_conflict/)
   assert.match(app,/Không cộng tồn lặp/)
 })
+
+
+test("mobile navigation stays compact and moves secondary tools under More",async()=>{
+  const nav=await read("./ProductNav.jsx")
+  assert.match(nav,/Trang chủ/)
+  assert.match(nav,/Thêm/)
+  assert.match(nav,/portal-mobile-more/)
+  assert.match(nav,/\?module=inventory/)
+  assert.match(nav,/\?module=expiration/)
+  assert.match(nav,/grid-template-columns:repeat\(5,1fr\)/)
+})
+
+test("expiration workspace has display-only urgency filters and mobile cards",async()=>{
+  const app=await read("./App.jsx")
+  assert.match(app,/function expirationUrgency/)
+  assert.match(app,/Sắp hết hạn ≤30 ngày/)
+  assert.match(app,/Bình thường >30 ngày/)
+  assert.match(app,/expiration-mobile-card/)
+  assert.match(app,/expiration-desktop-table/)
+  assert.match(app,/expirationUrgencyFilter/)
+})

@@ -386,8 +386,13 @@ const css = `
              border-bottom-color:#e4e7ec; }
   tbody td { border-bottom-color:#f0f1f3; }
   tbody tr:hover td { background:#f9fafb; }
-  .expiration-card { background:#fff; border:1px solid #e4e7ec; border-radius:18px; padding:22px;
-                     box-shadow:0 2px 10px rgba(16,24,40,.04); }
+  .expiration-card { background:linear-gradient(180deg,#fff,#fbfeff); border:1px solid #dcecf2; border-radius:20px; padding:22px;
+                     box-shadow:0 10px 30px rgba(34,101,127,.055); }
+  .expiration-kicker{color:#1b9bb8!important;font-weight:950!important;letter-spacing:.09em!important}.expiration-title{color:#173052!important}.format-pill{background:linear-gradient(90deg,#ebfbfc,#fff5fa)!important;border-color:#d5edf0!important;color:#33798b!important}
+  .expiration-grid>div{background:#fff;border:1px solid #e5edf5;border-radius:15px;padding:13px}.camera-actions .btn{min-height:42px}.entry-input{background:#fbfdff!important;border-color:#dce7f2!important}
+  .expiration-urgency-tabs{display:flex;gap:6px;overflow-x:auto;margin-top:12px;padding-bottom:2px}.expiration-urgency-tabs button{flex:0 0 auto;border:1px solid #dde7f1;background:#f8fbff;border-radius:999px;padding:7px 10px;color:#647b99;font:850 9px var(--font);cursor:pointer}.expiration-urgency-tabs button.active{background:#e8f8fb;border-color:#b7e6ed;color:#168aa3}.expiration-urgency-tabs button.expired.active{background:#fff0f2;border-color:#ffcbd1;color:#c8404c}.expiration-urgency-tabs button.soon.active{background:#fff7e8;border-color:#f8dfb1;color:#b96c11}.expiration-result-summary{display:grid;grid-template-columns:repeat(4,1fr);gap:7px;margin-top:12px}.expiration-result-stat{background:#fff;border:1px solid #e5edf5;border-radius:12px;padding:9px}.expiration-result-stat span{display:block;font-size:8px;color:#7d8fa9}.expiration-result-stat strong{display:block;font-size:18px;margin-top:2px}.expiration-result-stat.expired strong{color:#d34752}.expiration-result-stat.soon strong{color:#c57415}.expiration-result-stat.normal strong{color:#159065}
+  .expiration-mobile-list{display:none}.expiration-mobile-card{background:#fff;border:1px solid #e1e9f4;border-radius:14px;padding:12px}.expiration-mobile-top{display:flex;justify-content:space-between;gap:8px}.expiration-mobile-code{font:800 11px var(--mono);color:#1769ff}.expiration-mobile-name{font-size:10px;color:#526884;margin-top:3px}.expiration-mobile-meta{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:9px}.expiration-mobile-meta div{padding:7px 8px;border-radius:9px;background:#f8faff}.expiration-mobile-meta span{display:block;font-size:7px;color:#8b9bb1}.expiration-mobile-meta strong{font-size:9px}.expiry-badge{height:max-content;padding:5px 7px;border-radius:999px;font-size:8px;font-weight:900;background:#edf3f8;color:#617996}.expiry-badge.expired{background:#fff0f2;color:#c8404c}.expiry-badge.soon{background:#fff6e7;color:#b96b10}.expiry-badge.normal{background:#eaf9f1;color:#13895b}
+  @media(max-width:760px){.expiration-card{padding:14px!important;border-radius:16px!important}.expiration-grid{grid-template-columns:1fr!important}.expiration-header{display:block!important}.format-pill{display:inline-flex;margin-top:9px}.expiration-result-summary{grid-template-columns:1fr 1fr}.expiration-card .expiration-desktop-table{display:none}.expiration-mobile-list{display:grid;gap:8px;margin-top:10px}.expiration-card select.sheet-select{min-height:42px}.expiration-card .btn{min-height:46px}}
   .tem-r-card{border-color:#eadcff!important;background:linear-gradient(180deg,#fff,#fdfaff)!important}
   .inventory-card{background:linear-gradient(180deg,#fff,#fffaf5);border:1px solid #f0e1cf;border-radius:18px;padding:22px;box-shadow:0 8px 28px rgba(130,85,35,.05);margin-bottom:20px}
   .inventory-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:16px}.inventory-kicker{font-size:9px;font-weight:950;color:#e87918;text-transform:uppercase;letter-spacing:.09em}.inventory-head h1{font-size:22px;margin:4px 0 4px;color:#173052}.inventory-head p{margin:0;color:#7b8ba1;font-size:10px;line-height:1.5}.inventory-rule{max-width:360px;padding:9px 11px;border-radius:11px;background:#fff7e9;color:#a55f15;border:1px solid #f6dfbd;font-size:9px;font-weight:750}
@@ -444,6 +449,16 @@ function useDropzone(onFile) {
 function expirationTime(value) {
   const [day, month, year] = String(value || "").split("/").map(Number)
   return day && month && year ? new Date(year, month - 1, day).getTime() : 0
+}
+
+function expirationUrgency(value, now = new Date()) {
+  const time = expirationTime(value)
+  if (!time) return {key:"unknown", label:"Không rõ HSD", days:null}
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()
+  const days = Math.ceil((time - today) / 86400000)
+  if (days < 0) return {key:"expired", label:"Quá hạn "+Math.abs(days)+" ngày", days}
+  if (days <= 30) return {key:"soon", label:days===0?"Hết hạn hôm nay":"Còn "+days+" ngày", days}
+  return {key:"normal", label:"Còn "+days+" ngày", days}
 }
 
 function expirationDisplayRows(result, filter, sort) {
@@ -701,6 +716,7 @@ export default function App() {
   const [expirationResult, setExpirationResult] = useState(null)
   const [expirationError, setExpirationError] = useState("")
   const [expirationFilter, setExpirationFilter] = useState("all")
+  const [expirationUrgencyFilter, setExpirationUrgencyFilter] = useState("all")
   const [expirationSort, setExpirationSort] = useState("expiry_desc")
   const [cameraActive, setCameraActive] = useState(false)
   const [cameraMessage, setCameraMessage] = useState("")
@@ -2209,15 +2225,32 @@ export default function App() {
                 </div>
               </div>
 
-              {expirationResult && (
-                <div style={{marginTop:18}}>
+              {expirationResult && (()=>{
+                const sourceRows=expirationDisplayRows(expirationResult, expirationFilter, expirationSort)
+                const decorated=sourceRows.map(row=>({...row,urgency:expirationUrgency(row.exp_date)}))
+                const counts={
+                  expired:decorated.filter(row=>row.urgency.key==="expired").length,
+                  soon:decorated.filter(row=>row.urgency.key==="soon").length,
+                  normal:decorated.filter(row=>row.urgency.key==="normal").length,
+                }
+                const rows=decorated.filter(row=>expirationUrgencyFilter==="all"||row.urgency.key===expirationUrgencyFilter)
+                return <div style={{marginTop:18}}>
                   <div className={`status-strip ${expirationResult.unmatched ? "warn" : "success"}`}>
                     Sheet {expirationResult.sheet_name}: khớp {expirationResult.matched}/{expirationResult.total} dòng
                   </div>
+                  <div className="expiration-result-summary">
+                    <div className="expiration-result-stat"><span>Đang hiển thị</span><strong>{rows.length}</strong></div>
+                    <div className="expiration-result-stat expired"><span>Quá hạn</span><strong>{counts.expired}</strong></div>
+                    <div className="expiration-result-stat soon"><span>Sắp hết hạn ≤30 ngày</span><strong>{counts.soon}</strong></div>
+                    <div className="expiration-result-stat normal"><span>Trên 30 ngày</span><strong>{counts.normal}</strong></div>
+                  </div>
+                  <div className="expiration-urgency-tabs">
+                    {[["all","Tất cả"],["expired","Quá hạn"],["soon","Sắp hết hạn ≤30 ngày"],["normal","Bình thường >30 ngày"]].map(([key,label])=><button key={key} className={(expirationUrgencyFilter===key?"active ":"")+key} onClick={()=>setExpirationUrgencyFilter(key)}>{label}</button>)}
+                  </div>
                   <div style={{display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginTop:12}}>
                     <select className="sheet-select" style={{marginTop:0}} value={expirationFilter} onChange={e => setExpirationFilter(e.target.value)}>
-                      <option value="all">Tất cả dòng</option>
-                      <option value="matched">Chỉ dòng khớp chính xác</option>
+                      <option value="all">Tất cả đối chiếu</option>
+                      <option value="matched">Chỉ khớp chính xác</option>
                       <option value="related">Chỉ lô/ngày khác cùng mã P</option>
                     </select>
                     <select className="sheet-select" style={{marginTop:0}} value={expirationSort} onChange={e => setExpirationSort(e.target.value)}>
@@ -2227,36 +2260,16 @@ export default function App() {
                       <option value="input">Theo thứ tự nhập</option>
                     </select>
                   </div>
-                  <div className="table-wrap" style={{marginTop:12}}>
-                    <table>
-                      <thead>
-                        <tr>
-                          <th>#</th><th>Sản phẩm</th><th>Số lô</th><th>Hạn dùng</th>
-                          <th>Tồn</th><th>Trạng thái</th><th>Đối chiếu</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {expirationDisplayRows(expirationResult, expirationFilter, expirationSort).map(row => (
-                          <tr key={row.rowKey}>
-                            <td>{row.line}</td>
-                            <td style={{minWidth:220}}>
-                              <div style={{fontFamily:"var(--mono)", fontWeight:650}}>{row.item_id || row.input}</div>
-                              {row.item_name && <div style={{fontFamily:"var(--font)", color:"var(--text2)", marginTop:3}}>{row.item_name}</div>}
-                            </td>
-                            <td>{row.batch_number || "—"}</td>
-                            <td>{row.exp_date || "—"}</td>
-                            <td>{row.on_hand ? `${row.on_hand}${row.inventory_unit ? ` ${row.inventory_unit}` : ""}` : "—"}</td>
-                            <td><span className={`result-status ${row.status}`}>{row.status === "matched" ? "Khớp chính xác" : row.status === "related" ? "Cùng mã P" : "Không khớp"}</span></td>
-                            <td style={{minWidth:220, whiteSpace:"normal", fontFamily:"var(--font)"}}>
-                              <div>{row.message}</div>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                  <div className="table-wrap expiration-desktop-table" style={{marginTop:12}}>
+                    <table><thead><tr><th>#</th><th>Sản phẩm</th><th>Số lô</th><th>Hạn dùng</th><th>Tồn</th><th>Hạn</th><th>Đối chiếu</th></tr></thead><tbody>
+                      {rows.map(row=><tr key={row.rowKey}><td>{row.line}</td><td style={{minWidth:220}}><div style={{fontFamily:"var(--mono)",fontWeight:650}}>{row.item_id||row.input}</div>{row.item_name&&<div style={{fontFamily:"var(--font)",color:"var(--text2)",marginTop:3}}>{row.item_name}</div>}</td><td>{row.batch_number||"—"}</td><td>{row.exp_date||"—"}</td><td>{row.on_hand!==undefined&&row.on_hand!==null?`${row.on_hand}${row.inventory_unit?` ${row.inventory_unit}`:""}`:"—"}</td><td><span className={"expiry-badge "+row.urgency.key}>{row.urgency.label}</span></td><td style={{minWidth:220,whiteSpace:"normal",fontFamily:"var(--font)"}}>{row.message}</td></tr>)}
+                    </tbody></table>
+                  </div>
+                  <div className="expiration-mobile-list">
+                    {rows.map(row=><article className="expiration-mobile-card" key={"m-"+row.rowKey}><div className="expiration-mobile-top"><div><div className="expiration-mobile-code">{row.item_id||row.input}</div><div className="expiration-mobile-name">{row.item_name||"Sản phẩm"}</div></div><span className={"expiry-badge "+row.urgency.key}>{row.urgency.label}</span></div><div className="expiration-mobile-meta"><div><span>Số lô</span><strong>{row.batch_number||"—"}</strong></div><div><span>Hạn dùng</span><strong>{row.exp_date||"—"}</strong></div><div><span>Tồn</span><strong>{row.on_hand!==undefined&&row.on_hand!==null?`${row.on_hand}${row.inventory_unit?` ${row.inventory_unit}`:""}`:"—"}</strong></div><div><span>Đối chiếu</span><strong>{row.status==="matched"?"Khớp chính xác":row.status==="related"?"Cùng mã P":"Không khớp"}</strong></div></div></article>)}
                   </div>
                 </div>
-              )}
+              })()}
             </div>
 
 
