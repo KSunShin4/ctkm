@@ -8,6 +8,7 @@ export const PORTAL_MODULES=[
   {id:"inventory",label:"Kiểm tồn kho",short:"Kiểm tồn",href:"/?module=inventory",icon:"▣"},
   {id:"expiration",label:"Kiểm hạn dùng",short:"Hạn dùng",href:"/?module=expiration",icon:"◷"},
   {id:"schedule",label:"Xếp lịch",short:"Lịch",href:"/schedule",icon:"▦"},
+  {id:"history",label:"Lịch sử",short:"Lịch sử",href:"/history",icon:"↺"},
   {id:"guide",label:"Hướng dẫn",short:"Hướng dẫn",href:"/guide",icon:"?"},
   {id:"settings",label:"Cài đặt",short:"Cài đặt",href:"/settings",icon:"⚙"},
 ]
@@ -34,6 +35,7 @@ export function currentPortalModule(pathname=window.location.pathname,search=win
   if(p.startsWith("/overview"))return"overview"
   if(p.startsWith("/scan-tem")&&q.get("mode")==="shelf")return"shelf"
   if(p.startsWith("/schedule"))return"schedule"
+  if(p.startsWith("/history"))return"history"
   if(p.startsWith("/guide"))return"guide"
   if(p.startsWith("/settings"))return"settings"
   if(p==="/"){
@@ -50,7 +52,7 @@ export default function ProductNav({current}){
   const active=current||currentPortalModule()
   const [moreOpen,setMoreOpen]=useState(false)
   const mobilePrimary=PORTAL_MODULES.filter(x=>["overview","ctkm","shelf","temr"].includes(x.id))
-  const mobileMore=PORTAL_MODULES.filter(x=>["inventory","expiration","schedule","guide","settings"].includes(x.id))
+  const mobileMore=PORTAL_MODULES.filter(x=>["inventory","expiration","schedule","history","guide","settings"].includes(x.id))
   const moreActive=mobileMore.some(x=>x.id===active)
   return <>
     <style>{css}</style>
