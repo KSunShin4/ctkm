@@ -329,6 +329,17 @@ export default function TagAuditShelfCheck() {
     </header>
 
     {view === "shelves" && <main className="shelf-main">
+      <section className="shelf-mission">
+        <div className="shelf-mission-copy">
+          <span>KIỂM KỆ HÔM NAY</span>
+          <h1>Đi theo kệ, xử lý từng việc một</h1>
+          <p>Ưu tiên kệ cần tháo hoặc cần quay lại. Tiến độ lưu ngay trên thiết bị, không phụ thuộc camera.</p>
+        </div>
+        <div className="shelf-mission-cute" aria-hidden="true">
+          <div className="shelf-chibi"><i>•ᴗ•</i><b>✓</b></div>
+          <small>Camera chỉ là Beta ✦</small>
+        </div>
+      </section>
       <div className="shelf-summary-row five">
         <div className="remove"><span>Cần tháo</span><strong>{overall.removePending}</strong></div>
         <div><span>Đã tháo</span><strong>{overall.removed}</strong></div>
@@ -355,14 +366,14 @@ export default function TagAuditShelfCheck() {
         </button>)}</div>}
       </section>}
 
-      <div className="shelf-filter-row">{SHELF_FILTERS.map(option => <button key={option.key} className={shelfFilter===option.key?"active":""} onClick={()=>{setShelfFilter(option.key);setShelfLimit(INITIAL_SHELF_LIMIT)}}>{option.label}</button>)}</div>
+      <div className="shelf-filter-row shelf-status-tabs">{SHELF_FILTERS.map(option => <button key={option.key} className={shelfFilter===option.key?"active":""} onClick={()=>{setShelfFilter(option.key);setShelfLimit(INITIAL_SHELF_LIMIT)}}>{option.label}</button>)}</div>
       <div className="shelf-list-caption">{shelfQuery ? `${smartList.totalMatches} kệ khớp · hiện tối đa 8 kết quả tốt nhất` : `${smartList.totalMatches} kệ phù hợp${smartList.totalMatches > smartList.rows.length ? ` · đang hiện ${smartList.rows.length}` : ""}`}</div>
 
       {!smartList.rows.length ? <div className="shelf-empty">Không tìm thấy kệ phù hợp. Thử ITEMID, tên sản phẩm, POG hoặc vị trí kệ.</div> : <div className="shelf-grid">{smartList.rows.map(({shelf,stats,status,matchHint}) => {
         const done = status === "done"
         const remove = stats.removePending > 0
         return <button key={shelf.shelf_key} className={`shelf-card ${done ? "done" : ""} ${status === "issues" ? "issue" : ""} ${remove ? "remove" : ""}`} onClick={()=>openShelf(shelf.shelf_key)}>
-          <div className="shelf-card-top"><strong>{shelf.shelf_label}</strong><span>{remove ? `🔴 ${stats.removePending} cần tháo` : done ? "✓ Xong" : status === "issues" ? "Có lỗi" : stats.checked ? "▶ Đang kiểm" : "Chưa kiểm"}</span></div>
+          <div className="shelf-card-top"><strong>{shelf.shelf_label}</strong><span>{remove ? `🔴 ${stats.removePending} cần tháo` : done ? "✓ Hoàn tất" : status === "issues" ? "↺ Cần quay lại" : stats.checked ? "▶ Đang kiểm" : "Chưa kiểm"}</span></div>
           <div className="shelf-card-count"><b>{stats.checked}/{stats.total}</b> action · {shelf.sku_count} SKU · {shelf.location_count || 0} vị trí</div>
           {shelf.shelf_group_mode === "pog" && shelf.locations?.length ? <div className="shelf-locations">{shelf.locations.slice(0,4).join(" · ")}{shelf.locations.length > 4 ? ` · +${shelf.locations.length-4}` : ""}</div> : null}
           {shelfQuery && matchHint ? <div className="shelf-match-hint">{matchHint}</div> : null}
@@ -448,6 +459,19 @@ export default function TagAuditShelfCheck() {
 
 const styles = `
 :root{--shelf-blue:#1769ff;--shelf-green:#12a86b;--shelf-purple:#8b4de8;--shelf-pink:#fff3f8}
+.shelf-mission{display:grid;grid-template-columns:1fr auto;gap:18px;align-items:center;margin:4px 0 14px;padding:18px 20px;border:1px solid #dfe8f4;border-radius:20px;background:
+radial-gradient(circle at 90% 10%,rgba(255,200,225,.42),transparent 28%),
+linear-gradient(135deg,#fff,#f7fbff 58%,#fff8fb);box-shadow:0 10px 28px rgba(36,75,125,.05)}
+.shelf-mission-copy>span{font-size:8px;letter-spacing:.12em;font-weight:950;color:#8b4de8}.shelf-mission h1{margin:4px 0 4px;font-size:22px;letter-spacing:-.45px}.shelf-mission p{margin:0;max-width:650px;color:#7a8da7;font-size:10px;line-height:1.55}
+.shelf-mission-cute{display:flex;flex-direction:column;align-items:center;gap:5px;min-width:100px}.shelf-chibi{position:relative;width:68px;height:68px;border-radius:24px 24px 28px 28px;background:linear-gradient(145deg,#fff,#edf4ff);border:1px solid #d7e4f6;display:grid;place-items:center;box-shadow:0 8px 20px rgba(48,82,128,.10)}.shelf-chibi:before{content:"";position:absolute;left:9px;right:9px;top:7px;height:21px;border-radius:17px 17px 9px 9px;background:linear-gradient(180deg,#314760,#22354f)}.shelf-chibi i{position:relative;margin-top:10px;font-style:normal;font-size:14px;font-weight:900;color:#3d526e;letter-spacing:1px}.shelf-chibi b{position:absolute;right:-6px;top:-6px;width:23px;height:23px;border-radius:50%;display:grid;place-items:center;background:#12a86b;color:#fff;border:2px solid #fff;font-size:10px}.shelf-mission-cute small{font-size:8px;color:#8293aa;font-weight:800}
+.shelf-status-tabs{padding:5px;margin-top:12px;border:1px solid #e0e8f4;border-radius:14px;background:#fff;box-shadow:0 6px 18px rgba(36,75,125,.035)}
+.shelf-status-tabs button{border:0!important;background:transparent!important;border-radius:10px!important;padding:8px 11px!important}.shelf-status-tabs button.active{background:linear-gradient(145deg,#1769ff,#5c7cff)!important;color:#fff!important;box-shadow:0 5px 12px rgba(23,105,255,.18)}
+.shelf-card-top span{font-size:9px!important;font-weight:900!important;padding:5px 7px;border-radius:999px;background:#f2f5f9;color:#6f819a}.shelf-card.issue .shelf-card-top span{background:#fff0f3;color:#c74361}.shelf-card.done .shelf-card-top span{background:#eafaf2;color:#168b5f}.shelf-card.remove .shelf-card-top span{background:#fff0ec;color:#c84b3e}
+.shelf-card-count{margin-top:7px!important;color:#70839d!important}.shelf-card-count b{font-size:14px;color:#253b58}
+.shelf-card{min-height:126px!important;padding:14px!important}.shelf-card-warn{margin-top:8px;display:inline-flex;padding:4px 6px;border-radius:999px;background:#fff0f3;color:#c74361;font-size:8px;font-weight:900}
+.shelf-check-main{max-width:760px!important}.shelf-check-head{margin-top:8px}.shelf-product-card h2{font-size:22px!important;letter-spacing:-.35px}.shelf-current-state{margin-top:10px;padding:9px 11px;border-radius:10px;background:#f7faff;color:#60758f;font-size:9px;font-weight:800;text-align:center}
+@media(max-width:700px){.shelf-mission{grid-template-columns:1fr;padding:14px}.shelf-mission-cute{display:none}.shelf-mission h1{font-size:18px}.shelf-status-tabs{overflow-x:auto;display:flex;gap:4px;scrollbar-width:none}.shelf-status-tabs::-webkit-scrollbar{display:none}.shelf-status-tabs button{flex:0 0 auto}.shelf-grid{grid-template-columns:1fr!important}.shelf-card{min-height:116px!important}.shelf-product-card h2{font-size:19px!important}}
+
 .shelf-shell{background:linear-gradient(180deg,#f8fbff 0%,#f4f8ff 58%,#fff9fc 100%)!important}
 .shelf-sticky{background:rgba(255,255,255,.96)!important;backdrop-filter:blur(14px);box-shadow:0 6px 20px rgba(36,75,125,.06)}
 .shelf-topline{max-width:1080px!important}.shelf-progress-wrap{max-width:1080px!important}.shelf-main{max-width:1080px!important}
