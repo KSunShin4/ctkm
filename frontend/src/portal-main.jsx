@@ -2,7 +2,6 @@ import React from "react"
 import ReactDOM from "react-dom/client"
 import GuideApp from "./GuideApp.jsx"
 import AssistantShowcase from "./AssistantShowcase.jsx"
-import OverviewDashboard from "./OverviewDashboard.jsx"
 import HistoryApp from "./HistoryApp.jsx"
 import SettingsApp from "./SettingsApp.jsx"
 import {UiPreferenceRoot,uiPreferenceCss} from "./ui-preferences.js"
@@ -13,4 +12,4 @@ if(path.startsWith("/guide"))render(<GuideApp/>)
 else if(path.startsWith("/assistant"))render(<AssistantShowcase/>)
 else if(path.startsWith("/history"))render(<HistoryApp/>)
 else if(path.startsWith("/settings"))render(<SettingsApp/>)
-else render(<OverviewDashboard/>)
+else window.location.replace("/?module=ctkm")

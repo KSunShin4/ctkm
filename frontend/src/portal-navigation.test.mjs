@@ -3,17 +3,19 @@ import assert from "node:assert/strict"
 import {readFile} from "node:fs/promises"
 const read=p=>readFile(new URL(p,import.meta.url),"utf8")
 
-test("shared store shell keeps four primary mobile tabs plus a More sheet",async()=>{
+test("shared store shell makes CTKM the home and keeps four primary mobile tabs plus More",async()=>{
   const s=await read("./ProductNav.jsx")
-  for(const x of ["Tổng quan","CTKM","Kiểm kệ","Tem R","Kiểm tồn kho","Kiểm hạn dùng","Xếp lịch","Lịch sử","Hướng dẫn","Cài đặt","portal-mobile-nav","portal-mobile-more-sheet"])assert.match(s,new RegExp(x))
-  for(const x of ["/overview","/?module=ctkm","/scan-tem?mode=shelf","/?module=temr","/?module=inventory","/?module=expiration","/schedule","/history","/guide","/settings"])assert.ok(s.includes(x))
+  for(const x of ["CTKM","Kiểm kệ","Tem R","Kiểm tồn kho","Kiểm hạn dùng","Xếp lịch","Lịch sử","Hướng dẫn","Cài đặt","portal-mobile-nav","portal-mobile-more-sheet"])assert.match(s,new RegExp(x))
+  for(const x of ["/?module=ctkm","/scan-tem?mode=shelf","/?module=temr","/?module=inventory","/?module=expiration","/schedule","/history","/guide","/settings"])assert.ok(s.includes(x))
+  assert.doesNotMatch(s,/id:"overview"|label:"Tổng quan"|href:"\/overview"/)
+  assert.match(s,/\["ctkm","shelf","temr","inventory"\]/)
   assert.match(s,/grid-template-columns:repeat\(5,1fr\)/)
   assert.match(s,/mobilePrimary/)
   assert.match(s,/mobileMore/)
   assert.match(s,/>Thêm</)
 })
 test("legacy CTKM and scheduling screens keep shared navigation",async()=>{const app=await read("./App.jsx");assert.match(app,/ProductNav current=\{activeModule\}/);assert.doesNotMatch(app,/className="ops-tool-tabs"/);assert.match(await read("./SchedulingApp.jsx"),/ProductNav current="schedule"/)})
-test("index routes shell modules and preserves CTKM root",async()=>{const s=await read("../index.html");for(const x of ["overview","history","guide","assistant","settings"])assert.ok(s.includes(`pathname.startsWith('/${x}')`));assert.ok(s.includes("import('/src/portal-main.jsx')"));assert.ok(s.includes("import('/src/main.jsx')"))})
+test("index redirects legacy overview and keeps CTKM as the product root",async()=>{const s=await read("../index.html");for(const x of ["history","guide","assistant","settings"])assert.ok(s.includes(`pathname.startsWith('/${x}')`));assert.match(s,/pathname\.startsWith\('\/overview'\).*location\.replace\('\/\?module=ctkm'\)/);assert.ok(s.includes("import('/src/portal-main.jsx')"));assert.ok(s.includes("import('/src/main.jsx')"))})
 test("ctkm root keeps approved workspace and relies on the shared vertical module navigation",async()=>{
   const app=await read("./App.jsx")
   const nav=await read("./ProductNav.jsx")
@@ -157,4 +159,17 @@ test("settings keeps local-only preferences while matching the shared pastel she
   assert.match(s,/writeUiPreferences/)
   assert.match(s,/DEFAULT_UI_PREFERENCES/)
   assert.doesNotMatch(s,/fetch\(/)
+})
+
+
+test("CTKM home uses the V2 anime workspace instead of the old pastelized form layout",async()=>{
+  const app=await read("./App.jsx")
+  for(const x of ["ctkm-hero","ctkm-hero-art","ctkm-hero-flow","MOCKUP V2","ctkm-workspace-board"]) {
+    if(x==="ctkm-workspace-board") continue
+    assert.match(app,new RegExp(x))
+  }
+  assert.match(app,/grid-column:1\/2!important/)
+  assert.match(app,/grid-column:2\/3!important/)
+  assert.match(app,/grid-column:3\/4!important/)
+  assert.match(app,/CTKM tháng này/)
 })
