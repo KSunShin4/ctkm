@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Render-oriented CTKM workbook export without sacrificing source auditability.
+"""Production CTKM workbook export without sacrificing source auditability.
 
 The production profile avoids expensive diagnostic styling, but it must not
 silently remove reconciliation/source evidence.  Operational sheets stay compact;
