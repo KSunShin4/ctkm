@@ -1,0 +1,110 @@
+name: Deploy Cloud Run
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: ctkm-cloud-run-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: deploy-cloud-run
+    if: >-
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.head_branch == 'main')) &&
+      vars.GCP_PROJECT_ID != '' &&
+      vars.GCP_REGION != '' &&
+      vars.GCP_CLOUD_RUN_SERVICE != '' &&
+      vars.GCP_WORKLOAD_IDENTITY_PROVIDER != '' &&
+      vars.GCP_SERVICE_ACCOUNT != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Resolve deploy SHA
+        id: revision
+        shell: bash
+        run: |
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_run" ]; then
+            echo "sha=${{ github.event.workflow_run.head_sha }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "sha=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.revision.outputs.sha }}
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - name: Deploy exact source revision to Cloud Run
+        id: deploy
+        uses: google-github-actions/deploy-cloudrun@v3
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          region: ${{ vars.GCP_REGION }}
+          service: ${{ vars.GCP_CLOUD_RUN_SERVICE }}
+          source: .
+          env_vars: |-
+            HEAVY_JOB_QUEUE_SIZE=1
+          env_vars_update_strategy: merge
+          flags: >-
+            --min-instances=1
+            --max-instances=1
+            --no-cpu-throttling
+          revision_traffic: 'LATEST=100'
+
+      - name: Verify hardened production health
+        env:
+          SERVICE_URL: ${{ steps.deploy.outputs.url }}
+        shell: bash
+        run: |
+          test -n "$SERVICE_URL"
+          ready=0
+          for attempt in $(seq 1 30); do
+            if curl -fsS "$SERVICE_URL/api/health" > /tmp/ctkm-cloud-health.json; then
+              ready=1
+              break
+            fi
+            sleep 2
+          done
+          test "$ready" -eq 1
+          cat /tmp/ctkm-cloud-health.json
+          python3 - <<'PY'
+          import json
+          with open("/tmp/ctkm-cloud-health.json", encoding="utf-8") as handle:
+              data = json.load(handle)
+          assert data.get("status") == "ok"
+          assert data.get("contract_suite") == "v1"
+          assert data.get("contracts_ok") is True
+          assert "mapping-result-contract-v1" in data.get("main_facade_hooks", [])
+          PY
+
+      - name: Deployment summary
+        env:
+          SERVICE_URL: ${{ steps.deploy.outputs.url }}
+          DEPLOY_SHA: ${{ steps.revision.outputs.sha }}
+        shell: bash
+        run: |
+          {
+            echo "### Cloud Run production"
+            echo ""
+            echo "- SHA: $DEPLOY_SHA"
+            echo "- URL: $SERVICE_URL"
+            echo "- min instances: 1"
+            echo "- max instances: 1"
+            echo "- CPU throttling: disabled"
+          } >> "$GITHUB_STEP_SUMMARY"
