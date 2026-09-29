@@ -9,11 +9,11 @@ test("shared store shell prioritizes real store workflows and five mobile tabs",
   for(const x of ["/overview","/?module=ctkm","/scan-tem?mode=shelf","/?module=temr","/?module=expiration"])assert.ok(s.includes(x))
   assert.match(s,/grid-template-columns:repeat\(5,1fr\)/)
 })
-test("legacy CTKM and scheduling screens keep shared navigation",async()=>{assert.match(await read("./App.jsx"),/ProductNav current="ops"/);assert.match(await read("./SchedulingApp.jsx"),/ProductNav current="schedule"/)})
+test("legacy CTKM and scheduling screens keep shared navigation",async()=>{const app=await read("./App.jsx");assert.match(app,/ProductNav current=\{activeModule\}/);assert.doesNotMatch(app,/className="ops-tool-tabs"/);assert.match(await read("./SchedulingApp.jsx"),/ProductNav current="schedule"/)})
 test("index routes shell modules and preserves CTKM root",async()=>{const s=await read("../index.html");for(const x of ["overview","guide","assistant","settings"])assert.ok(s.includes(`pathname.startsWith('/${x}')`));assert.ok(s.includes("import('/src/portal-main.jsx')"));assert.ok(s.includes("import('/src/main.jsx')"))})
 test("ctkm root keeps approved workspace and supports deep links into real tools",async()=>{
   const app=await read("./App.jsx")
-  assert.match(app,/ops-page-head/);assert.match(app,/ops-hero/);assert.match(app,/ops-tool-tabs/)
+  assert.match(app,/ops-page-head/);assert.match(app,/ops-hero/);assert.doesNotMatch(app,/<nav className="ops-tool-tabs"/)
   assert.match(app,/Tổng hợp CTKM/);assert.match(app,/Kiểm hạn dùng/);assert.match(app,/Phân bổ Tem R/);assert.match(app,/Kiểm theo kệ/)
   assert.match(app,/URLSearchParams\(window\.location\.search\)/)
   assert.doesNotMatch(app,/<div className="topbar">/);assert.doesNotMatch(app,/<nav className="module-nav"/)
