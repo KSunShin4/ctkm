@@ -77,7 +77,12 @@ const css = `
   .main.expiration-mode .sidebar { display: none; }
   .main.expiration-mode .content { width: 100%; max-width: 1120px; margin: 0 auto; }
   .main.expiration-mode .content > :not(.expiration-card) { display: none; }
+  .main.inventory-mode { display:block; height:auto; overflow:visible; }
+  .main.inventory-mode .sidebar { display:none; }
+  .main.inventory-mode .content { width:100%; max-width:1120px; margin:0 auto; }
+  .main.inventory-mode .content > :not(.inventory-card) { display:none; }
   .main.ctkm-mode .expiration-card { display: none; }
+  .main.ctkm-mode .inventory-card { display:none; }
   .main.ctkm-mode .tem-r-card { display: none; }
   .main.temr-mode { display: block; height: calc(100vh - 68px); overflow-y: auto; }
   .main.temr-mode .content { display: none; }
@@ -383,6 +388,13 @@ const css = `
   tbody tr:hover td { background:#f9fafb; }
   .expiration-card { background:#fff; border:1px solid #e4e7ec; border-radius:18px; padding:22px;
                      box-shadow:0 2px 10px rgba(16,24,40,.04); }
+  .tem-r-card{border-color:#eadcff!important;background:linear-gradient(180deg,#fff,#fdfaff)!important}
+  .inventory-card{background:linear-gradient(180deg,#fff,#fffaf5);border:1px solid #f0e1cf;border-radius:18px;padding:22px;box-shadow:0 8px 28px rgba(130,85,35,.05);margin-bottom:20px}
+  .inventory-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:16px}.inventory-kicker{font-size:9px;font-weight:950;color:#e87918;text-transform:uppercase;letter-spacing:.09em}.inventory-head h1{font-size:22px;margin:4px 0 4px;color:#173052}.inventory-head p{margin:0;color:#7b8ba1;font-size:10px;line-height:1.5}.inventory-rule{max-width:360px;padding:9px 11px;border-radius:11px;background:#fff7e9;color:#a55f15;border:1px solid #f6dfbd;font-size:9px;font-weight:750}
+  .inventory-setup{display:grid;grid-template-columns:minmax(260px,.8fr) minmax(0,1.2fr);gap:12px;margin-bottom:14px}.inventory-config{background:#fff;border:1px solid #e8edf4;border-radius:14px;padding:13px}.inventory-config h3{margin:0 0 8px;font-size:11px}.inventory-config-row{display:grid;grid-template-columns:1fr 1fr;gap:8px}.inventory-config select{width:100%;border:1px solid #dce6f2;border-radius:9px;background:#fff;padding:9px;font:700 9px var(--font)}.inventory-run{margin-top:10px}
+  .inventory-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:12px 0}.inventory-stat{padding:10px;border-radius:12px;background:#fff;border:1px solid #e5ebf3}.inventory-stat span{display:block;color:#7b8da7;font-size:8px}.inventory-stat strong{display:block;margin-top:3px;font-size:20px}.inventory-stat.ok strong{color:#0c9d65}.inventory-stat.warn strong{color:#d77216}.inventory-stat.bad strong{color:#d34852}
+  .inventory-tools{display:grid;grid-template-columns:minmax(0,1fr) 180px;gap:8px;margin:10px 0}.inventory-tools input,.inventory-tools select{border:1px solid #dce5ef;border-radius:10px;background:#fff;padding:10px;font:600 9px var(--font);outline:0}.inventory-status{display:inline-flex;padding:4px 7px;border-radius:999px;font-size:8px;font-weight:900}.inventory-status.ok{background:#e9f9f1;color:#0b8d5d}.inventory-status.stock_missing{background:#fff0f1;color:#c83d48}.inventory-status.stock_conflict{background:#fff0f1;color:#c83d48}.inventory-status.location_missing{background:#fff5df;color:#b86b12}.inventory-position-list{font-size:9px;color:#657a98;max-width:260px;white-space:normal}
+  @media(max-width:760px){.inventory-card{padding:14px}.inventory-head{display:block}.inventory-rule{margin-top:10px;max-width:none}.inventory-setup{grid-template-columns:1fr}.inventory-config-row{grid-template-columns:1fr}.inventory-stats{grid-template-columns:1fr 1fr}.inventory-tools{grid-template-columns:1fr}.inventory-card .table-wrap table{min-width:820px}}
   .main.expiration-mode { display:block; max-width:1180px; height:auto; overflow:visible; }
   .main.expiration-mode .content { width:100%; max-width:none; margin:0; }
   .main.temr-mode { display:block; max-width:1180px; height:auto; overflow:visible; }
@@ -629,7 +641,7 @@ const TEM_R_FIELD_LABELS = {
 }
 
 export default function App() {
-  const initialModule = () => { const requested = new URLSearchParams(window.location.search).get("module"); return ["ctkm","expiration","temr"].includes(requested) ? requested : "ctkm" }
+  const initialModule = () => { const requested = new URLSearchParams(window.location.search).get("module"); return ["ctkm","expiration","temr","inventory"].includes(requested) ? requested : "ctkm" }
   const [activeModule, setActiveModule] = useState(initialModule)
   const [adminToken, setAdminToken] = useState(() => sessionStorage.getItem("ctkm.admin.token") || "")
   const [adminUsername, setAdminUsername] = useState("admin")
@@ -678,6 +690,11 @@ export default function App() {
   const [temRColumnMapping, setTemRColumnMapping] = useState({})
   const [temRInspecting, setTemRInspecting] = useState(false)
   const [temRInspectInfo, setTemRInspectInfo] = useState(null)
+  const [inventoryLoading, setInventoryLoading] = useState(false)
+  const [inventoryResult, setInventoryResult] = useState(null)
+  const [inventoryError, setInventoryError] = useState("")
+  const [inventoryQuery, setInventoryQuery] = useState("")
+  const [inventoryFilter, setInventoryFilter] = useState("all")
   const [expirationFile, setExpirationFile] = useState(null)
   const [expirationEntries, setExpirationEntries] = useState("")
   const [expirationLoading, setExpirationLoading] = useState(false)
@@ -711,8 +728,8 @@ export default function App() {
   const [mappingConfirmSaving, setMappingConfirmSaving] = useState(false)
 
   useEffect(() => {
-    busyRef.current = temRLoading || expirationLoading || step === STEPS.running
-  }, [temRLoading, expirationLoading, step])
+    busyRef.current = temRLoading || inventoryLoading || expirationLoading || step === STEPS.running
+  }, [temRLoading, inventoryLoading, expirationLoading, step])
 
   const isAdmin = !!adminToken
   const authFetch = useCallback((url, options = {}) => {
@@ -913,6 +930,8 @@ export default function App() {
         setTemRSheetName("")
         setTemRColumnMapping({})
         setTemRInspectInfo(null)
+        setInventoryResult(null)
+        setInventoryError("")
         return
       }
       setTemRInspecting(true)
@@ -1160,6 +1179,31 @@ export default function App() {
 
   const downloadTemR = () => {
     if (temRResult?.job_id) downloadAdminFile(temRResult.job_id, setTemRError)
+  }
+
+  const handleInventoryInspect = async () => {
+    if (!temRFile || !temRMappingComplete || backendStatus !== "ok") return
+    setInventoryLoading(true)
+    setInventoryError("")
+    setInventoryResult(null)
+    try {
+      const fd = new FormData()
+      fd.append("tem_r_file", temRFile)
+      fd.append("stock_column", temRStockColumn)
+      fd.append("column_mapping", JSON.stringify(temRColumnMapping))
+      if (temRSheetName) fd.append("sheet_name", temRSheetName)
+      if (temRInspectInfo?.headerRow) fd.append("header_row", String(temRInspectInfo.headerRow))
+      const res = await fetch(`${API}/api/inspect-inventory`, {method:"POST", body:fd})
+      const data = await res.json()
+      if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : "Không kiểm tra được tồn kho")
+      setInventoryResult(data)
+      setInventoryQuery("")
+      setInventoryFilter("all")
+    } catch (e) {
+      setInventoryError(e.message)
+    } finally {
+      setInventoryLoading(false)
+    }
   }
 
   const handleExpirationCheck = async () => {
@@ -1448,11 +1492,13 @@ export default function App() {
                 {activeModule === "ctkm" && "Tổng hợp chương trình khuyến mãi"}
                 {activeModule === "expiration" && "Kiểm tra hạn dùng"}
                 {activeModule === "temr" && "Phân bổ Tem R"}
+                {activeModule === "inventory" && "Kiểm tồn kho"}
               </h1>
               <p>
                 {activeModule === "ctkm" && "Chuẩn bị file nguồn, kiểm tra mapping, đối chiếu POG và xuất workbook hành động."}
                 {activeModule === "expiration" && "Tra cứu mã sản phẩm, lô và hạn dùng trong một màn hình vận hành gọn."}
                 {activeModule === "temr" && "Đọc đúng giá trị đang hiển thị trong file nguồn và tạo file phân bổ Tem R."}
+                {activeModule === "inventory" && "Kiểm tồn store-level và coverage POG mà không cộng lặp tồn giữa nhiều vị trí kệ."}
               </p>
             </div>
             <div className="ops-hero-side">
@@ -1505,6 +1551,13 @@ export default function App() {
             >
               <span className="ops-tool-icon">R</span>
               Phân bổ Tem R
+            </button>
+            <button
+              className={`ops-tool-tab ${activeModule === "inventory" ? "active" : ""}`}
+              onClick={() => { stopCamera(); setActiveModule("inventory") }}
+            >
+              <span className="ops-tool-icon">▣</span>
+              Kiểm tồn kho
             </button>
             <span className="ops-tool-divider" aria-hidden="true" />
             <a className="ops-tool-link" href="/scan-tem">
@@ -2042,6 +2095,53 @@ export default function App() {
 
           {/* ── Main content ─────────────────────────────────────────────── */}
           <div className="content">
+            <section className="inventory-card">
+              <div className="inventory-head">
+                <div><div className="inventory-kicker">Kiểm tồn kho</div><h1>Tồn store-level ↔ vị trí POG</h1><p>Dùng cùng file nguồn Tem R/POG. Không cộng tồn lặp khi một SKU xuất hiện ở nhiều vị trí.</p></div>
+                <div className="inventory-rule">Stock 0 là dữ liệu hợp lệ · stock thiếu/#N/A là lỗi · nhiều giá trị tồn cho cùng Store+ITEMID phải review.</div>
+              </div>
+              <div className="inventory-setup">
+                <Dropzone label="File tồn / POG (.xlsx)" sub="Có STOREID, ITEMID, POG, vị trí và cột tồn" file={temRFile} onFile={file=>{setTemRFile(file);setInventoryResult(null);setInventoryError("")}}/>
+                <div className="inventory-config">
+                  <h3>Cấu hình dữ liệu</h3>
+                  {temRInspecting ? <div className="sheet-hint">Đang đọc file…</div> : <>
+                    <div className="inventory-config-row">
+                      <select value={temRSheetName} onChange={e=>setTemRSheetName(e.target.value)}>
+                        <option value="">Chọn sheet</option>
+                        {temRSheetOptions.map(option=><option key={option.sheet_name} value={option.sheet_name}>{option.sheet_name}</option>)}
+                      </select>
+                      <select value={temRStockColumn} onChange={e=>setTemRStockColumn(e.target.value)}>
+                        <option value="">Chọn cột tồn kho</option>
+                        {temRColumns.map(column=><option key={column} value={column}>{column}</option>)}
+                      </select>
+                    </div>
+                    <div className="sheet-hint" style={{marginTop:8}}>Mapping Store / ITEMID / POG dùng cùng mapping Tem R đã nhận diện. Nếu file lạ, mở Tem R để xác nhận mapping chi tiết.</div>
+                    <button className="btn btn-primary inventory-run" disabled={!temRMappingComplete||inventoryLoading||backendStatus!=="ok"} onClick={handleInventoryInspect}>
+                      {inventoryLoading?<><div className="spinner"/> Đang kiểm tồn…</>:"Kiểm tồn kho"}
+                    </button>
+                  </>}
+                  {inventoryError&&<div className="status-strip error" style={{marginTop:10}}>⚠ {inventoryError}</div>}
+                </div>
+              </div>
+              {inventoryResult&&(()=>{
+                const labels={ok:"Bình thường",stock_missing:"Lỗi tồn kho",stock_conflict:"Xung đột tồn",location_missing:"Thiếu vị trí"}
+                const query=inventoryQuery.trim().toLocaleLowerCase("vi")
+                const rows=(inventoryResult.rows||[]).filter(row=>(inventoryFilter==="all"||row.status===inventoryFilter)&&(!query||[row.item_id,row.item_name,row.store_id,...(row.pog_codes||[]),...(row.fixel_ids||[])].some(value=>String(value||"").toLocaleLowerCase("vi").includes(query))))
+                return <>
+                  <div className="inventory-stats">
+                    <div className="inventory-stat"><span>Tổng SKU store-level</span><strong>{fmt(inventoryResult.total_items)}</strong></div>
+                    <div className="inventory-stat ok"><span>Bình thường</span><strong>{fmt(inventoryResult.counts?.ok||0)}</strong></div>
+                    <div className="inventory-stat bad"><span>Lỗi / xung đột tồn</span><strong>{fmt((inventoryResult.counts?.stock_missing||0)+(inventoryResult.counts?.stock_conflict||0))}</strong></div>
+                    <div className="inventory-stat warn"><span>Thiếu vị trí POG</span><strong>{fmt(inventoryResult.counts?.location_missing||0)}</strong></div>
+                  </div>
+                  <div className="inventory-tools"><input value={inventoryQuery} onChange={e=>setInventoryQuery(e.target.value)} placeholder="Tìm ITEMID, tên, Store, POG, kệ…"/><select value={inventoryFilter} onChange={e=>setInventoryFilter(e.target.value)}><option value="all">Tất cả trạng thái</option><option value="stock_missing">Lỗi tồn kho</option><option value="stock_conflict">Xung đột tồn</option><option value="location_missing">Thiếu vị trí</option><option value="ok">Bình thường</option></select></div>
+                  <div className="row-count">Hiển thị {rows.length} / {inventoryResult.total_items} SKU</div>
+                  <div className="table-wrap"><table><thead><tr><th>Store</th><th>ITEMID</th><th>Tên sản phẩm</th><th>Tồn kho</th><th>Số vị trí</th><th>POG / Kệ / Location</th><th>Trạng thái</th></tr></thead><tbody>
+                    {rows.map(row=><tr key={row.store_id+"|"+row.item_id}><td>{row.store_id||"—"}</td><td>{row.item_id}</td><td>{row.item_name||"—"}</td><td>{row.stock??(row.stock_values?.length?row.stock_values.join(" / "):"—")}</td><td>{row.position_count}</td><td><div className="inventory-position-list">{(row.positions||[]).map(position=>position.join(" · ")).join(" | ")||"—"}</div></td><td><span className={"inventory-status "+row.status}>{labels[row.status]||row.status}</span></td></tr>)}
+                  </tbody></table></div>
+                </>
+              })()}
+            </section>
             <div className="card expiration-card" style={{marginBottom:20}}>
               <div className="expiration-header">
                 <div>
