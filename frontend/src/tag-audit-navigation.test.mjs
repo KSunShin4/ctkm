@@ -20,3 +20,13 @@ test('standalone shelf and camera routes expose an explicit way back to main fea
     assert.match(source, /Thoát · Chức năng khác/)
   }
 })
+
+
+test('shelf page keeps manual shelf checking primary and camera beta secondary', async () => {
+  const source = await read('./TagAuditShelfCheck.jsx')
+  assert.match(source, /KIỂM KỆ HÔM NAY/)
+  assert.match(source, /Cần quay lại/)
+  assert.match(source, /Quét nhanh \(Beta\)/)
+  assert.match(source, /không phụ thuộc camera/)
+  assert.match(source, /shelf-status-tabs/)
+})

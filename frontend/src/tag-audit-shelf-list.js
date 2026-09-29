@@ -1,9 +1,9 @@
 export const SHELF_FILTERS = [
-  {key:"todo", label:"Cần kiểm"},
-  {key:"remove", label:"Cần tháo"},
-  {key:"issues", label:"Có lỗi"},
-  {key:"done", label:"Đã xong"},
   {key:"all", label:"Tất cả"},
+  {key:"issues", label:"Cần quay lại"},
+  {key:"todo", label:"Chưa kiểm"},
+  {key:"remove", label:"Cần tháo"},
+  {key:"done", label:"Hoàn tất"},
 ]
 
 function normalizeText(value) {
