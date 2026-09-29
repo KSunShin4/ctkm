@@ -1,6 +1,6 @@
 import test from "node:test"
 import assert from "node:assert/strict"
-import { nextShelfKey, smartShelfList, smartShelfSuggestions } from "./tag-audit-shelf-list.js"
+import { SHELF_FILTERS, nextShelfKey, smartShelfList, smartShelfSuggestions } from "./tag-audit-shelf-list.js"
 
 const shelves = [
   {shelf_key:"A", shelf_label:"POG-A", locations:["KỆ-01"]},
@@ -112,4 +112,12 @@ test("focus directory remains bounded for very large stores", () => {
 test("next shelf chooses due removal and can exclude the current shelf", () => {
   assert.equal(nextShelfKey(shelves,getStats), "E")
   assert.equal(nextShelfKey(shelves,getStats,{excludeKey:"E"}), "B")
+})
+
+
+test("store-facing shelf filters use the approved operational language", () => {
+  assert.deepEqual(
+    SHELF_FILTERS.map(item => item.label),
+    ["Tất cả","Cần quay lại","Chưa kiểm","Cần tháo","Hoàn tất"],
+  )
 })
