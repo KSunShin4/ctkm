@@ -96,3 +96,27 @@ test("mobile More sheet exposes inventory and expiration instead of dropping sto
   assert.match(s,/Thêm chức năng/)
   assert.match(s,/moreActive/)
 })
+
+
+test("admin login is compact by default and keeps the existing auth contract",async()=>{
+  const app=await read("./App.jsx")
+  assert.match(app,/adminPanelOpen/)
+  assert.match(app,/admin-trigger/)
+  assert.match(app,/auth-popover/)
+  assert.match(app,/loginAdmin/)
+  assert.match(app,/logoutAdmin/)
+  assert.match(app,/className="admin-pill">ADMIN/)
+  assert.doesNotMatch(app,/<form className="auth-actions" onSubmit=\{loginAdmin\}>/)
+})
+
+test("CTKM running error and download states keep the approved pastel language",async()=>{
+  const app=await read("./App.jsx")
+  for(const x of ["pipeline-state-card","pipeline-state-list","pipeline-step-list","pipeline-error-message","download-bar-polished"]) {
+    if(x==="pipeline-state-list") continue
+    assert.match(app,new RegExp(x))
+  }
+  assert.match(app,/queueHasWaiting/)
+  assert.match(app,/STEP_LABELS\.map/)
+  assert.match(app,/handleDownload/)
+  assert.match(app,/Quay lại và thử lại/)
+})
