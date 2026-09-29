@@ -299,6 +299,7 @@ def _build_inventory_inspection(
                 "pog_codes": [],
                 "fixel_ids": [],
                 "location_ids": [],
+                "positions": [],
                 "source_rows": 0,
             })
             row["source_rows"] += 1
@@ -311,6 +312,7 @@ def _build_inventory_inspection(
             if parsed_stock is not None and parsed_stock not in row["stock_values"]:
                 row["stock_values"].append(parsed_stock)
 
+            position_parts = []
             for field, target in (
                 ("POGCODE", "pog_codes"),
                 ("FIXELID", "fixel_ids"),
@@ -318,8 +320,13 @@ def _build_inventory_inspection(
             ):
                 raw = value_at(source_columns[field])
                 text = "" if raw is None else str(raw).strip()
+                position_parts.append(text)
                 if text and text not in row[target]:
                     row[target].append(text)
+            if all(position_parts):
+                position = tuple(position_parts)
+                if position not in row["positions"]:
+                    row["positions"].append(position)
 
         rows = []
         counts = {"ok": 0, "stock_missing": 0, "stock_conflict": 0, "location_missing": 0}
@@ -342,12 +349,7 @@ def _build_inventory_inspection(
             rows.append({
                 **row,
                 "stock": stock,
-                "position_count": len({
-                    (pog, fixel, location)
-                    for pog in row["pog_codes"]
-                    for fixel in row["fixel_ids"]
-                    for location in row["location_ids"]
-                }) if has_location else 0,
+                "position_count": len(row["positions"]),
                 "status": status,
             })
         rows.sort(key=lambda row: (
