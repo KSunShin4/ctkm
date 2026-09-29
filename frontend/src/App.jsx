@@ -372,6 +372,11 @@ const css = `
   .tab.active { background:#eef4ff; color:#175cd3; border-bottom-color:transparent; }
   .tab.active .tab-badge { background:#175cd3; color:#fff; }
   .table-wrap { background:#fff; border-color:#e4e7ec; border-radius:12px; }
+  .ctkm-workspace{margin-top:10px;background:linear-gradient(180deg,#fff,#fbfdff);border:1px solid #e1e9f5;border-radius:18px;padding:16px;box-shadow:0 8px 24px rgba(39,85,145,.05)}
+  .ctkm-workspace-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:13px}.ctkm-workspace-kicker{font-size:9px;color:#1769ff;font-weight:950;text-transform:uppercase;letter-spacing:.09em}.ctkm-workspace h2{margin:3px 0 4px;font-size:18px;color:#173052}.ctkm-workspace p{margin:0;color:#788ba8;font-size:10px;line-height:1.45}.ctkm-shelf-cta{flex:0 0 auto;text-decoration:none;background:#e9fbf3;color:#0b8b59;border:1px solid #c8f0dd;border-radius:10px;padding:9px 11px;font-size:9px;font-weight:900}
+  .ctkm-operation-tabs{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:6px;margin-bottom:10px}.ctkm-operation-tabs button{border:1px solid #e4ebf5;background:#f8faff;border-radius:11px;padding:9px 8px;color:#647995;display:flex;justify-content:center;align-items:center;gap:6px;font:850 9px var(--font);cursor:pointer}.ctkm-operation-tabs button b{padding:2px 6px;background:#fff;border-radius:999px;color:#627995}.ctkm-operation-tabs button.active{border-color:#bad3ff;background:#eaf2ff;color:#1769ff}.ctkm-operation-tabs button.active b{background:#1769ff;color:#fff}
+  .ctkm-list-tools{display:grid;grid-template-columns:minmax(0,1fr) 220px;gap:8px;margin-bottom:10px}.ctkm-search{display:flex;align-items:center;gap:7px;border:1px solid #dce6f2;background:#fff;border-radius:10px;padding:0 10px}.ctkm-search span{color:#8ba0bc;font-size:18px}.ctkm-search input{border:0;outline:0;min-width:0;width:100%;padding:10px 0;background:transparent;font:500 10px var(--font)}.ctkm-list-tools select{border:1px solid #dce6f2;border-radius:10px;background:#fff;color:#526985;padding:9px;font:750 9px var(--font)}.ctkm-filter-note{font-size:9px;color:#7c8fa8;margin-top:8px}
+  @media(max-width:760px){.ctkm-workspace{padding:12px;border-radius:15px}.ctkm-workspace-head{display:block}.ctkm-shelf-cta{display:inline-flex;margin-top:10px}.ctkm-operation-tabs{display:flex;overflow-x:auto}.ctkm-operation-tabs button{flex:0 0 auto;min-width:88px}.ctkm-list-tools{grid-template-columns:1fr}.ctkm-workspace .table-wrap table{min-width:760px}}
   thead th { position:sticky; top:0; z-index:1; background:#f8fafc; color:#475467;
              border-bottom-color:#e4e7ec; }
   tbody td { border-bottom-color:#f0f1f3; }
@@ -531,6 +536,41 @@ function DataTable({ headers, rows, totalRows }) {
       </div>
     </>
   )
+}
+
+const CTKM_OPERATIONAL_SHEETS = [
+  ["TỔNG HỢP - TEM","Tất cả"],
+  ["Gắn tem","Gắn"],
+  ["Tháo tem","Tháo"],
+  ["Chờ gắn","Chờ"],
+  ["Cần review","Cần review"],
+]
+
+function CtkmPreviewWorkspace({ preview, activeSheet, setActiveSheet }) {
+  const [query,setQuery]=useState("")
+  const sheets=preview?.sheets||{}
+  const operational=CTKM_OPERATIONAL_SHEETS.filter(([name])=>sheets[name])
+  const technical=Object.keys(sheets).filter(name=>!CTKM_OPERATIONAL_SHEETS.some(([operationalName])=>operationalName===name))
+  const selected=sheets[activeSheet]||sheets[operational[0]?.[0]]||null
+  const normalized=query.trim().toLocaleLowerCase("vi")
+  const filteredRows=selected?.rows?.filter(row=>!normalized||row.some(value=>String(value??"").toLocaleLowerCase("vi").includes(normalized)))||[]
+  const selectedName=activeSheet&&sheets[activeSheet]?activeSheet:operational[0]?.[0]
+
+  return <section className="ctkm-workspace">
+    <div className="ctkm-workspace-head">
+      <div><div className="ctkm-workspace-kicker">Danh sách vận hành</div><h2>CTKM tại cửa hàng</h2><p>Ưu tiên Gắn / Tháo / Chờ / Review. Dữ liệu audit vẫn được giữ trong workbook và nhóm “Dữ liệu khác”.</p></div>
+      <a className="ctkm-shelf-cta" href="/scan-tem?mode=shelf">✓ Kiểm theo kệ</a>
+    </div>
+    <div className="ctkm-operation-tabs">
+      {operational.map(([name,label])=><button key={name} className={selectedName===name?"active":""} onClick={()=>{setActiveSheet(name);setQuery("")}}><span>{label}</span><b>{sheets[name].total_rows.toLocaleString("vi-VN")}</b></button>)}
+    </div>
+    <div className="ctkm-list-tools">
+      <label className="ctkm-search"><span>⌕</span><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Tìm mã SP, tên sản phẩm, kệ, channel…"/></label>
+      {technical.length>0&&<select value={technical.includes(selectedName)?selectedName:""} onChange={e=>{if(e.target.value){setActiveSheet(e.target.value);setQuery("")}}}><option value="">Dữ liệu khác / audit</option>{technical.map(name=><option key={name} value={name}>{name} · {sheets[name].total_rows.toLocaleString("vi-VN")}</option>)}</select>}
+    </div>
+    {selected&&<DataTable headers={selected.headers} rows={filteredRows} totalRows={selected.total_rows}/>}
+    {query&&selected&&<div className="ctkm-filter-note">Đang lọc {filteredRows.length} / {selected.rows.length} dòng preview. Tìm kiếm chỉ thay đổi hiển thị, không thay đổi workbook.</div>}
+  </section>
 }
 
 // ─── Main App ─────────────────────────────────────────────────────────────────
@@ -2195,32 +2235,7 @@ export default function App() {
                     accent={overlapW > 0 ? "var(--red)" : "var(--green)"} />
                 </div>
 
-                {/* Preview tabs */}
-                {preview && (
-                  <>
-                    <div className="section-title">
-                      Xem trước dữ liệu
-                      <span>50 dòng đầu mỗi sheet</span>
-                    </div>
-                    <div className="tabs">
-                      {Object.entries(preview.sheets).map(([sn, sd]) => (
-                        <button
-                          key={sn}
-                          className={`tab${activeSheet === sn ? " active" : ""}`}
-                          onClick={() => setActiveSheet(sn)}
-                        >
-                          {sn}
-                          <span className="tab-badge">
-                            {sd.total_rows.toLocaleString("vi-VN")}
-                          </span>
-                        </button>
-                      ))}
-                    </div>
-                    {activeSheet && preview.sheets[activeSheet] && (
-                      <DataTable {...preview.sheets[activeSheet]} />
-                    )}
-                  </>
-                )}
+                {preview && <CtkmPreviewWorkspace preview={preview} activeSheet={activeSheet} setActiveSheet={setActiveSheet}/>}
               </>
             )}
 
