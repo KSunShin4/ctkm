@@ -370,11 +370,8 @@ const css = `
   .ctkm-welcome-grid>div{padding:10px;border:1px solid #e6edf7;border-radius:13px;background:rgba(255,255,255,.82)}
   .ctkm-welcome-grid b{display:block;color:#1769ff;font-size:16px}.ctkm-welcome-grid span{display:block;margin-top:2px;font-size:9px;font-weight:900;color:#34455f}.ctkm-welcome-grid small{display:block;margin-top:2px;font-size:7.5px;color:#8a9bb0;line-height:1.35}
   .ctkm-welcome-mascot{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;min-height:185px}
-  .ctkm-welcome-mascot .mascot-avatar{width:72px;height:72px;border-radius:24px 24px 28px 28px;background:linear-gradient(145deg,#fff,#edf4ff);box-shadow:0 12px 28px rgba(69,101,150,.12)}
-  .ctkm-welcome-mascot .mascot-hair{height:22px;left:9px;right:9px;border-radius:18px 18px 9px 9px;background:linear-gradient(180deg,#30445f,#1f2f48)}
-  .ctkm-welcome-mascot .mascot-face{font-size:15px;color:#33455f}
-  .ctkm-welcome-mascot .mascot-face:before,.ctkm-welcome-mascot .mascot-face:after{content:"";position:absolute;top:10px;width:8px;height:4px;border-radius:50%;background:#ffc4d7;opacity:.75}
-  .ctkm-welcome-mascot .mascot-face:before{left:-14px}.ctkm-welcome-mascot .mascot-face:after{right:-14px}
+  .ctkm-welcome-mascot .mascot-avatar{width:112px;height:112px}
+  
   .speech-card{position:relative;max-width:220px;padding:10px 12px;border-radius:13px;background:#fff;border:1px solid #e6edf7;color:#7486a0;font-size:8.5px;line-height:1.5;text-align:center;box-shadow:0 7px 18px rgba(45,74,115,.05)}
   .speech-card:before{content:"";position:absolute;top:-5px;left:50%;width:9px;height:9px;background:#fff;border-left:1px solid #e6edf7;border-top:1px solid #e6edf7;transform:translateX(-50%) rotate(45deg)}
   @media(max-width:980px){.ctkm-mode .sidebar{grid-template-columns:1fr 1fr}.ctkm-file-card,.pog-file-card{grid-column:auto}.clearance-file-card{grid-column:1/-1}.ctkm-period-card{grid-column:1/-1}.ctkm-welcome{grid-template-columns:1fr}.ctkm-welcome-mascot{min-height:auto}.ctkm-welcome-grid{grid-template-columns:1fr 1fr}}
@@ -589,7 +586,7 @@ const css = `
   .ctkm-hero .ops-hero-copy{max-width:none!important}.ctkm-hero .ops-kicker{color:#7a5ce6!important;font-size:9px!important}.ctkm-hero h1{font-size:30px!important;letter-spacing:-.7px!important}.ctkm-hero p{margin:6px 0 0!important;max-width:660px!important;font-size:10.5px!important}
   .ctkm-hero-flow{display:flex;align-items:center;gap:5px;flex-wrap:wrap;margin-top:13px}.ctkm-hero-flow span{display:flex;align-items:center;gap:5px;padding:6px 8px;border:1px solid rgba(210,221,241,.92);border-radius:999px;background:rgba(255,255,255,.78);color:#687d99;font-size:8px;font-weight:900}.ctkm-hero-flow b{display:grid;place-items:center;width:18px;height:18px;border-radius:50%;background:#e9efff;color:#5470e8;font-size:7px}.ctkm-hero-flow i{font-style:normal;color:#a7b5ca}
   .ctkm-hero-art{display:flex;align-items:center;gap:10px;padding:10px 12px 10px 14px;border:1px solid rgba(220,226,242,.9);border-radius:20px;background:rgba(255,255,255,.66);box-shadow:0 10px 26px rgba(66,83,125,.06);backdrop-filter:blur(8px)}
-  .ctkm-hero-art .mascot-avatar{width:88px!important;height:94px!important;border-radius:31px 31px 26px 26px!important}.ctkm-hero-art .mascot-hair{left:12px!important;right:12px!important;top:8px!important;height:34px!important}.ctkm-hero-art .mascot-face{font-size:17px!important;margin-top:9px!important}.ctkm-hero-art .mascot-body{left:22px!important;right:22px!important;bottom:-8px!important;height:24px!important}.ctkm-hero-art .mascot-mark{width:27px!important;height:27px!important;font-size:11px!important}
+  .ctkm-hero-art .mascot-avatar{width:116px!important;height:116px!important}.ctkm-hero-art .mascot-image{filter:drop-shadow(0 12px 18px rgba(65,80,130,.16))}
   .ctkm-hero-speech{max-width:160px}.ctkm-hero-speech b{display:block;color:#425474;font-size:10px}.ctkm-hero-speech span{display:block;margin-top:4px;color:#8090a8;font-size:8px;line-height:1.45}
   .ctkm-hero .ops-hero-side{min-width:132px!important;align-items:flex-end!important}.ctkm-hero .ops-backend-status{font-size:8px!important}.ctkm-hero .auth-button,.ctkm-hero .admin-trigger{font-size:8px!important}
 
@@ -605,7 +602,7 @@ const css = `
   .ctkm-run-button{grid-column:3/4!important;align-self:stretch!important;min-height:86px!important;border-radius:17px!important;background:linear-gradient(135deg,#587cf5,#8368eb)!important;box-shadow:0 12px 28px rgba(91,103,228,.22)!important;font-size:13px!important;letter-spacing:.01em}.ctkm-run-button:hover:not(:disabled){background:linear-gradient(135deg,#4f71e8,#775bdd)!important}.ctkm-run-button:disabled{background:linear-gradient(135deg,#d7e2fb,#d9d9f3)!important;color:#8b99b0!important}
   .ctkm-advanced-card{grid-column:1/-1!important;border-radius:18px!important;box-shadow:none!important}
   .ctkm-mode .content{margin-top:12px!important}
-  .ctkm-welcome{padding:20px!important;border-radius:24px!important;border-color:#e3e6f4!important;background:radial-gradient(circle at 90% 10%,rgba(255,194,224,.48),transparent 26%),radial-gradient(circle at 72% 100%,rgba(198,221,255,.44),transparent 32%),linear-gradient(135deg,#fff,#f8faff 58%,#fff8fc)!important}.ctkm-welcome h2{font-size:23px!important}.ctkm-welcome-grid>div{border-radius:14px!important}.ctkm-welcome-mascot .mascot-avatar{width:92px!important;height:98px!important;border-radius:31px 31px 28px 28px!important}
+  .ctkm-welcome{padding:20px!important;border-radius:24px!important;border-color:#e3e6f4!important;background:radial-gradient(circle at 90% 10%,rgba(255,194,224,.48),transparent 26%),radial-gradient(circle at 72% 100%,rgba(198,221,255,.44),transparent 32%),linear-gradient(135deg,#fff,#f8faff 58%,#fff8fc)!important}.ctkm-welcome h2{font-size:23px!important}.ctkm-welcome-grid>div{border-radius:14px!important}.ctkm-welcome-mascot .mascot-avatar{width:112px!important;height:112px!important}
 
   @media(max-width:1080px){.ctkm-hero{grid-template-columns:minmax(0,1fr) auto!important}.ctkm-hero-art{display:none!important}.ctkm-hero .ops-hero-side{min-width:140px!important}}
   @media(max-width:760px){
