@@ -73,3 +73,14 @@ test("Tem R and inventory redesign keeps existing deterministic data paths",asyn
   assert.match(app,/stock_conflict/)
   assert.match(app,/Không cộng tồn lặp/)
 })
+
+
+test("expiration workspace matches pastel module language without changing checker semantics",async()=>{
+  const app=await read("./App.jsx")
+  for(const x of ["expiration-title-wrap","expiration-rule-row","expiration-source-panel","expiration-entry-panel","expiration-stats"])assert.match(app,new RegExp(x))
+  assert.match(app,/MÃ_P;SỐ_LÔ;DD\/MM\/YYYY/)
+  assert.match(app,/handleExpirationCheck/)
+  assert.match(app,/Camera chỉ hỗ trợ nhập mã nhanh/)
+  assert.match(app,/expirationResult\.matched/)
+  assert.match(app,/expirationResult\.unmatched/)
+})
