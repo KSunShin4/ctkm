@@ -9,14 +9,17 @@ test("shared store shell prioritizes real store workflows and five mobile tabs",
   for(const x of ["/overview","/?module=ctkm","/scan-tem?mode=shelf","/?module=temr","/?module=expiration"])assert.ok(s.includes(x))
   assert.match(s,/grid-template-columns:repeat\(5,1fr\)/)
 })
-test("legacy CTKM and scheduling screens keep shared navigation",async()=>{assert.match(await read("./App.jsx"),/ProductNav current="ops"/);assert.match(await read("./SchedulingApp.jsx"),/ProductNav current="schedule"/)})
+test("legacy CTKM and scheduling screens keep shared navigation",async()=>{const app=await read("./App.jsx");assert.match(app,/ProductNav current=\{activeModule\}/);assert.doesNotMatch(app,/className="ops-tool-tabs"/);assert.match(await read("./SchedulingApp.jsx"),/ProductNav current="schedule"/)})
 test("index routes shell modules and preserves CTKM root",async()=>{const s=await read("../index.html");for(const x of ["overview","guide","assistant","settings"])assert.ok(s.includes(`pathname.startsWith('/${x}')`));assert.ok(s.includes("import('/src/portal-main.jsx')"));assert.ok(s.includes("import('/src/main.jsx')"))})
-test("ctkm root keeps approved workspace and supports deep links into real tools",async()=>{
+test("ctkm root keeps approved workspace and relies on the shared vertical module navigation",async()=>{
   const app=await read("./App.jsx")
-  assert.match(app,/ops-page-head/);assert.match(app,/ops-hero/);assert.match(app,/ops-tool-tabs/)
-  assert.match(app,/Tổng hợp CTKM/);assert.match(app,/Kiểm hạn dùng/);assert.match(app,/Phân bổ Tem R/);assert.match(app,/Kiểm theo kệ/)
+  const nav=await read("./ProductNav.jsx")
+  assert.match(app,/ops-page-head/);assert.match(app,/ops-hero/)
   assert.match(app,/URLSearchParams\(window\.location\.search\)/)
+  assert.match(app,/ProductNav current=\{activeModule\}/)
+  assert.doesNotMatch(app,/<nav className="ops-tool-tabs"/)
   assert.doesNotMatch(app,/<div className="topbar">/);assert.doesNotMatch(app,/<nav className="module-nav"/)
+  for(const x of ["CTKM","Kiểm kệ","Tem R","Kiểm tồn kho","Kiểm hạn dùng"])assert.match(nav,new RegExp(x))
 })
 test("ctkm root installs the same UI preference root as portal pages",async()=>{const main=await read("./main.jsx");assert.match(main,/UiPreferenceRoot/);assert.match(main,/uiPreferenceCss/)})
 
