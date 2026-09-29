@@ -7,6 +7,7 @@ from openpyxl import Workbook, load_workbook
 
 from backend import main_api
 from backend.auxiliary_workflows_contract import (
+    _build_inventory_inspection,
     _resolve_tem_r_selection,
     validate_tem_r_workbook,
 )
@@ -226,3 +227,84 @@ def test_expiration_user_file_errors_are_422_and_route_stays_public():
     )
     dependency_calls = [getattr(dep, "call", None) for dep in route.dependant.dependencies]
     assert main_api.require_admin not in dependency_calls
+
+
+
+def test_inventory_inspection_uses_store_level_stock_without_summing_repeated_pog_rows(tmp_path):
+    source = tmp_path / "inventory.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Export"
+    ws.append(TEM_R_COLUMNS)
+    ws.append(["S1", "POG-A", "F1", 1, "P1001", "Product 1", 3])
+    ws.append(["S1", "POG-B", "F2", 2, "P1001", "Product 1", 3])
+    ws.append(["S1", "POG-C", "F3", "", "P2001", "Product 2", 0])
+    ws.append(["S1", "POG-D", "F4", 4, "P3001", "Product 3", "#N/A"])
+    wb.save(source)
+    wb.close()
+
+    result = _build_inventory_inspection(
+        main_api._tem_r_mod,
+        source,
+        stock_column="ton",
+        column_mapping=TEM_R_MAPPING,
+        sheet_name="Export",
+        header_row=1,
+    )
+    by_item = {row["item_id"]: row for row in result["rows"]}
+
+    assert by_item["P1001"]["stock"] == 3
+    assert by_item["P1001"]["stock_values"] == [3]
+    assert by_item["P1001"]["position_count"] == 2
+    assert by_item["P1001"]["status"] == "ok"
+
+    assert by_item["P2001"]["stock"] == 0
+    assert by_item["P2001"]["status"] == "location_missing"
+    assert by_item["P3001"]["stock"] is None
+    assert by_item["P3001"]["status"] == "stock_missing"
+
+
+def test_inventory_inspection_flags_conflicting_store_stock_instead_of_choosing_or_summing(tmp_path):
+    source = tmp_path / "inventory-conflict.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Export"
+    ws.append(TEM_R_COLUMNS)
+    ws.append(["S1", "POG-A", "F1", 1, "P1001", "Product 1", 3])
+    ws.append(["S1", "POG-B", "F2", 2, "P1001", "Product 1", 5])
+    wb.save(source)
+    wb.close()
+
+    result = _build_inventory_inspection(
+        main_api._tem_r_mod,
+        source,
+        stock_column="ton",
+        column_mapping=TEM_R_MAPPING,
+        sheet_name="Export",
+        header_row=1,
+    )
+    row = result["rows"][0]
+    assert row["stock"] is None
+    assert row["stock_values"] == [3, 5]
+    assert row["position_count"] == 2
+    assert row["status"] == "stock_conflict"
+
+
+def test_inventory_inspect_route_is_store_facing_and_cleans_temporary_file(monkeypatch, tmp_path):
+    content = _xlsx_bytes(lambda wb: (
+        setattr(wb.active, "title", "Export"),
+        wb.active.append(TEM_R_COLUMNS),
+        wb.active.append(["S1", "P01", "F01", 1, "P1001", "Prod", 2]),
+    ))
+    monkeypatch.setattr(main_api, "_TMP_DIR", tmp_path)
+
+    result = asyncio.run(main_api.inspect_inventory(
+        tem_r_file=FakeUpload("inventory.xlsx", content),
+        stock_column="ton",
+        column_mapping=__import__("json").dumps(TEM_R_MAPPING),
+        sheet_name="Export",
+        header_row=1,
+    ))
+    assert result["total_items"] == 1
+    assert result["rows"][0]["stock"] == 2
+    assert not list(tmp_path.glob("inspect_inventory_*"))

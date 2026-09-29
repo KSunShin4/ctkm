@@ -246,6 +246,128 @@ def _tem_r_summary(plan) -> dict:
     }
 
 
+def _build_inventory_inspection(
+    tem_r_mod,
+    source_path: Path,
+    *,
+    stock_column: str,
+    column_mapping: dict | None,
+    sheet_name: str | None,
+    header_row: int | None,
+) -> dict:
+    """Project store-level inventory + POG coverage without changing source data."""
+    resolved_sheet, resolved_header, resolved_mapping, _inspection = _resolve_tem_r_selection(
+        tem_r_mod,
+        source_path,
+        stock_column=stock_column,
+        column_mapping=column_mapping,
+        sheet_name=sheet_name,
+        header_row=header_row,
+    )
+    workbook = openpyxl.load_workbook(
+        source_path, read_only=True, data_only=True, keep_links=False
+    )
+    try:
+        worksheet = workbook[resolved_sheet]
+        actual_headers = [
+            "" if worksheet.cell(resolved_header, column).value is None
+            else str(worksheet.cell(resolved_header, column).value).strip()
+            for column in range(1, (worksheet.max_column or 0) + 1)
+        ]
+        source_columns = {
+            canonical: actual_headers.index(source) + 1
+            for canonical, source in resolved_mapping.items()
+        }
+        stock_index = actual_headers.index(str(stock_column).strip()) + 1
+        grouped: dict[tuple[str, str], dict] = {}
+        for excel_row in range(resolved_header + 1, (worksheet.max_row or 0) + 1):
+            def value_at(column_index):
+                return worksheet.cell(excel_row, column_index).value
+
+            item_raw = value_at(source_columns["ITEMID"])
+            item_id = "" if item_raw is None else str(item_raw).strip()
+            if not item_id or item_id.upper() in {"ITEMID", "TOTAL", "GRAND TOTAL", "TỔNG", "TONG"}:
+                continue
+            store_raw = value_at(source_columns["STOREID"])
+            store_id = "" if store_raw is None else str(store_raw).strip()
+            key = (store_id, item_id)
+            row = grouped.setdefault(key, {
+                "store_id": store_id,
+                "item_id": item_id,
+                "item_name": "",
+                "stock_values": [],
+                "pog_codes": [],
+                "fixel_ids": [],
+                "location_ids": [],
+                "positions": [],
+                "source_rows": 0,
+            })
+            row["source_rows"] += 1
+            if not row["item_name"]:
+                name_raw = value_at(source_columns["ITEMNAME"])
+                row["item_name"] = "" if name_raw is None else str(name_raw).strip()
+
+            stock_raw = value_at(stock_index)
+            parsed_stock = tem_r_mod._as_stock(stock_raw)
+            if parsed_stock is not None and parsed_stock not in row["stock_values"]:
+                row["stock_values"].append(parsed_stock)
+
+            position_parts = []
+            for field, target in (
+                ("POGCODE", "pog_codes"),
+                ("FIXELID", "fixel_ids"),
+                ("LOCATIONID", "location_ids"),
+            ):
+                raw = value_at(source_columns[field])
+                text = "" if raw is None else str(raw).strip()
+                position_parts.append(text)
+                if text and text not in row[target]:
+                    row[target].append(text)
+            if all(position_parts):
+                position = tuple(position_parts)
+                if position not in row["positions"]:
+                    row["positions"].append(position)
+
+        rows = []
+        counts = {"ok": 0, "stock_missing": 0, "stock_conflict": 0, "location_missing": 0}
+        for row in grouped.values():
+            stock_values = row["stock_values"]
+            has_location = bool(row["positions"])
+            if not stock_values:
+                status = "stock_missing"
+                stock = None
+            elif len(stock_values) > 1:
+                status = "stock_conflict"
+                stock = None
+            elif not has_location:
+                status = "location_missing"
+                stock = stock_values[0]
+            else:
+                status = "ok"
+                stock = stock_values[0]
+            counts[status] += 1
+            rows.append({
+                **row,
+                "stock": stock,
+                "position_count": len(row["positions"]),
+                "status": status,
+            })
+        rows.sort(key=lambda row: (
+            {"stock_conflict": 0, "stock_missing": 1, "location_missing": 2, "ok": 3}.get(row["status"], 9),
+            row["store_id"], row["item_id"],
+        ))
+        return {
+            "sheet_name": resolved_sheet,
+            "header_row": resolved_header,
+            "stock_column": str(stock_column).strip(),
+            "total_items": len(rows),
+            "counts": counts,
+            "rows": rows,
+        }
+    finally:
+        workbook.close()
+
+
 def install_auxiliary_workflows_contract(core_module) -> None:
     if getattr(core_module.app.state, "auxiliary_workflows_contract_v1", False):
         return
@@ -288,6 +410,44 @@ def install_auxiliary_workflows_contract(core_module) -> None:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"Lỗi đọc cột file Tem R: {exc}") from exc
+        finally:
+            _remove_tree(job_dir)
+
+    async def inspect_inventory(
+        tem_r_file: UploadFile = File(...),
+        stock_column: str = Form(...),
+        column_mapping: Optional[str] = Form(None),
+        sheet_name: Optional[str] = Form(None),
+        header_row: Optional[int] = Form(None),
+    ):
+        if not tem_r_file.filename or not tem_r_file.filename.lower().endswith(".xlsx"):
+            raise HTTPException(status_code=422, detail="tem_r_file phải là file .xlsx")
+        content = await core_module._read_upload_limited(
+            tem_r_file, core_module._MAX_TEM_R_BYTES, "File kiểm tồn"
+        )
+        try:
+            mapping = _parse_mapping(column_mapping)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+        job_dir = core_module._TMP_DIR / f"inspect_inventory_{uuid.uuid4().hex[:8]}"
+        job_dir.mkdir(parents=True, exist_ok=True)
+        source_path = job_dir / "inventory.xlsx"
+        source_path.write_bytes(content)
+        try:
+            return await asyncio.to_thread(
+                _build_inventory_inspection,
+                tem_r_mod,
+                source_path,
+                stock_column=str(stock_column).strip(),
+                column_mapping=mapping,
+                sheet_name=sheet_name,
+                header_row=header_row,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Lỗi kiểm tồn kho: {exc}") from exc
         finally:
             _remove_tree(job_dir)
 
@@ -460,9 +620,12 @@ def install_auxiliary_workflows_contract(core_module) -> None:
                 core_module._heavy_queue.cancel(job_id)
             _remove_tree(job_dir)
 
+    core_module.app.post("/api/inspect-inventory")(inspect_inventory)
     _replace_route(core_module, "/api/inspect-tem-r", "POST", inspect_tem_r_file)
     _replace_route(core_module, "/api/jobs/tem-r", "POST", enqueue_tem_r)
     _replace_route(core_module, "/api/tem-r", "POST", run_tem_r)
+    core_module.inspect_inventory = inspect_inventory
+    core_module._build_inventory_inspection = _build_inventory_inspection
     core_module.inspect_tem_r_file = inspect_tem_r_file
     core_module.enqueue_tem_r = enqueue_tem_r
     core_module.run_tem_r = run_tem_r
