@@ -589,7 +589,8 @@ const TEM_R_FIELD_LABELS = {
 }
 
 export default function App() {
-  const [activeModule, setActiveModule] = useState("expiration")
+  const initialModule = () => { const requested = new URLSearchParams(window.location.search).get("module"); return ["ctkm","expiration","temr"].includes(requested) ? requested : "ctkm" }
+  const [activeModule, setActiveModule] = useState(initialModule)
   const [adminToken, setAdminToken] = useState(() => sessionStorage.getItem("ctkm.admin.token") || "")
   const [adminUsername, setAdminUsername] = useState("admin")
   const [adminPassword, setAdminPassword] = useState("")
