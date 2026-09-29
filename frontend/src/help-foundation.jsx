@@ -2,7 +2,6 @@ import React,{useId,useState} from "react"
 import {useUiPreferences} from "./ui-preferences.js"
 
 export const MODULE_HELP={
-  overview:{title:"Tổng quan",summary:"Điểm vào các công cụ vận hành; không thay thế dữ liệu nghiệp vụ của từng module."},
   schedule:{title:"Xếp lịch",summary:"Tạo, chỉnh và xuất lịch tuần.",quickStart:"Đi theo 6 bước từ chọn tuần đến xuất Excel. HARD/SOFT và các rule nâng cao chỉ cần mở khi bạn cần tinh chỉnh."},
   ops:{title:"CTKM / Tem",summary:"Tổng hợp CTKM, POG, Clearance, Tem R và hỗ trợ kiểm tem.",mapping:"Nếu hệ thống không đủ chắc chắn về tên cột, hãy xác nhận mapping theo giá trị thực tế trước khi tiếp tục."},
   guide:{title:"Hướng dẫn",summary:"Tra cứu Quick Start, khái niệm và lỗi thường gặp theo từng module."},

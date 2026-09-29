@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test:auto-capture": "node --test src/assistant-components.test.mjs src/ctkm-assistant-integration.test.mjs src/guide-module.test.mjs src/help-foundation.test.mjs src/history-app.test.mjs src/overview-dashboard.test.mjs src/portal-navigation.test.mjs src/scheduling-assistant-integration.test.mjs src/scheduling-manual-utils.test.mjs src/settings-help-polish.test.mjs src/tag-audit-auto-capture.test.mjs src/tag-audit-barcode.test.mjs src/tag-audit-business-date-ui.test.mjs src/tag-audit-navigation.test.mjs src/tag-audit-shelf-list.test.mjs src/tag-audit-shelf-progress.test.mjs src/ui-preferences-closeout.test.mjs"
+    "test:auto-capture": "node --test src/assistant-components.test.mjs src/ctkm-assistant-integration.test.mjs src/guide-module.test.mjs src/help-foundation.test.mjs src/history-app.test.mjs src/portal-navigation.test.mjs src/scheduling-assistant-integration.test.mjs src/scheduling-manual-utils.test.mjs src/settings-help-polish.test.mjs src/tag-audit-auto-capture.test.mjs src/tag-audit-barcode.test.mjs src/tag-audit-business-date-ui.test.mjs src/tag-audit-navigation.test.mjs src/tag-audit-shelf-list.test.mjs src/tag-audit-shelf-progress.test.mjs src/ui-preferences-closeout.test.mjs"
   },
   "dependencies": {
     "react": "^18.3.1",
