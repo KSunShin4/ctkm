@@ -25,7 +25,7 @@ export default function SettingsApp(){
   return <><ProductNav current="settings"/><main className="settings"><style>{css}</style><style>{helpTipCss}</style><style>{assistantComponentCss}</style>
     <section className="settings-hero">
       <div className="settings-hero-copy"><Mascot state="guide"/><div><div className="settings-kicker">Cài đặt</div><h1>Trải nghiệm giao diện</h1><p className="settings-sub">Các tùy chọn ở đây chỉ lưu trên trình duyệt này. Không thay đổi rule CTKM, mapping, solver hay dữ liệu nguồn.</p></div></div>
-      <span className="settings-local">Thiết bị này בלבד · localStorage</span>
+      <span className="settings-local">Chỉ trên thiết bị này · localStorage</span>
     </section>
     <section className="settings-card">
       <div className="settings-card-head"><h2>Hiển thị</h2><span>3 tùy chọn an toàn</span></div>
