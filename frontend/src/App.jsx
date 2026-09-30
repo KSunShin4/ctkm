@@ -873,7 +873,6 @@ export default function App() {
   const [temRSheetName, setTemRSheetName] = useState("")
   const [temRItemColumn, setTemRItemColumn] = useState("")
   const [temRStockColumn, setTemRStockColumn] = useState("")
-  const [temRMaxDistance, setTemRMaxDistance] = useState(1)
   const [temRColumnMapping, setTemRColumnMapping] = useState({})
   const [temRInspecting, setTemRInspecting] = useState(false)
   const [temRInspectInfo, setTemRInspectInfo] = useState(null)
@@ -1003,7 +1002,6 @@ export default function App() {
   ].filter(Boolean)
   const temRMappingComplete = TEM_R_REQUIRED_COLUMNS.every(field => temRColumnMapping[field])
     && !!temRStockColumn
-    && Number.isFinite(temRMaxDistance) && temRMaxDistance > 0
     && new Set(temRSelectedSources).size === temRSelectedSources.length
 
   useEffect(() => {
@@ -1345,7 +1343,6 @@ export default function App() {
     try {
       const fd = new FormData()
       fd.append("tem_r_file", temRFile)
-      fd.append("max_location_distance", String(temRMaxDistance))
       fd.append("stock_column", temRStockColumn)
       fd.append("column_mapping", JSON.stringify(temRColumnMapping))
       fd.append("sheet_name", temRSheetName)
@@ -2179,17 +2176,11 @@ export default function App() {
                   <div className="sheet-hint">
                     Hệ thống chỉ gợi ý; hãy kiểm tra và xác nhận trước khi phân bổ.
                   </div>
-                  <label className="sheet-hint" style={{display:"block", marginTop:12}}>
-                    Khoảng cách vị trí tối đa được phép thay
-                  </label>
-                  <input
-                    className="month-input"
-                    type="number"
-                    min="0.1"
-                    step="0.1"
-                    value={temRMaxDistance}
-                    onChange={e => setTemRMaxDistance(Number(e.target.value))}
-                  />
+                  <div className="status-strip info" style={{marginTop:12}}>
+                    Cùng một kệ: hệ thống ưu tiên mã còn tồn gần vị trí trống nhất. Nếu mã gần không đủ,
+                    hệ thống tiếp tục dùng mã xa hơn trên chính kệ đó; khoảng cách không loại ứng viên.
+                    Khi một mã bị chia thành nhiều cụm, hệ thống có thể sắp xếp lại toàn kệ để gom mã liền nhau.
+                  </div>
                   {temRSelectedSources.length !== new Set(temRSelectedSources).size && (
                     <div className="sheet-hint" style={{color:"var(--red)"}}>
                       Mỗi trường phải sử dụng một cột khác nhau.
