@@ -66,6 +66,8 @@ def build_tem_r_plan(
     """
     if max_location_distance <= 0:
         raise ValueError("max_location_distance phải lớn hơn 0")
+    # Giữ tham số để tương thích API/workbook cũ. Đây không còn là hard cap;
+    # khoảng cách LOCATIONID chỉ dùng để xếp ưu tiên ứng viên gần trước.
 
     df = _clean_input(frame, stock_column)
     df["TEM R"] = pd.NA
