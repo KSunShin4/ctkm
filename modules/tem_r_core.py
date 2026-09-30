@@ -259,9 +259,10 @@ def build_tem_r_plan(frame: pd.DataFrame, *, max_location_distance: float = 1, s
             item: max(0, stock - own_positions_by_item.get(item, 0))
             for item, stock in stock_by_item.items()
         }
-        # Phân bổ theo khoảng cách trên toàn kệ. Không duyệt target từ trái sang
-        # phải vì vị trí xa có thể chiếm mất đơn vị tồn cuối cùng trước vị trí
-        # nằm sát sản phẩm nguồn.
+        # Phân bổ trên cùng kệ theo ưu tiên khoảng cách. Không duyệt target từ
+        # trái sang phải vì vị trí xa có thể chiếm mất đơn vị tồn cuối cùng trước
+        # vị trí nằm sát sản phẩm nguồn. Khoảng cách chỉ xếp ưu tiên, không loại
+        # ứng viên còn tồn trên cùng kệ.
         proposed: dict[int, str | None] = {idx: None for idx in targets}
         unassigned = set(targets)
         target_order = {idx: position for position, idx in enumerate(targets)}
@@ -283,11 +284,6 @@ def build_tem_r_plan(frame: pd.DataFrame, *, max_location_distance: float = 1, s
                 for target_idx in unassigned
                 for item, count in capacity.items()
                 if count > 0
-                and min(
-                    (abs(location - df.at[target_idx, "_location"])
-                     for location in source_locations[item]),
-                    default=float("inf"),
-                ) <= max_location_distance
             ]
             if not candidates:
                 break
@@ -308,27 +304,6 @@ def build_tem_r_plan(frame: pd.DataFrame, *, max_location_distance: float = 1, s
         needs_rearrangement = any(
             not is_contiguous(code) for code in {code for code in final_codes if code is not None}
         )
-
-        if needs_rearrangement:
-            arranged_preview: list[str] = []
-            for item in stock_by_item:
-                arranged_preview.extend([item] * final_codes.count(item))
-            arranged_preview.extend(
-                ["KHÔNG CÓ SẢN PHẨM THAY THẾ"] * final_codes.count(None)
-            )
-            # Sắp xếp toàn kệ không được biến thành cách lách giới hạn khoảng
-            # cách. Nếu bất kỳ vị trí mới nào quá xa mã nguồn, giữ phương án
-            # thay từng vị trí đã được kiểm tra khoảng cách ở trên.
-            rearrangement_within_distance = all(
-                representative == "KHÔNG CÓ SẢN PHẨM THAY THẾ"
-                or min(
-                    abs(location - df.at[target_idx, "_location"])
-                    for location in source_locations[representative]
-                ) <= max_location_distance
-                for target_idx, representative in zip(ordered, arranged_preview)
-            )
-            if not rearrangement_within_distance:
-                needs_rearrangement = False
 
         if not needs_rearrangement:
             for source_idx in ordered:
