@@ -5,8 +5,9 @@ const read=p=>readFile(new URL(p,import.meta.url),"utf8")
 
 test("shared store shell makes CTKM the home and keeps four primary mobile tabs plus More",async()=>{
   const s=await read("./ProductNav.jsx")
-  for(const x of ["CTKM","Kiểm kệ","Tem R","Kiểm tồn kho","Kiểm hạn dùng","Xếp lịch","Lịch sử","Hướng dẫn","Cài đặt","portal-mobile-nav","portal-mobile-more-sheet"])assert.match(s,new RegExp(x))
-  for(const x of ["/?module=ctkm","/scan-tem?mode=shelf","/?module=temr","/?module=inventory","/?module=expiration","/schedule","/history","/guide","/settings"])assert.ok(s.includes(x))
+  for(const x of ["CTKM","Kiểm kệ","Tem R","Kiểm tồn kho","Kiểm hạn dùng","Xếp lịch","Hướng dẫn","portal-mobile-nav","portal-mobile-more-sheet"])assert.match(s,new RegExp(x))
+  for(const x of ["/?module=ctkm","/scan-tem?mode=shelf","/?module=temr","/?module=inventory","/?module=expiration","/schedule","/guide"])assert.ok(s.includes(x))
+  assert.doesNotMatch(s,/id:"history"|label:"Lịch sử"|id:"settings"|label:"Cài đặt"/)
   assert.doesNotMatch(s,/id:"overview"|label:"Tổng quan"|href:"\/overview"/)
   assert.match(s,/\["ctkm","shelf","temr","inventory"\]/)
   assert.match(s,/grid-template-columns:repeat\(5,1fr\)/)
@@ -15,7 +16,7 @@ test("shared store shell makes CTKM the home and keeps four primary mobile tabs 
   assert.match(s,/>Thêm</)
 })
 test("legacy CTKM and scheduling screens keep shared navigation",async()=>{const app=await read("./App.jsx");assert.match(app,/ProductNav current=\{activeModule\}/);assert.doesNotMatch(app,/className="ops-tool-tabs"/);assert.match(await read("./SchedulingApp.jsx"),/ProductNav current="schedule"/)})
-test("index redirects legacy overview and keeps CTKM as the product root",async()=>{const s=await read("../index.html");for(const x of ["history","guide","assistant","settings"])assert.ok(s.includes(`pathname.startsWith('/${x}')`));assert.match(s,/pathname\.startsWith\('\/overview'\).*location\.replace\('\/\?module=ctkm'\)/);assert.ok(s.includes("import('/src/portal-main.jsx')"));assert.ok(s.includes("import('/src/main.jsx')"))})
+test("index redirects retired overview history and settings routes to CTKM",async()=>{const s=await read("../index.html");for(const x of ["overview","history","settings"])assert.ok(s.includes(`pathname.startsWith('/${x}')`));for(const x of ["guide","assistant"])assert.ok(s.includes(`pathname.startsWith('/${x}')`));assert.match(s,/location\.replace\('\/\?module=ctkm'\)/);assert.ok(s.includes("import('/src/portal-main.jsx')"));assert.ok(s.includes("import('/src/main.jsx')"))})
 test("ctkm root keeps approved workspace and relies on the shared vertical module navigation",async()=>{
   const app=await read("./App.jsx")
   const nav=await read("./ProductNav.jsx")
@@ -93,7 +94,7 @@ test("expiration workspace matches pastel module language without changing check
 
 test("mobile More sheet exposes inventory and expiration instead of dropping store features",async()=>{
   const s=await read("./ProductNav.jsx")
-  assert.match(s,/\["inventory","expiration","schedule","history","guide","settings"\]/)
+  assert.match(s,/\["inventory","expiration","schedule","guide"\]/)
   assert.match(s,/aria-expanded=\{moreOpen\}/)
   assert.match(s,/Thêm chức năng/)
   assert.match(s,/moreActive/)
@@ -124,19 +125,6 @@ test("CTKM running error and download states keep the approved pastel language",
 })
 
 
-test("history is a first-class portal module and mobile More destination",async()=>{
-  const nav=await read("./ProductNav.jsx")
-  const portal=await read("./portal-main.jsx")
-  const index=await read("../index.html")
-  assert.match(nav,/id:"history"/)
-  assert.match(nav,/href:"\/history"/)
-  assert.match(nav,/startsWith\("\/history"\)/)
-  assert.match(portal,/HistoryApp/)
-  assert.match(portal,/startsWith\("\/history"\)/)
-  assert.match(index,/pathname\.startsWith\('\/history'\)/)
-})
-
-
 test("scheduling uses the shared sidebar without a duplicate horizontal topbar",async()=>{
   const s=await read("./SchedulingApp.jsx")
   assert.match(s,/ProductNav current="schedule"/)
@@ -149,19 +137,6 @@ test("scheduling uses the shared sidebar without a duplicate horizontal topbar",
   assert.match(s,/exportExcel/)
 })
 
-test("settings keeps local-only preferences while matching the shared pastel shell",async()=>{
-  const s=await read("./SettingsApp.jsx")
-  assert.match(s,/settings-hero/)
-  assert.match(s,/settings-grid/)
-  assert.match(s,/Mascot/)
-  assert.match(s,/localStorage/)
-  assert.match(s,/readUiPreferences/)
-  assert.match(s,/writeUiPreferences/)
-  assert.match(s,/DEFAULT_UI_PREFERENCES/)
-  assert.doesNotMatch(s,/fetch\(/)
-})
-
-
 test("CTKM home uses the V2 anime workspace instead of the old pastelized form layout",async()=>{
   const app=await read("./App.jsx")
   for(const x of ["ctkm-hero","ctkm-hero-art","ctkm-hero-flow","MOCKUP V2","ctkm-workspace-board"]) {
@@ -172,4 +147,16 @@ test("CTKM home uses the V2 anime workspace instead of the old pastelized form l
   assert.match(app,/grid-column:2\/3!important/)
   assert.match(app,/grid-column:3\/4!important/)
   assert.match(app,/CTKM tháng này/)
+})
+
+
+test("history and settings are retired from nav and portal runtime",async()=>{
+  const nav=await read("./ProductNav.jsx")
+  const portal=await read("./portal-main.jsx")
+  const index=await read("../index.html")
+  assert.doesNotMatch(nav,/history|Lịch sử|settings|Cài đặt/)
+  assert.doesNotMatch(portal,/HistoryApp|SettingsApp|startsWith\("\/history"\)|startsWith\("\/settings"\)/)
+  assert.match(index,/pathname\.startsWith\('\/history'\)/)
+  assert.match(index,/pathname\.startsWith\('\/settings'\)/)
+  assert.match(index,/location\.replace\('\/\?module=ctkm'\)/)
 })
