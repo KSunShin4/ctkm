@@ -17,6 +17,8 @@ HEADER_SCAN_COLUMNS = 512
 EXCEL_ERROR_VALUES = {"#N/A", "#VALUE!", "#REF!", "#DIV/0!", "#NAME?", "#NUM!", "#NULL!"}
 STOCK_SKIP_NO_DATA = "BỎ QUA - KHÔNG CÓ DỮ LIỆU TỒN KHO"
 STOCK_SKIP_INVALID = "BỎ QUA - TỒN KHO KHÔNG HỢP LỆ"
+STOCK_CONFLICT_MARKER = "BỎ QUA - TỒN KHO MÂU THUẪN"
+DUPLICATE_POSITION_MARKER = "BỎ QUA - TRÙNG VỊ TRÍ KỆ"
 
 
 def _validate_xlsx_file(input_path: str | Path) -> Path:
@@ -152,7 +154,23 @@ def _stock_skip_details(value: Any) -> tuple[str, str]:
     return STOCK_SKIP_INVALID, "Bỏ qua - tồn kho không hợp lệ"
 
 
+def _normalize_key(value: Any) -> str:
+    if value is None:
+        return ""
+    try:
+        if pd.isna(value):
+            return ""
+    except (TypeError, ValueError):
+        pass
+    text = str(value).strip().upper()
+    if text in {"", "NAN", "NONE", "NULL", "N/A", "#N/A", "#REF!", "#VALUE!"}:
+        return ""
+    return text
+
+
 def _as_location(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
     try:
         location = float(value)
     except (TypeError, ValueError):
@@ -181,20 +199,20 @@ def _clean_input(frame: pd.DataFrame, stock_column: str) -> pd.DataFrame:
     df["_stock_skip_marker"] = stock_skip_details.map(lambda details: details[0])
     df["_stock_skip_reason"] = stock_skip_details.map(lambda details: details[1])
     df["_location"] = df["LOCATIONID"].map(_as_location)
-    df["_group"] = list(zip(
-        df["STOREID"].fillna("").astype(str).str.strip(),
-        df["POGCODE"].fillna("").astype(str).str.strip(),
-        df["FIXELID"].fillna("").astype(str).str.strip(),
-    ))
+    df["_store_key"] = df["STOREID"].map(_normalize_key)
+    df["_pog_key"] = df["POGCODE"].map(_normalize_key)
+    df["_fixel_key"] = df["FIXELID"].map(_normalize_key)
+    df["_item_key"] = df["ITEMID"].map(_normalize_key)
+    df["_group"] = list(zip(df["_store_key"], df["_pog_key"], df["_fixel_key"]))
     df["_input_error"] = pd.NA
     required_checks = (
-        ("STOREID", "Thiếu mã cửa hàng"),
-        ("POGCODE", "Thiếu mã POG"),
-        ("FIXELID", "Thiếu mã kệ"),
-        ("ITEMID", "Thiếu hoặc sai mã sản phẩm"),
+        ("_store_key", "Thiếu mã cửa hàng"),
+        ("_pog_key", "Thiếu mã POG"),
+        ("_fixel_key", "Thiếu mã kệ"),
+        ("_item_key", "Thiếu hoặc sai mã sản phẩm"),
     )
-    for column, reason in required_checks:
-        invalid = df[column].isna() | df[column].astype(str).str.strip().isin(("", "nan", "None"))
+    for key_column, reason in required_checks:
+        invalid = df[key_column].eq("")
         df.loc[invalid & df["_input_error"].isna(), "_input_error"] = reason
     df.loc[df["_location"].isna() & df["_input_error"].isna(), "_input_error"] = "Thiếu hoặc sai vị trí kệ"
     invalid_stock = df["_stock"].isna() & df["_input_error"].isna()
@@ -202,132 +220,292 @@ def _clean_input(frame: pd.DataFrame, stock_column: str) -> pd.DataFrame:
     return df.reset_index(drop=True)
 
 
-def build_tem_r_plan(frame: pd.DataFrame, *, max_location_distance: float = 1, stock_column: str = "TỒN") -> TemRPlan:
-    """Gán mã còn tồn cho vị trí tồn 0 và gom các mã thay giống nhau liền kề."""
+def build_tem_r_plan(
+    frame: pd.DataFrame,
+    *,
+    max_location_distance: float = 1,
+    stock_column: str = "TỒN",
+) -> TemRPlan:
+    """Phân bổ Tem R fail-safe theo tồn store-level và vị trí cùng kệ.
+
+    max_location_distance chỉ còn được giữ để tương thích API cũ. Khoảng
+    cách LOCATIONID dùng để xếp ưu tiên gần trước, không loại ứng viên hợp lệ.
+    """
     if max_location_distance <= 0:
         raise ValueError("max_location_distance phải lớn hơn 0")
-    # Giữ tham số để tương thích API/workbook cũ. Đây không còn là hard cap;
-    # khoảng cách LOCATIONID chỉ dùng để xếp ưu tiên ứng viên gần trước.
+
     df = _clean_input(frame, stock_column)
     df["TEM R"] = pd.NA
     df["TEM_R_STATUS"] = pd.NA
     df["TEM_R_REPRESENTATIVE"] = pd.NA
+    df["_tem_r_skip_marker"] = pd.NA
 
     exceptions: list[dict[str, Any]] = []
     remaining: dict[int, int] = {}
+
+    def excel_row_for_index(idx: int) -> int:
+        if "_excel_row" in df.columns:
+            value = df.at[idx, "_excel_row"]
+            try:
+                if not pd.isna(value):
+                    return int(value)
+            except (TypeError, ValueError):
+                pass
+        return int(idx) + 2
+
+    def append_error(idx: int, reason: str, marker: str | None = None) -> None:
+        current = df.at[idx, "_input_error"]
+        if pd.isna(current):
+            df.at[idx, "_input_error"] = reason
+        elif reason not in str(current):
+            df.at[idx, "_input_error"] = f"{current}; {reason}"
+        if marker:
+            df.at[idx, "_tem_r_skip_marker"] = marker
+
+    stock_observations: dict[tuple[str, str], set[int]] = {}
+    for idx, row in df.iterrows():
+        store, item = row["_store_key"], row["_item_key"]
+        stock = row["_stock"]
+        if not store or not item or pd.isna(stock):
+            continue
+        stock_observations.setdefault((store, item), set()).add(int(stock))
+
+    stock_conflict_keys = {
+        key for key, values in stock_observations.items() if len(values) > 1
+    }
+    for idx, row in df.iterrows():
+        key = (row["_store_key"], row["_item_key"])
+        if key in stock_conflict_keys:
+            append_error(
+                idx,
+                "Tồn kho mâu thuẫn cho cùng cửa hàng + mã sản phẩm",
+                STOCK_CONFLICT_MARKER,
+            )
+
+    physical_rows: dict[tuple[str, str, str, float], list[int]] = {}
+    for idx, row in df.iterrows():
+        store, pog, shelf = row["_store_key"], row["_pog_key"], row["_fixel_key"]
+        location = row["_location"]
+        if not store or not pog or not shelf or pd.isna(location):
+            continue
+        physical_rows.setdefault((store, pog, shelf, float(location)), []).append(idx)
+
+    duplicate_positions = {
+        key: rows for key, rows in physical_rows.items() if len(rows) > 1
+    }
+    for rows in duplicate_positions.values():
+        for idx in rows:
+            append_error(idx, "Trùng vị trí kệ trong cùng POG", DUPLICATE_POSITION_MARKER)
+
+    store_stock_by_item: dict[tuple[str, str], int] = {
+        key: next(iter(values))
+        for key, values in stock_observations.items()
+        if key not in stock_conflict_keys and len(values) == 1
+    }
+
+    positions_by_item: dict[
+        tuple[str, str],
+        dict[tuple[Any, ...], list[int]],
+    ] = {}
+    for idx, row in df.iterrows():
+        store, item = row["_store_key"], row["_item_key"]
+        if not store or not item:
+            continue
+        pog, shelf, location = row["_pog_key"], row["_fixel_key"], row["_location"]
+        if pog and shelf and not pd.isna(location):
+            position_id: tuple[Any, ...] = ("P", pog, shelf, float(location))
+        else:
+            position_id = ("ROW", int(idx))
+        positions_by_item.setdefault((store, item), {}).setdefault(position_id, []).append(idx)
+
+    own_position_count = {
+        key: len(position_map) for key, position_map in positions_by_item.items()
+    }
+    store_capacity = {
+        key: max(0, stock - own_position_count.get(key, 0))
+        for key, stock in store_stock_by_item.items()
+    }
+
+    covered_rows: set[int] = set()
+    for key, stock in store_stock_by_item.items():
+        if stock <= 0:
+            continue
+        valid_native_positions: list[tuple[tuple[str, str, str], float, int]] = []
+        for rows in positions_by_item.get(key, {}).values():
+            valid_rows = [idx for idx in rows if pd.isna(df.at[idx, "_input_error"])]
+            if not valid_rows:
+                continue
+            representative = min(valid_rows)
+            valid_native_positions.append((
+                df.at[representative, "_group"],
+                df.at[representative, "_location"],
+                representative,
+            ))
+        valid_native_positions.sort(key=lambda value: (value[0], value[1], value[2]))
+        for _, _, idx in valid_native_positions[: min(stock, len(valid_native_positions))]:
+            covered_rows.add(idx)
+            df.at[idx, "TEM_R_STATUS"] = "Còn tồn - không cần Tem R"
+
+    invalid_groups = {
+        row["_group"]
+        for _, row in df[df["_input_error"].notna()].iterrows()
+        if all(row["_group"])
+    }
 
     invalid_rows = df.index[df["_input_error"].notna()].tolist()
     for idx in invalid_rows:
         reason = str(df.at[idx, "_input_error"])
         df.at[idx, "TEM_R_STATUS"] = reason
-        if pd.isna(df.at[idx, "_stock"]):
+        marker = df.at[idx, "_tem_r_skip_marker"]
+        if not pd.isna(marker):
+            df.at[idx, "TEM R"] = marker
+        elif pd.isna(df.at[idx, "_stock"]):
             df.at[idx, "TEM R"] = df.at[idx, "_stock_skip_marker"]
-        excel_row = df.at[idx, "_excel_row"] if "_excel_row" in df.columns else idx + 2
-        exceptions.append({"row": int(excel_row), "ITEMID": df.at[idx, "ITEMID"], "reason": reason})
+        exceptions.append({
+            "row": excel_row_for_index(idx),
+            "ITEMID": df.at[idx, "ITEMID"],
+            "reason": reason,
+        })
 
     valid_df = df[df["_input_error"].isna()]
-    for _, group_frame in valid_df.groupby("_group", sort=False):
+
+    # Build every valid shelf first, then spend shared store capacity globally.
+    # This prevents an earlier worksheet/shelf from taking the last spare unit
+    # when a later same-store target is physically closer to its source SKU.
+    groups: list[dict[str, Any]] = []
+    for group_key, group_frame in valid_df.groupby("_group", sort=False):
         ordered = sorted(
             group_frame.index,
             key=lambda idx: (
-                df.at[idx, "_location"] if not pd.isna(df.at[idx, "_location"]) else float("inf"),
+                df.at[idx, "_location"]
+                if not pd.isna(df.at[idx, "_location"])
+                else float("inf"),
                 idx,
             ),
         )
-        stock_by_item: dict[str, int] = {}
-        source_by_item: dict[str, int] = {}
-        source_locations: dict[str, list[float]] = {}
-        own_positions_by_item: dict[str, int] = {}
-        for source_idx in ordered:
-            stock = df.at[source_idx, "_stock"]
-            remaining[source_idx] = int(stock)
-            if stock > 0:
-                item = str(df.at[source_idx, "ITEMID"])
-                # Tồn là tồn cấp cửa hàng và thường lặp lại trên nhiều dòng POG
-                # của cùng mã; lấy giá trị lớn nhất, tuyệt đối không cộng lặp.
-                stock_by_item[item] = max(stock_by_item.get(item, 0), int(stock))
-                source_by_item.setdefault(item, source_idx)
-                source_locations.setdefault(item, []).append(df.at[source_idx, "_location"])
-                own_positions_by_item[item] = own_positions_by_item.get(item, 0) + 1
-                df.at[source_idx, "TEM_R_STATUS"] = "Còn tồn - không cần Tem R"
+        if not ordered:
+            continue
 
-        targets = [idx for idx in ordered if df.at[idx, "_stock"] == 0]
+        store = group_key[0]
+        stock_by_item: dict[str, int] = {}
+        source_locations: dict[str, list[float]] = {}
+        for source_idx in ordered:
+            item = df.at[source_idx, "_item_key"]
+            stock = store_stock_by_item.get((store, item), 0)
+            if stock <= 0:
+                continue
+            stock_by_item.setdefault(item, stock)
+            source_locations.setdefault(item, []).append(df.at[source_idx, "_location"])
+
+        targets = [idx for idx in ordered if idx not in covered_rows]
+        groups.append({
+            "key": group_key,
+            "store": store,
+            "ordered": ordered,
+            "stock_by_item": stock_by_item,
+            "source_locations": source_locations,
+            "targets": targets,
+        })
+
+    proposed: dict[int, str | None] = {}
+    group_order = {group["key"]: position for position, group in enumerate(groups)}
+    target_order: dict[int, int] = {}
+    item_order_by_group: dict[tuple[str, str, str], dict[str, int]] = {}
+
+    for group in groups:
+        item_order_by_group[group["key"]] = {
+            item: position for position, item in enumerate(group["stock_by_item"])
+        }
+        for position, target_idx in enumerate(group["targets"]):
+            proposed[target_idx] = None
+            target_order[target_idx] = position
+
+    unassigned = set(proposed)
+    while unassigned:
+        candidates: list[tuple[float, int, int, int, int, str, str]] = []
+        for group in groups:
+            store = group["store"]
+            key = group["key"]
+            item_order = item_order_by_group[key]
+            for target_idx in group["targets"]:
+                if target_idx not in unassigned:
+                    continue
+                for item in group["stock_by_item"]:
+                    if store_capacity.get((store, item), 0) <= 0:
+                        continue
+                    distance = min(
+                        (
+                            abs(location - df.at[target_idx, "_location"])
+                            for location in group["source_locations"][item]
+                            if not pd.isna(location)
+                            and not pd.isna(df.at[target_idx, "_location"])
+                        ),
+                        default=float("inf"),
+                    )
+                    candidates.append((
+                        distance,
+                        group_order[key],
+                        target_order[target_idx],
+                        item_order[item],
+                        target_idx,
+                        item,
+                        store,
+                    ))
+
+        if not candidates:
+            break
+
+        _, _, _, _, target_idx, item, store = min(candidates)
+        proposed[target_idx] = item
+        store_capacity[(store, item)] -= 1
+        unassigned.remove(target_idx)
+
+    for group in groups:
+        ordered = group["ordered"]
+        targets = group["targets"]
+        stock_by_item = group["stock_by_item"]
         if not targets:
             continue
 
-        # Bước 1: chỉ điền các vị trí tồn 0, ưu tiên mã còn tồn gần nhất. Tồn là
-        # tổng số vị trí nên phải trừ vị trí vốn có của chính mã trước khi thay.
-        capacity = {
-            item: max(0, stock - own_positions_by_item.get(item, 0))
-            for item, stock in stock_by_item.items()
-        }
-        # Phân bổ trên cùng kệ theo ưu tiên khoảng cách. Không duyệt target từ
-        # trái sang phải vì vị trí xa có thể chiếm mất đơn vị tồn cuối cùng trước
-        # vị trí nằm sát sản phẩm nguồn. Khoảng cách chỉ xếp ưu tiên, không loại
-        # ứng viên còn tồn trên cùng kệ.
-        proposed: dict[int, str | None] = {idx: None for idx in targets}
-        unassigned = set(targets)
-        target_order = {idx: position for position, idx in enumerate(targets)}
-        item_order = {item: position for position, item in enumerate(stock_by_item)}
-        while unassigned:
-            candidates = [
-                (
-                    min(
-                        (abs(location - df.at[target_idx, "_location"])
-                         for location in source_locations[item]
-                         if not pd.isna(location) and not pd.isna(df.at[target_idx, "_location"])),
-                        default=float("inf"),
-                    ),
-                    target_order[target_idx],
-                    item_order[item],
-                    target_idx,
-                    item,
-                )
-                for target_idx in unassigned
-                for item, count in capacity.items()
-                if count > 0
-            ]
-            if not candidates:
-                break
-            _, _, _, target_idx, item = min(candidates)
-            proposed[target_idx] = item
-            capacity[item] -= 1
-            unassigned.remove(target_idx)
-
         final_codes = [
-            proposed.get(idx) if df.at[idx, "_stock"] == 0 else str(df.at[idx, "ITEMID"])
+            df.at[idx, "_item_key"] if idx in covered_rows else proposed.get(idx)
             for idx in ordered
         ]
 
         def is_contiguous(code: str) -> bool:
-            positions = [position for position, value in enumerate(final_codes) if value == code]
-            return not positions or positions == list(range(positions[0], positions[-1] + 1))
+            positions = [
+                position for position, value in enumerate(final_codes)
+                if value == code
+            ]
+            return not positions or positions == list(
+                range(positions[0], positions[-1] + 1)
+            )
 
-        needs_rearrangement = any(
-            not is_contiguous(code) for code in {code for code in final_codes if code is not None}
+        needs_rearrangement = (
+            group["key"] not in invalid_groups
+            and any(
+                not is_contiguous(code)
+                for code in {code for code in final_codes if code is not None}
+            )
         )
 
         if not needs_rearrangement:
-            for source_idx in ordered:
-                if df.at[source_idx, "_stock"] > 0:
-                    remaining[source_idx] = max(0, int(df.at[source_idx, "_stock"]) - 1)
             for target_idx in targets:
                 representative = proposed[target_idx]
                 if representative is None:
                     df.at[target_idx, "TEM R"] = "KHÔNG CÓ SẢN PHẨM THAY THẾ"
                     df.at[target_idx, "TEM_R_STATUS"] = "Kệ không còn đủ tồn để thay"
-                    exceptions.append({"row": target_idx, "ITEMID": df.at[target_idx, "ITEMID"], "reason": "Kệ không còn đủ tồn để thay"})
+                    exceptions.append({
+                        "row": excel_row_for_index(target_idx),
+                        "ITEMID": df.at[target_idx, "ITEMID"],
+                        "reason": "Kệ không còn đủ tồn để thay",
+                    })
                     continue
-                source_idx = source_by_item[representative]
-                remaining[source_idx] = max(0, remaining[source_idx] - 1)
                 df.at[target_idx, "TEM R"] = representative
                 df.at[target_idx, "TEM_R_REPRESENTATIVE"] = representative
                 df.at[target_idx, "TEM_R_STATUS"] = "Tồn 0 - mã thay đã nằm liền nhóm"
             continue
 
-        # Bước 2: chỉ khi một mã bị tách thành nhiều cụm mới sắp xếp toàn kệ.
-        # Chỉ gom lại các mã của bố cục đề xuất: mọi mã còn tồn vẫn giữ đủ vị
-        # trí vốn có, không cho mã đầu tiên dùng tồn để lấp hết cả kệ.
         arranged_items: list[str] = []
         for item in stock_by_item:
             arranged_items.extend([item] * final_codes.count(item))
@@ -335,38 +513,39 @@ def build_tem_r_plan(frame: pd.DataFrame, *, max_location_distance: float = 1, s
             ["KHÔNG CÓ SẢN PHẨM THAY THẾ"] * final_codes.count(None)
         )
 
-        for source_idx in ordered:
-            if df.at[source_idx, "_stock"] > 0:
-                remaining[source_idx] = int(df.at[source_idx, "_stock"])
-
         for position, target_idx in enumerate(ordered):
-            if position >= len(arranged_items):
-                df.at[target_idx, "TEM R"] = "KHÔNG CÓ SẢN PHẨM THAY THẾ"
-                df.at[target_idx, "TEM_R_STATUS"] = "Kệ không còn đủ tồn để sắp xếp"
-                exceptions.append({"row": target_idx, "ITEMID": df.at[target_idx, "ITEMID"], "reason": "Kệ không còn đủ tồn để sắp xếp"})
-                continue
             representative = arranged_items[position]
             df.at[target_idx, "TEM R"] = representative
             if representative == "KHÔNG CÓ SẢN PHẨM THAY THẾ":
                 df.at[target_idx, "TEM_R_STATUS"] = "Kệ không còn đủ tồn để sắp xếp"
-                exceptions.append({"row": target_idx, "ITEMID": df.at[target_idx, "ITEMID"], "reason": "Kệ không còn đủ tồn để sắp xếp"})
+                exceptions.append({
+                    "row": excel_row_for_index(target_idx),
+                    "ITEMID": df.at[target_idx, "ITEMID"],
+                    "reason": "Kệ không còn đủ tồn để sắp xếp",
+                })
             else:
-                source_idx = source_by_item[representative]
-                remaining[source_idx] -= 1
                 df.at[target_idx, "TEM_R_REPRESENTATIVE"] = representative
                 df.at[target_idx, "TEM_R_STATUS"] = "Sắp xếp lại toàn kệ - gom mã P liền nhau"
 
-    audit_columns = ["ITEMID", "ITEMNAME", "STOREID", "POGCODE", "FIXELID", "LOCATIONID", stock_column, "TEM R", "TEM_R_STATUS"]
+    for idx, row in df.iterrows():
+        key = (row["_store_key"], row["_item_key"])
+        if key in store_stock_by_item and store_stock_by_item[key] > 0:
+            remaining[idx] = store_capacity.get(key, 0)
+
+    audit_columns = [
+        "ITEMID", "ITEMNAME", "STOREID", "POGCODE", "FIXELID", "LOCATIONID",
+        stock_column, "TEM R", "TEM_R_STATUS",
+    ]
     audit = df.loc[:, audit_columns].copy()
     audit["NĂNG_LỰC_CÒN_LẠI"] = [
         remaining.get(idx, pd.NA)
-        if not pd.isna(df.at[idx, "_stock"]) and df.at[idx, "_stock"] != 0
+        if (df.at[idx, "_store_key"], df.at[idx, "_item_key"]) in store_stock_by_item
+        and store_stock_by_item[(df.at[idx, "_store_key"], df.at[idx, "_item_key"])] > 0
         else pd.NA
         for idx in df.index
     ]
     exception_frame = pd.DataFrame(exceptions, columns=["row", "ITEMID", "reason"])
     return TemRPlan(rows=df, audit=audit, exceptions=exception_frame)
-
 
 def _find_export_sheet_and_header(workbook, itemid_column: str = "ITEMID", *, allow_fallback: bool = False):
     preferred = workbook["Export"] if "Export" in workbook.sheetnames else workbook.active
