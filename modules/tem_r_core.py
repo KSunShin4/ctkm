@@ -169,7 +169,10 @@ def _normalize_key(value: Any) -> str:
             return ""
     except (TypeError, ValueError):
         pass
-    return str(value).strip().upper()
+    text = str(value).strip().upper()
+    if text in {"", "NAN", "NONE", "NULL", "NA", "N/A", "<NA>"} | EXCEL_ERROR_VALUES:
+        return ""
+    return text
 
 
 def _apply_tem_r_input_invariants(df: pd.DataFrame) -> pd.DataFrame:
@@ -340,7 +343,7 @@ def _clean_input(frame: pd.DataFrame, stock_column: str) -> pd.DataFrame:
     df["ITEMID"] = df["ITEMID"].map(
         lambda value: str(value).strip().upper()
         if value is not None and not pd.isna(value) and str(value).strip()
-        and str(value).strip().upper() not in ("NAN", "NONE", "#N/A", "#REF!", "#VALUE!")
+        and str(value).strip().upper() not in ({"NAN", "NONE", "NULL", "NA", "N/A", "<NA>"} | EXCEL_ERROR_VALUES)
         else None
     )
     df["_stock"] = df[stock_column].map(_as_stock)
@@ -353,15 +356,16 @@ def _clean_input(frame: pd.DataFrame, stock_column: str) -> pd.DataFrame:
     df["_fixel_key"] = df["FIXELID"].map(_normalize_key)
     df["_group"] = list(zip(df["_store_key"], df["_pog_key"], df["_fixel_key"]))
     df["_input_error"] = pd.NA
-    required_checks = (
-        ("STOREID", "Thiếu mã cửa hàng"),
-        ("POGCODE", "Thiếu mã POG"),
-        ("FIXELID", "Thiếu mã kệ"),
-        ("ITEMID", "Thiếu hoặc sai mã sản phẩm"),
+    technical_required = (
+        ("_store_key", "Thiếu mã cửa hàng"),
+        ("_pog_key", "Thiếu mã POG"),
+        ("_fixel_key", "Thiếu mã kệ"),
     )
-    for column, reason in required_checks:
-        invalid = df[column].isna() | df[column].astype(str).str.strip().isin(("", "nan", "None"))
+    for column, reason in technical_required:
+        invalid = df[column].eq("")
         df.loc[invalid & df["_input_error"].isna(), "_input_error"] = reason
+    invalid_item = df["ITEMID"].isna()
+    df.loc[invalid_item & df["_input_error"].isna(), "_input_error"] = "Thiếu hoặc sai mã sản phẩm"
     df.loc[df["_location"].isna() & df["_input_error"].isna(), "_input_error"] = "Thiếu hoặc sai vị trí kệ"
     invalid_stock = df["_stock"].isna() & df["_input_error"].isna()
     df.loc[invalid_stock, "_input_error"] = df.loc[invalid_stock, "_stock_skip_reason"]
