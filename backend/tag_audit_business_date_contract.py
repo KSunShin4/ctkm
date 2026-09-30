@@ -11,7 +11,8 @@ audit, then creates shallow scanner-only row copies whose ``expected_action`` is
 derived from ``promo_from`` / ``promo_to`` as of the current Viet Nam date.
 Known report-month mismatches remain blocking because the monthly source itself is
 then incompatible; a merely older ``business_date`` is informational, not a block.
-Legacy rows without report metadata keep their existing snapshot behavior.
+Parsed workbooks must contain both report-month and business-date metadata; missing,
+incomplete, or unreadable metadata is fail-closed instead of trusting snapshot actions.
 """
 from __future__ import annotations
 
@@ -30,6 +31,9 @@ _REPORT_MONTH_KEY = "_report_month"
 _SNAPSHOT_ACTION_KEY = "_snapshot_expected_action"
 _SCANNER_DATE_KEY = "_scanner_action_date"
 _SCANNER_REASON_KEY = "_scanner_action_reason"
+_METADATA_STATUS_KEY = "_report_metadata_status"
+_METADATA_VALID = "valid"
+_METADATA_BLOCKING = {"missing", "incomplete", "invalid"}
 _VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 
 
@@ -101,12 +105,31 @@ def metadata_from_rows(rows: list[dict]) -> dict:
     for row in rows or []:
         business_date = str(row.get(_BUSINESS_DATE_KEY) or "").strip()
         report_month = str(row.get(_REPORT_MONTH_KEY) or "").strip()
-        if business_date or report_month:
+        status = str(row.get(_METADATA_STATUS_KEY) or "").strip().lower()
+        if business_date or report_month or status:
+            if not status:
+                status = _METADATA_VALID if business_date and report_month else "legacy_unmarked"
             return {
                 "business_date": business_date or None,
                 "report_month": report_month or None,
+                "metadata_status": status,
             }
-    return {"business_date": None, "report_month": None}
+    return {
+        "business_date": None,
+        "report_month": None,
+        "metadata_status": "legacy_unmarked",
+    }
+
+
+def _metadata_block_reason(rows: list[dict], today: str) -> str | None:
+    metadata = metadata_from_rows(rows)
+    status = metadata.get("metadata_status")
+    if status in _METADATA_BLOCKING:
+        return "missing_report_metadata"
+    report_month = metadata.get("report_month")
+    if report_month and report_month != str(today)[:7]:
+        return "report_month_mismatch"
+    return None
 
 
 def derive_scanner_action(row: dict, business_date: str) -> tuple[str, str]:
@@ -135,10 +158,11 @@ def derive_scanner_action(row: dict, business_date: str) -> tuple[str, str]:
 
 def scanner_rows_for_current_date(rows: list[dict], business_date: str | None = None) -> list[dict]:
     """Return scanner-only shallow copies reclassified for the requested date."""
-    # Only workbooks produced with the report metadata contract can safely opt in
-    # to dynamic reclassification. Legacy/test rows without metadata retain their
-    # historical snapshot action semantics instead of being silently reinterpreted.
+    # Parsed workbooks are fail-closed unless both required metadata fields are
+    # valid. Direct synthetic rows used by lower-level tests remain legacy-unmarked.
     metadata = metadata_from_rows(rows)
+    if metadata.get("metadata_status") in _METADATA_BLOCKING:
+        return [dict(row) for row in rows or []]
     if not metadata.get("business_date") and not metadata.get("report_month"):
         return [dict(row) for row in rows or []]
 
@@ -157,8 +181,7 @@ def scanner_rows_for_current_date(rows: list[dict], business_date: str | None = 
 
 
 def _known_report_month_mismatch(rows: list[dict], today: str) -> bool:
-    report_month = metadata_from_rows(rows).get("report_month")
-    return bool(report_month and report_month != str(today)[:7])
+    return _metadata_block_reason(rows, today) == "report_month_mismatch"
 
 
 def install_tag_audit_business_date_contract(tag_audit_module) -> None:
@@ -172,18 +195,25 @@ def install_tag_audit_business_date_contract(tag_audit_module) -> None:
     def parse_with_report_metadata(source):
         metadata_source = _copyable_source(source)
         rows = original_parse(source)
+        metadata_status = _METADATA_VALID
         try:
             metadata = read_report_metadata(metadata_source)
         except Exception:
-            # Metadata is a safety enhancement. A malformed/legacy guide must not
-            # make an otherwise valid action workbook unreadable.
             metadata = {}
+            metadata_status = "invalid"
         business_date = metadata.get("business_date")
         report_month = metadata.get("report_month")
-        if business_date or report_month:
-            for row in rows:
-                row[_BUSINESS_DATE_KEY] = business_date
-                row[_REPORT_MONTH_KEY] = report_month
+        if metadata_status != "invalid":
+            if business_date and report_month:
+                metadata_status = _METADATA_VALID
+            elif business_date or report_month:
+                metadata_status = "incomplete"
+            else:
+                metadata_status = "missing"
+        for row in rows:
+            row[_BUSINESS_DATE_KEY] = business_date
+            row[_REPORT_MONTH_KEY] = report_month
+            row[_METADATA_STATUS_KEY] = metadata_status
         return rows
 
     def context_payload_with_business_date(cache: dict) -> dict:
@@ -196,16 +226,29 @@ def install_tag_audit_business_date_contract(tag_audit_module) -> None:
         payload["report_month"] = report_month
         payload["business_date"] = business_date
         payload["scanner_business_date"] = today
+        block_reason = _metadata_block_reason(rows, today)
         payload["business_date_stale"] = bool(business_date and business_date != today)
-        payload["business_date_blocked"] = _known_report_month_mismatch(rows, today)
-        payload["scanner_reclassifies_actions"] = bool(business_date or report_month)
+        payload["business_date_blocked"] = block_reason is not None
+        payload["business_date_block_reason"] = block_reason
+        payload["scanner_reclassifies_actions"] = (
+            metadata.get("metadata_status") == _METADATA_VALID
+        )
         return payload
 
     def compare_with_current_business_date(rows, observed, manual_item_id=""):
         today = current_vn_business_date()
         metadata = metadata_from_rows(rows)
         report_month = metadata.get("report_month")
-        if _known_report_month_mismatch(rows, today):
+        block_reason = _metadata_block_reason(rows, today)
+        if block_reason == "missing_report_metadata":
+            raise tag_audit_module.HTTPException(
+                status_code=409,
+                detail=(
+                    "Workbook kiểm tem thiếu hoặc không đọc được metadata Tháng báo cáo/Ngày nghiệp vụ. "
+                    "Hãy chạy hoặc tải workbook CTKM do hệ thống xuất trước khi kiểm tem."
+                ),
+            )
+        if block_reason == "report_month_mismatch":
             raise tag_audit_module.HTTPException(
                 status_code=409,
                 detail=(

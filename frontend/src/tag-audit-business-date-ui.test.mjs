@@ -81,3 +81,17 @@ test("incompatible month message still requires correct workbook", () => {
 test("current workbook produces no warning", () => {
   assert.equal(staleBusinessDateMessage({stale:false,blocked:false,reportDateStale:false}), "")
 })
+
+
+test("missing report metadata produces a fail-closed scanner message", () => {
+  const state = businessDateState({
+    business_date_stale: false,
+    business_date_blocked: true,
+    business_date_block_reason: "missing_report_metadata",
+    scanner_reclassifies_actions: false,
+  })
+  assert.equal(state.blocked, true)
+  assert.equal(state.blockReason, "missing_report_metadata")
+  assert.match(staleBusinessDateMessage(state), /thiếu metadata/i)
+  assert.match(staleBusinessDateMessage(state), /do hệ thống xuất/i)
+})

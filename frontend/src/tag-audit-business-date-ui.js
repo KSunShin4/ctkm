@@ -21,6 +21,7 @@ export function businessDateState(payload) {
     businessDate: String(context.business_date || "").trim(),
     scannerBusinessDate: String(context.scanner_business_date || "").trim(),
     reportMonth: String(context.report_month || context.month || "").trim(),
+    blockReason: String(context.business_date_block_reason || "").trim(),
   }
 }
 
@@ -42,6 +43,9 @@ export function staleBusinessDateMessage(state) {
   const report = formatBusinessDate(state.businessDate) || "không rõ"
   const today = formatBusinessDate(state.scannerBusinessDate) || "hôm nay"
   if (state?.blocked) {
+    if (state.blockReason === "missing_report_metadata") {
+      return "Workbook kiểm tem thiếu metadata Tháng báo cáo/Ngày nghiệp vụ. Hãy chạy hoặc tải workbook CTKM do hệ thống xuất trước khi kiểm tem."
+    }
     const month = state.reportMonth || "không rõ"
     return `Workbook kiểm tem thuộc tháng ${month}, không khớp ngày kiểm ${today}. Hãy chạy hoặc tải workbook CTKM đúng tháng trước khi kiểm tem.`
   }
