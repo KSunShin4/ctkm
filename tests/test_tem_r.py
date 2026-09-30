@@ -367,7 +367,7 @@ def test_writes_explicit_message_when_pog_has_no_replacement():
     assert plan.rows.loc[0, "TEM_R_STATUS"] == "Kệ không còn đủ tồn để thay"
 
 
-def test_replacement_respects_maximum_location_distance():
+def test_same_shelf_replacement_is_not_rejected_by_distance():
     tem_r = _module()
     frame = pd.DataFrame([
         {"STOREID":"S1", "POGCODE":"G1", "FIXELID":"1/1", "LOCATIONID":1,
@@ -376,9 +376,50 @@ def test_replacement_respects_maximum_location_distance():
          "ITEMID":"P4", "ITEMNAME":"Four", "TỒN":0},
     ])
 
+    # max_location_distance remains accepted for API compatibility, but distance
+    # is only a priority signal now; same-shelf stock must remain eligible.
     plan = tem_r.build_tem_r_plan(frame, max_location_distance=1)
 
-    assert plan.rows.loc[1, "TEM R"] == "KHÔNG CÓ SẢN PHẨM THAY THẾ"
+    assert plan.rows.loc[1, "TEM R"] == "P1"
+
+
+def test_same_shelf_uses_nearest_available_item_first():
+    tem_r = _module()
+    frame = pd.DataFrame([
+        {"STOREID":"S1", "POGCODE":"G1", "FIXELID":"1/1", "LOCATIONID":1,
+         "ITEMID":"PA", "ITEMNAME":"A", "TỒN":2},
+        {"STOREID":"S1", "POGCODE":"G1", "FIXELID":"1/1", "LOCATIONID":3,
+         "ITEMID":"P0", "ITEMNAME":"Zero", "TỒN":0},
+        {"STOREID":"S1", "POGCODE":"G1", "FIXELID":"1/1", "LOCATIONID":4,
+         "ITEMID":"PB", "ITEMNAME":"B", "TỒN":2},
+    ])
+
+    plan = tem_r.build_tem_r_plan(frame, max_location_distance=1)
+
+    assert plan.rows.loc[1, "TEM R"] == "PB"
+
+
+def test_real_confect_case_uses_far_same_shelf_stock_and_groups_split_item():
+    tem_r = _module()
+    frame = pd.DataFrame([
+        {"STOREID":"CONFECT", "POGCODE":"CTCONF", "FIXELID":"1/5", "LOCATIONID":2,
+         "ITEMID":"P08844", "ITEMNAME":"Huro Kẹo", "TỒN":34},
+        {"STOREID":"CONFECT", "POGCODE":"CTCONF", "FIXELID":"1/5", "LOCATIONID":3,
+         "ITEMID":"P29216", "ITEMNAME":"Kefir Snack", "TỒN":0},
+        {"STOREID":"CONFECT", "POGCODE":"CTCONF", "FIXELID":"1/5", "LOCATIONID":4,
+         "ITEMID":"P29217", "ITEMNAME":"Kefir Snack", "TỒN":1},
+        {"STOREID":"CONFECT", "POGCODE":"CTCONF", "FIXELID":"1/5", "LOCATIONID":5,
+         "ITEMID":"P25749", "ITEMNAME":"Pororo", "TỒN":0},
+        {"STOREID":"CONFECT", "POGCODE":"CTCONF", "FIXELID":"1/5", "LOCATIONID":6,
+         "ITEMID":"P25748", "ITEMNAME":"Pororo", "TỒN":0},
+    ])
+
+    plan = tem_r.build_tem_r_plan(frame, max_location_distance=1)
+    codes = plan.rows["TEM R"].tolist()
+
+    assert "KHÔNG CÓ SẢN PHẨM THAY THẾ" not in codes
+    assert codes == ["P08844", "P08844", "P08844", "P08844", "P29217"]
+    assert codes.count("P08844") == 4
 
 
 def test_missing_shelf_key_is_quarantined_instead_of_grouped():
