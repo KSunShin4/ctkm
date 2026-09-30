@@ -185,3 +185,16 @@ def test_seeded_random_layouts_never_exceed_stock_or_cross_shelf():
                     "ITEMID", "TỒN", "TEM R", "TEM_R_STATUS",
                 ]].to_dict("records"),
             )
+
+
+def test_facade_delegates_to_core_without_recursive_rebinding():
+    tem_r = _module()
+
+    assert tem_r._core.build_tem_r_plan is not tem_r.build_tem_r_plan
+
+    frame = pd.DataFrame([
+        _row(1, "PA", 2),
+        _row(2, "P0", 0),
+    ])
+    plan = tem_r.build_tem_r_plan(frame)
+    assert plan.rows.loc[1, "TEM R"] == "PA"
