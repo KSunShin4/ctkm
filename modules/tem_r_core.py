@@ -397,7 +397,17 @@ def build_tem_r_plan(frame: pd.DataFrame, *, max_location_distance: float = 1, s
         exceptions.append({"row": int(excel_row), "ITEMID": df.at[idx, "ITEMID"], "reason": reason})
 
     valid_df = df[df["_input_error"].isna()]
-    for _, group_frame in valid_df.groupby("_group", sort=False):
+    layout_review_groups = set(
+        df.loc[
+            df["_input_error"].notna()
+            & df["_store_key"].ne("")
+            & df["_pog_key"].ne("")
+            & df["_fixel_key"].ne("")
+            & df["_location"].notna(),
+            "_group",
+        ]
+    )
+    for group_key, group_frame in valid_df.groupby("_group", sort=False):
         ordered = sorted(
             group_frame.index,
             key=lambda idx: (
@@ -454,6 +464,8 @@ def build_tem_r_plan(frame: pd.DataFrame, *, max_location_distance: float = 1, s
         needs_rearrangement = any(
             not is_contiguous(code) for code in {code for code in final_codes if code is not None}
         )
+        if group_key in layout_review_groups:
+            needs_rearrangement = False
 
         if not needs_rearrangement:
             for source_idx in ordered:
@@ -470,7 +482,11 @@ def build_tem_r_plan(frame: pd.DataFrame, *, max_location_distance: float = 1, s
                 remaining[source_idx] = max(0, remaining[source_idx] - 1)
                 df.at[target_idx, "TEM R"] = representative
                 df.at[target_idx, "TEM_R_REPRESENTATIVE"] = representative
-                df.at[target_idx, "TEM_R_STATUS"] = "Tồn 0 - mã thay đã nằm liền nhóm"
+                df.at[target_idx, "TEM_R_STATUS"] = (
+                    "Tồn 0 - mã thay; kệ có dòng cần review"
+                    if group_key in layout_review_groups
+                    else "Tồn 0 - mã thay đã nằm liền nhóm"
+                )
             continue
 
         # Bước 2: chỉ khi một mã bị tách thành nhiều cụm mới sắp xếp toàn kệ.
