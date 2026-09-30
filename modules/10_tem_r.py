@@ -89,9 +89,21 @@ def build_tem_r_plan(
             "reason": reason,
         })
 
-    # Invalid/NA stock rows do not participate in stock, capacity, shelf layout,
-    # or target selection. They remain only as visible audit rows above.
+    # Invalid/NA stock rows do not participate in stock/capacity/target
+    # selection. If their physical shelf coordinate is still known, they remain
+    # a layout barrier so we never claim contiguity or auto-rearrange through an
+    # unknown position.
     valid_df = df[df["_input_error"].isna()]
+    layout_review_groups = set(
+        df.loc[
+            df["_input_error"].notna()
+            & df["_store_key"].ne("")
+            & df["_pog_key"].ne("")
+            & df["_fixel_key"].ne("")
+            & df["_location"].notna(),
+            "_group",
+        ]
+    )
 
     # Build one inventory ledger for the whole store. Stock is repeated on POG
     # rows, so take max instead of summing. Reserve one physical unit for every
@@ -114,7 +126,7 @@ def build_tem_r_plan(
         for key, stock in store_stock_by_item.items()
     }
 
-    for _, group_frame in valid_df.groupby("_group", sort=False):
+    for group_key, group_frame in valid_df.groupby("_group", sort=False):
         ordered = sorted(
             group_frame.index,
             key=lambda idx: (
@@ -179,6 +191,8 @@ def build_tem_r_plan(
             not is_contiguous(code)
             for code in {code for code in final_codes if code is not None}
         )
+        if group_key in layout_review_groups:
+            needs_rearrangement = False
 
         if not needs_rearrangement:
             for target_idx in targets:
@@ -195,7 +209,11 @@ def build_tem_r_plan(
 
                 df.at[target_idx, "TEM R"] = representative
                 df.at[target_idx, "TEM_R_REPRESENTATIVE"] = representative
-                df.at[target_idx, "TEM_R_STATUS"] = "Tồn 0 - mã thay đã nằm liền nhóm"
+                df.at[target_idx, "TEM_R_STATUS"] = (
+                    "Tồn 0 - mã thay; kệ có dòng cần review"
+                    if group_key in layout_review_groups
+                    else "Tồn 0 - mã thay đã nằm liền nhóm"
+                )
             continue
 
         # Rearrangement only changes order. Counts were already reserved from
