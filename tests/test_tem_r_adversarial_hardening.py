@@ -245,3 +245,30 @@ def test_boolean_location_is_not_accepted_as_location_one():
     plan = tem_r.build_tem_r_plan(frame)
 
     assert plan.exceptions.iloc[0]["reason"] == "Thiếu hoặc sai vị trí kệ"
+
+
+def test_native_shortage_result_is_stable_when_source_rows_are_shuffled():
+    tem_r = _module()
+    rows = [
+        _row(1, "PA", 1, pog="G2"),
+        _row(1, "PA", 1, pog="G1"),
+    ]
+
+    first = tem_r.build_tem_r_plan(pd.DataFrame(rows))
+    second = tem_r.build_tem_r_plan(pd.DataFrame(list(reversed(rows))))
+
+    def by_position(plan):
+        result = {}
+        for _, row in plan.rows.iterrows():
+            key = (
+                str(row["STOREID"]).strip().upper(),
+                str(row["POGCODE"]).strip().upper(),
+                str(row["FIXELID"]).strip().upper(),
+                float(row["LOCATIONID"]),
+            )
+            result[key] = _final_representative(row)
+        return result
+
+    assert by_position(first) == by_position(second)
+    assert by_position(first)[("S1", "G1", "1/1", 1.0)] == "PA"
+    assert by_position(first)[("S1", "G2", "1/1", 1.0)] is None
