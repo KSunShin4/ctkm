@@ -219,3 +219,101 @@ def test_missing_token_variants_are_not_accepted_as_real_shelf_keys():
 
     assert set(plan.rows["TEM_R_STATUS"]) == {"Thiếu mã cửa hàng"}
     assert plan.rows["TEM R"].isna().all()
+
+
+def test_random_full_plans_preserve_stock_and_same_shelf_invariants():
+    tem_r = _module()
+    rng = random.Random(9302026)
+
+    for case in range(100):
+        item_count = rng.randint(1, 4)
+        items = [f"P{case}_{i}" for i in range(item_count)]
+        stocks = {item: rng.randint(1, 7) for item in items}
+        original_positions = {item: 0 for item in items}
+        rows = []
+
+        for shelf_index in range(rng.randint(1, 3)):
+            location = 1
+            for _ in range(rng.randint(2, 6)):
+                if rng.random() < 0.58:
+                    item = rng.choice(items)
+                    if original_positions[item] < stocks[item]:
+                        stock = stocks[item]
+                        original_positions[item] += 1
+                    else:
+                        item = f"Z{case}_{shelf_index}_{location}"
+                        stock = 0
+                else:
+                    item = f"Z{case}_{shelf_index}_{location}"
+                    stock = 0
+                rows.append(_row(
+                    location,
+                    item,
+                    stock,
+                    pog=f"G{shelf_index + 1}",
+                ))
+                location += 1
+
+        frame = pd.DataFrame(rows)
+        plan = tem_r.build_tem_r_plan(frame)
+
+        source_items_by_group = {}
+        for _, row in plan.rows.iterrows():
+            if row["_input_error"] is pd.NA or pd.isna(row["_input_error"]):
+                if int(row["_stock"]) > 0:
+                    source_items_by_group.setdefault(row["_group"], set()).add(str(row["ITEMID"]))
+
+        effective_counts = {}
+        stock_by_item = {}
+        for _, row in plan.rows.iterrows():
+            if not pd.isna(row["_input_error"]):
+                continue
+            store_item = (row["_store_key"], str(row["ITEMID"]))
+            if int(row["_stock"]) > 0:
+                stock_by_item[store_item] = max(
+                    stock_by_item.get(store_item, 0),
+                    int(row["_stock"]),
+                )
+
+            tem_r = row["TEM R"]
+            if pd.isna(tem_r):
+                effective = str(row["ITEMID"]) if int(row["_stock"]) > 0 else None
+            else:
+                effective = str(tem_r)
+                if effective.startswith("KHÔNG CÓ") or effective.startswith("BỎ QUA"):
+                    effective = None
+
+            if effective is None:
+                continue
+            assert effective in source_items_by_group.get(row["_group"], set())
+            key = (row["_store_key"], effective)
+            effective_counts[key] = effective_counts.get(key, 0) + 1
+
+        for key, count in effective_counts.items():
+            assert count <= stock_by_item[key]
+
+
+def test_single_shelf_result_is_stable_when_source_rows_are_shuffled():
+    tem_r = _module()
+    base = pd.DataFrame([
+        _row(1, "PA", 4),
+        _row(2, "P0", 0),
+        _row(3, "PB", 2),
+        _row(4, "P9", 0),
+        _row(5, "PX", 0),
+    ])
+
+    expected = tem_r.build_tem_r_plan(base)
+    expected_by_location = {
+        row["LOCATIONID"]: row["TEM R"]
+        for _, row in expected.rows.iterrows()
+    }
+
+    shuffled = base.sample(frac=1, random_state=20260930).reset_index(drop=True)
+    actual = tem_r.build_tem_r_plan(shuffled)
+    actual_by_location = {
+        row["LOCATIONID"]: row["TEM R"]
+        for _, row in actual.rows.iterrows()
+    }
+
+    assert actual_by_location == expected_by_location
