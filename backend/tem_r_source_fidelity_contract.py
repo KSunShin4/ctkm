@@ -1,11 +1,10 @@
 # -*- coding: utf-8 -*-
 """Preserve raw Tem R ITEMID values without changing allocation semantics.
 
-The legacy allocator normalizes a copied ``ITEMID`` column with strip/upper so
-store-level stock identity is deterministic.  That normalized value is useful as
-an internal key, but it must not replace the business value shown in plan/audit
-output.  This contract restores the exact uploaded ITEMID after allocation while
-retaining the normalized value only as a technical ``_item_key``.
+The allocator now keeps uploaded ``ITEMID`` values source-faithful in core and
+uses only technical ``_item_key`` for normalized identity. This compatibility
+contract remains defensive for older allocator implementations, while never
+overwriting an already-correct technical key produced by current core.
 """
 from __future__ import annotations
 
@@ -80,8 +79,10 @@ def _restore_plan_itemids(tem_r_module, source_frame: pd.DataFrame, plan):
     rows = plan.rows.copy()
     raw_itemids = _raw_itemids_for_plan(source, rows)
 
-    # Keep the normalized identity explicitly technical; restore source field.
-    rows["_item_key"] = rows["ITEMID"].copy()
+    # Current core already exposes normalized technical identity. Preserve it.
+    # Older cores normalized ITEMID directly, so derive a key only as fallback.
+    if "_item_key" not in rows.columns:
+        rows["_item_key"] = rows["ITEMID"].map(_normalized_item)
     rows["ITEMID"] = raw_itemids
 
     audit = plan.audit.copy()

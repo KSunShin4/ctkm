@@ -187,13 +187,10 @@ def _clean_input(frame: pd.DataFrame, stock_column: str) -> pd.DataFrame:
 
     df = frame.copy()
     # File mẫu có một dòng tiêu đề lặp lại; không coi đó là sản phẩm.
-    df = df[df["ITEMID"].astype(str).str.strip().str.upper() != "ITEMID"].copy()
-    df["ITEMID"] = df["ITEMID"].map(
-        lambda value: str(value).strip().upper()
-        if value is not None and not pd.isna(value) and str(value).strip()
-        and str(value).strip().upper() not in ("NAN", "NONE", "#N/A", "#REF!", "#VALUE!")
-        else None
-    )
+    # ITEMID là business/source value: giữ nguyên byte-for-byte trong plan/audit.
+    # Mọi so sánh/phân bổ chỉ dùng technical _item_key bên dưới.
+    repeated_header = df["ITEMID"].map(_normalize_key).eq("ITEMID")
+    df = df.loc[~repeated_header].copy()
     df["_stock"] = df[stock_column].map(_as_stock)
     stock_skip_details = df[stock_column].map(_stock_skip_details)
     df["_stock_skip_marker"] = stock_skip_details.map(lambda details: details[0])
