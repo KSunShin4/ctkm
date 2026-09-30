@@ -198,3 +198,50 @@ def test_facade_delegates_to_core_without_recursive_rebinding():
     ])
     plan = tem_r.build_tem_r_plan(frame)
     assert plan.rows.loc[1, "TEM R"] == "PA"
+
+
+def test_shared_store_spare_goes_to_globally_nearest_target_not_first_shelf():
+    tem_r = _module()
+    frame = pd.DataFrame([
+        _row(1, "PA", 3, pog="G1"),
+        _row(9, "P0", 0, pog="G1"),
+        _row(10, "PA", 3, pog="G2"),
+        _row(11, "P9", 0, pog="G2"),
+    ])
+
+    plan = tem_r.build_tem_r_plan(frame)
+
+    assert plan.rows.loc[1, "TEM R"] == "KHÔNG CÓ SẢN PHẨM THAY THẾ"
+    assert plan.rows.loc[3, "TEM R"] == "PA"
+
+
+def test_placeholder_business_keys_are_quarantined():
+    tem_r = _module()
+    frame = pd.DataFrame([
+        _row(1, "PA", 2, store="NAN"),
+        _row(2, "P0", 0, store="NAN"),
+    ])
+
+    plan = tem_r.build_tem_r_plan(frame)
+
+    assert plan.exceptions["reason"].str.contains("Thiếu mã cửa hàng").all()
+    assert plan.rows["TEM R"].fillna("").str.startswith("BỎ QUA").all()
+
+
+def test_boolean_location_is_not_accepted_as_location_one():
+    tem_r = _module()
+    frame = pd.DataFrame([
+        {
+            "STOREID": "S1",
+            "POGCODE": "G1",
+            "FIXELID": "1/1",
+            "LOCATIONID": True,
+            "ITEMID": "PA",
+            "ITEMNAME": "A",
+            "TỒN": 2,
+        },
+    ])
+
+    plan = tem_r.build_tem_r_plan(frame)
+
+    assert plan.exceptions.iloc[0]["reason"] == "Thiếu hoặc sai vị trí kệ"
