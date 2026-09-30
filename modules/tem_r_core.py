@@ -1,6 +1,7 @@
 """Phân bổ Tem R cho riêng các sản phẩm hết tồn trên cùng kệ."""
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
