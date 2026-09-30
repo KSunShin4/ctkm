@@ -1,6 +1,7 @@
 """Phân bổ Tem R cho riêng các sản phẩm hết tồn trên cùng kệ."""
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -160,6 +161,175 @@ def _as_location(value: Any) -> float | None:
     return location if math.isfinite(location) else None
 
 
+def _normalize_key(value: Any) -> str:
+    if value is None:
+        return ""
+    try:
+        if pd.isna(value):
+            return ""
+    except (TypeError, ValueError):
+        pass
+    text = str(value).strip().upper()
+    if text in {"", "NAN", "NONE", "NULL", "NA", "N/A", "<NA>"} | EXCEL_ERROR_VALUES:
+        return ""
+    return text
+
+
+def _apply_tem_r_input_invariants(df: pd.DataFrame) -> pd.DataFrame:
+    """Quarantine ambiguous inventory/layout input instead of guessing."""
+    if df.empty:
+        return df
+
+    usable = df["_input_error"].isna()
+
+    # One physical coordinate cannot safely represent two independent rows.
+    positions: dict[tuple, list[int]] = {}
+    for idx in df.index[usable]:
+        key = (
+            df.at[idx, "_store_key"],
+            df.at[idx, "_pog_key"],
+            df.at[idx, "_fixel_key"],
+            df.at[idx, "_location"],
+        )
+        positions.setdefault(key, []).append(idx)
+    for indexes in positions.values():
+        if len(indexes) > 1:
+            df.loc[indexes, "_input_error"] = "Trùng vị trí kệ trong file Tem R"
+
+    usable = df["_input_error"].isna()
+    by_item: dict[tuple[str, str], list[int]] = {}
+    for idx in df.index[usable]:
+        by_item.setdefault(
+            (df.at[idx, "_store_key"], str(df.at[idx, "ITEMID"])),
+            [],
+        ).append(idx)
+
+    for indexes in by_item.values():
+        stocks = {int(df.at[idx, "_stock"]) for idx in indexes}
+        if len(stocks) > 1:
+            df.loc[indexes, "_input_error"] = "Tồn kho không nhất quán giữa các dòng cùng mã"
+            continue
+
+        stock = next(iter(stocks)) if stocks else 0
+        if stock <= 0:
+            continue
+        occupied_positions = {
+            (df.at[idx, "_pog_key"], df.at[idx, "_fixel_key"], df.at[idx, "_location"])
+            for idx in indexes
+        }
+        if stock < len(occupied_positions):
+            df.loc[indexes, "_input_error"] = (
+                f"Tồn kho ({stock}) nhỏ hơn số vị trí POG hiện có ({len(occupied_positions)})"
+            )
+
+    return df
+
+
+def _allocate_same_shelf_min_cost(
+    targets: list[int],
+    source_locations: dict[str, list[float]],
+    capacity: dict[str, int],
+    df: pd.DataFrame,
+) -> dict[int, str | None]:
+    """Maximize filled targets, then minimize total LOCATIONID distance."""
+    proposed: dict[int, str | None] = {idx: None for idx in targets}
+    items = [item for item, count in capacity.items() if int(count) > 0]
+    if not targets or not items:
+        return proposed
+
+    target_count = len(targets)
+    item_count = len(items)
+    source = 0
+    target_start = 1
+    item_start = target_start + target_count
+    sink = item_start + item_count
+    node_count = sink + 1
+    graph: list[list[dict[str, Any]]] = [[] for _ in range(node_count)]
+
+    def add_cost(left, right):
+        return (left[0] + right[0], left[1] + right[1], left[2] + right[2])
+
+    def negate(cost):
+        return (-cost[0], -cost[1], -cost[2])
+
+    def add_edge(u: int, v: int, cap: int, cost, *, item=None):
+        forward = {
+            "to": v, "rev": len(graph[v]), "cap": int(cap),
+            "cost": cost, "item": item,
+        }
+        reverse = {
+            "to": u, "rev": len(graph[u]), "cap": 0,
+            "cost": negate(cost), "item": None,
+        }
+        graph[u].append(forward)
+        graph[v].append(reverse)
+
+    zero_cost = (0.0, 0, 0)
+    for target_position in range(target_count):
+        add_edge(source, target_start + target_position, 1, zero_cost)
+    for item_position, item in enumerate(items):
+        add_edge(item_start + item_position, sink, int(capacity[item]), zero_cost)
+
+    for target_position, target_idx in enumerate(targets):
+        target_location = df.at[target_idx, "_location"]
+        for item_position, item in enumerate(items):
+            distance = min(
+                abs(location - target_location)
+                for location in source_locations[item]
+                if not pd.isna(location) and not pd.isna(target_location)
+            )
+            add_edge(
+                target_start + target_position,
+                item_start + item_position,
+                1,
+                (float(distance), target_position, item_position),
+                item=item,
+            )
+
+    while True:
+        distances = [None] * node_count
+        previous = [None] * node_count
+        in_queue = [False] * node_count
+        distances[source] = zero_cost
+        queue = deque([source])
+        in_queue[source] = True
+
+        while queue:
+            u = queue.popleft()
+            in_queue[u] = False
+            for edge_index, edge in enumerate(graph[u]):
+                if edge["cap"] <= 0:
+                    continue
+                candidate = add_cost(distances[u], edge["cost"])
+                if distances[edge["to"]] is None or candidate < distances[edge["to"]]:
+                    distances[edge["to"]] = candidate
+                    previous[edge["to"]] = (u, edge_index)
+                    if not in_queue[edge["to"]]:
+                        queue.append(edge["to"])
+                        in_queue[edge["to"]] = True
+
+        if distances[sink] is None:
+            break
+
+        node = sink
+        while node != source:
+            prior = previous[node]
+            if prior is None:
+                raise RuntimeError("Tem R min-cost invariant failed")
+            u, edge_index = prior
+            edge = graph[u][edge_index]
+            edge["cap"] -= 1
+            graph[node][edge["rev"]]["cap"] += 1
+            node = u
+
+    for target_position, target_idx in enumerate(targets):
+        for edge in graph[target_start + target_position]:
+            if edge["item"] is not None and edge["cap"] == 0:
+                proposed[target_idx] = str(edge["item"])
+                break
+    return proposed
+
+
 def _clean_input(frame: pd.DataFrame, stock_column: str) -> pd.DataFrame:
     missing = [column for column in REQUIRED_COLUMNS if column not in frame.columns]
     if stock_column not in frame.columns:
@@ -173,7 +343,7 @@ def _clean_input(frame: pd.DataFrame, stock_column: str) -> pd.DataFrame:
     df["ITEMID"] = df["ITEMID"].map(
         lambda value: str(value).strip().upper()
         if value is not None and not pd.isna(value) and str(value).strip()
-        and str(value).strip().upper() not in ("NAN", "NONE", "#N/A", "#REF!", "#VALUE!")
+        and str(value).strip().upper() not in ({"NAN", "NONE", "NULL", "NA", "N/A", "<NA>"} | EXCEL_ERROR_VALUES)
         else None
     )
     df["_stock"] = df[stock_column].map(_as_stock)
@@ -181,25 +351,26 @@ def _clean_input(frame: pd.DataFrame, stock_column: str) -> pd.DataFrame:
     df["_stock_skip_marker"] = stock_skip_details.map(lambda details: details[0])
     df["_stock_skip_reason"] = stock_skip_details.map(lambda details: details[1])
     df["_location"] = df["LOCATIONID"].map(_as_location)
-    df["_group"] = list(zip(
-        df["STOREID"].fillna("").astype(str).str.strip(),
-        df["POGCODE"].fillna("").astype(str).str.strip(),
-        df["FIXELID"].fillna("").astype(str).str.strip(),
-    ))
+    df["_store_key"] = df["STOREID"].map(_normalize_key)
+    df["_pog_key"] = df["POGCODE"].map(_normalize_key)
+    df["_fixel_key"] = df["FIXELID"].map(_normalize_key)
+    df["_group"] = list(zip(df["_store_key"], df["_pog_key"], df["_fixel_key"]))
     df["_input_error"] = pd.NA
-    required_checks = (
-        ("STOREID", "Thiếu mã cửa hàng"),
-        ("POGCODE", "Thiếu mã POG"),
-        ("FIXELID", "Thiếu mã kệ"),
-        ("ITEMID", "Thiếu hoặc sai mã sản phẩm"),
+    technical_required = (
+        ("_store_key", "Thiếu mã cửa hàng"),
+        ("_pog_key", "Thiếu mã POG"),
+        ("_fixel_key", "Thiếu mã kệ"),
     )
-    for column, reason in required_checks:
-        invalid = df[column].isna() | df[column].astype(str).str.strip().isin(("", "nan", "None"))
+    for column, reason in technical_required:
+        invalid = df[column].eq("")
         df.loc[invalid & df["_input_error"].isna(), "_input_error"] = reason
+    invalid_item = df["ITEMID"].isna()
+    df.loc[invalid_item & df["_input_error"].isna(), "_input_error"] = "Thiếu hoặc sai mã sản phẩm"
     df.loc[df["_location"].isna() & df["_input_error"].isna(), "_input_error"] = "Thiếu hoặc sai vị trí kệ"
     invalid_stock = df["_stock"].isna() & df["_input_error"].isna()
     df.loc[invalid_stock, "_input_error"] = df.loc[invalid_stock, "_stock_skip_reason"]
-    return df.reset_index(drop=True)
+    df = df.reset_index(drop=True)
+    return _apply_tem_r_input_invariants(df)
 
 
 def build_tem_r_plan(frame: pd.DataFrame, *, max_location_distance: float = 1, stock_column: str = "TỒN") -> TemRPlan:
@@ -226,7 +397,17 @@ def build_tem_r_plan(frame: pd.DataFrame, *, max_location_distance: float = 1, s
         exceptions.append({"row": int(excel_row), "ITEMID": df.at[idx, "ITEMID"], "reason": reason})
 
     valid_df = df[df["_input_error"].isna()]
-    for _, group_frame in valid_df.groupby("_group", sort=False):
+    layout_review_groups = set(
+        df.loc[
+            df["_input_error"].notna()
+            & df["_store_key"].ne("")
+            & df["_pog_key"].ne("")
+            & df["_fixel_key"].ne("")
+            & df["_location"].notna(),
+            "_group",
+        ]
+    )
+    for group_key, group_frame in valid_df.groupby("_group", sort=False):
         ordered = sorted(
             group_frame.index,
             key=lambda idx: (
@@ -265,34 +446,11 @@ def build_tem_r_plan(frame: pd.DataFrame, *, max_location_distance: float = 1, s
         # trái sang phải vì vị trí xa có thể chiếm mất đơn vị tồn cuối cùng trước
         # vị trí nằm sát sản phẩm nguồn. Khoảng cách chỉ xếp ưu tiên, không loại
         # ứng viên còn tồn trên cùng kệ.
-        proposed: dict[int, str | None] = {idx: None for idx in targets}
-        unassigned = set(targets)
-        target_order = {idx: position for position, idx in enumerate(targets)}
-        item_order = {item: position for position, item in enumerate(stock_by_item)}
-        while unassigned:
-            candidates = [
-                (
-                    min(
-                        (abs(location - df.at[target_idx, "_location"])
-                         for location in source_locations[item]
-                         if not pd.isna(location) and not pd.isna(df.at[target_idx, "_location"])),
-                        default=float("inf"),
-                    ),
-                    target_order[target_idx],
-                    item_order[item],
-                    target_idx,
-                    item,
-                )
-                for target_idx in unassigned
-                for item, count in capacity.items()
-                if count > 0
-            ]
-            if not candidates:
-                break
-            _, _, _, target_idx, item = min(candidates)
-            proposed[target_idx] = item
-            capacity[item] -= 1
-            unassigned.remove(target_idx)
+        proposed = _allocate_same_shelf_min_cost(
+            targets, source_locations, capacity, df,
+        )
+        for item in capacity:
+            capacity[item] -= sum(1 for value in proposed.values() if value == item)
 
         final_codes = [
             proposed.get(idx) if df.at[idx, "_stock"] == 0 else str(df.at[idx, "ITEMID"])
@@ -306,6 +464,8 @@ def build_tem_r_plan(frame: pd.DataFrame, *, max_location_distance: float = 1, s
         needs_rearrangement = any(
             not is_contiguous(code) for code in {code for code in final_codes if code is not None}
         )
+        if group_key in layout_review_groups:
+            needs_rearrangement = False
 
         if not needs_rearrangement:
             for source_idx in ordered:
@@ -322,7 +482,11 @@ def build_tem_r_plan(frame: pd.DataFrame, *, max_location_distance: float = 1, s
                 remaining[source_idx] = max(0, remaining[source_idx] - 1)
                 df.at[target_idx, "TEM R"] = representative
                 df.at[target_idx, "TEM_R_REPRESENTATIVE"] = representative
-                df.at[target_idx, "TEM_R_STATUS"] = "Tồn 0 - mã thay đã nằm liền nhóm"
+                df.at[target_idx, "TEM_R_STATUS"] = (
+                    "Tồn 0 - mã thay; kệ có dòng cần review"
+                    if group_key in layout_review_groups
+                    else "Tồn 0 - mã thay đã nằm liền nhóm"
+                )
             continue
 
         # Bước 2: chỉ khi một mã bị tách thành nhiều cụm mới sắp xếp toàn kệ.
