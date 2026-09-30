@@ -60,11 +60,14 @@ def build_tem_r_plan(
     - positive stock is store-level inventory for ``STOREID + ITEMID``;
     - repeated POG rows never add stock together;
     - every positive POG position reserves one unit before spare capacity is used;
-    - replacement candidates must still exist on the same shelf and respect the
-      configured LOCATIONID distance.
+    - replacement candidates must exist on the same shelf;
+    - LOCATIONID distance ranks candidates nearest-first but never excludes an
+      otherwise valid same-shelf candidate.
     """
     if max_location_distance <= 0:
         raise ValueError("max_location_distance phải lớn hơn 0")
+    # Giữ tham số để tương thích API/workbook cũ. Đây không còn là hard cap;
+    # khoảng cách LOCATIONID chỉ dùng để xếp ưu tiên ứng viên gần trước.
 
     df = _clean_input(frame, stock_column)
     df["TEM R"] = pd.NA
@@ -142,6 +145,8 @@ def build_tem_r_plan(
 
         # Candidate SKU must be present on this shelf, but capacity comes from
         # the store-wide ledger and is permanently consumed across shelf groups.
+        # Distance is a ranking signal only: nearest usable stock wins first,
+        # but a farther SKU on this same shelf remains eligible.
         capacity = {
             item: store_capacity.get((store, item), 0)
             for item in stock_by_item
@@ -171,13 +176,6 @@ def build_tem_r_plan(
                 for target_idx in unassigned
                 for item, count in capacity.items()
                 if count > 0
-                and min(
-                    (
-                        abs(location - df.at[target_idx, "_location"])
-                        for location in source_locations[item]
-                    ),
-                    default=float("inf"),
-                ) <= max_location_distance
             ]
             if not candidates:
                 break
@@ -208,25 +206,6 @@ def build_tem_r_plan(
             not is_contiguous(code)
             for code in {code for code in final_codes if code is not None}
         )
-
-        if needs_rearrangement:
-            arranged_preview: list[str] = []
-            for item in stock_by_item:
-                arranged_preview.extend([item] * final_codes.count(item))
-            arranged_preview.extend(
-                ["KHÔNG CÓ SẢN PHẨM THAY THẾ"] * final_codes.count(None)
-            )
-
-            rearrangement_within_distance = all(
-                representative == "KHÔNG CÓ SẢN PHẨM THAY THẾ"
-                or min(
-                    abs(location - df.at[target_idx, "_location"])
-                    for location in source_locations[representative]
-                ) <= max_location_distance
-                for target_idx, representative in zip(ordered, arranged_preview)
-            )
-            if not rearrangement_within_distance:
-                needs_rearrangement = False
 
         if not needs_rearrangement:
             for target_idx in targets:

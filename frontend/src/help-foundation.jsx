@@ -6,7 +6,6 @@ export const MODULE_HELP={
   ops:{title:"CTKM / Tem",summary:"Tổng hợp CTKM, POG, Clearance, Tem R và hỗ trợ kiểm tem.",mapping:"Nếu hệ thống không đủ chắc chắn về tên cột, hãy xác nhận mapping theo giá trị thực tế trước khi tiếp tục."},
   guide:{title:"Hướng dẫn",summary:"Tra cứu Quick Start, khái niệm và lỗi thường gặp theo từng module."},
   assistant:{title:"Trợ lý",summary:"Đưa gợi ý và giải thích; người dùng vẫn là người quyết định áp dụng."},
-  settings:{title:"Cài đặt",summary:"Cấu hình chung; không chứa thao tác nghiệp vụ hằng ngày."},
 }
 export function HelpTip({title="Trợ giúp",text,children}){
   const prefs=useUiPreferences()
