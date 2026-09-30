@@ -162,10 +162,15 @@ def _normalize_key(value: Any) -> str:
             return ""
     except (TypeError, ValueError):
         pass
-    return str(value).strip().upper()
+    text = str(value).strip().upper()
+    if text in {"", "NAN", "NONE", "NULL", "N/A", "#N/A", "#REF!", "#VALUE!"}:
+        return ""
+    return text
 
 
 def _as_location(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
     try:
         location = float(value)
     except (TypeError, ValueError):
@@ -201,13 +206,13 @@ def _clean_input(frame: pd.DataFrame, stock_column: str) -> pd.DataFrame:
     df["_group"] = list(zip(df["_store_key"], df["_pog_key"], df["_fixel_key"]))
     df["_input_error"] = pd.NA
     required_checks = (
-        ("STOREID", "Thiếu mã cửa hàng"),
-        ("POGCODE", "Thiếu mã POG"),
-        ("FIXELID", "Thiếu mã kệ"),
-        ("ITEMID", "Thiếu hoặc sai mã sản phẩm"),
+        ("_store_key", "Thiếu mã cửa hàng"),
+        ("_pog_key", "Thiếu mã POG"),
+        ("_fixel_key", "Thiếu mã kệ"),
+        ("_item_key", "Thiếu hoặc sai mã sản phẩm"),
     )
-    for column, reason in required_checks:
-        invalid = df[column].isna() | df[column].astype(str).str.strip().isin(("", "nan", "None"))
+    for key_column, reason in required_checks:
+        invalid = df[key_column].eq("")
         df.loc[invalid & df["_input_error"].isna(), "_input_error"] = reason
     df.loc[df["_location"].isna() & df["_input_error"].isna(), "_input_error"] = "Thiếu hoặc sai vị trí kệ"
     invalid_stock = df["_stock"].isna() & df["_input_error"].isna()
