@@ -365,7 +365,11 @@ def build_tem_r_plan(
 
     valid_df = df[df["_input_error"].isna()]
 
-    for _, group_frame in valid_df.groupby("_group", sort=False):
+    # Build every valid shelf first, then spend shared store capacity globally.
+    # This prevents an earlier worksheet/shelf from taking the last spare unit
+    # when a later same-store target is physically closer to its source SKU.
+    groups: list[dict[str, Any]] = []
+    for group_key, group_frame in valid_df.groupby("_group", sort=False):
         ordered = sorted(
             group_frame.index,
             key=lambda idx: (
@@ -378,10 +382,9 @@ def build_tem_r_plan(
         if not ordered:
             continue
 
-        store = df.at[ordered[0], "_store_key"]
+        store = group_key[0]
         stock_by_item: dict[str, int] = {}
         source_locations: dict[str, list[float]] = {}
-
         for source_idx in ordered:
             item = df.at[source_idx, "_item_key"]
             stock = store_stock_by_item.get((store, item), 0)
@@ -391,46 +394,74 @@ def build_tem_r_plan(
             source_locations.setdefault(item, []).append(df.at[source_idx, "_location"])
 
         targets = [idx for idx in ordered if idx not in covered_rows]
-        if not targets:
-            continue
+        groups.append({
+            "key": group_key,
+            "store": store,
+            "ordered": ordered,
+            "stock_by_item": stock_by_item,
+            "source_locations": source_locations,
+            "targets": targets,
+        })
 
-        capacity = {
-            item: store_capacity.get((store, item), 0)
-            for item in stock_by_item
+    proposed: dict[int, str | None] = {}
+    group_order = {group["key"]: position for position, group in enumerate(groups)}
+    target_order: dict[int, int] = {}
+    item_order_by_group: dict[tuple[str, str, str], dict[str, int]] = {}
+
+    for group in groups:
+        item_order_by_group[group["key"]] = {
+            item: position for position, item in enumerate(group["stock_by_item"])
         }
-        proposed: dict[int, str | None] = {idx: None for idx in targets}
-        unassigned = set(targets)
-        target_order = {idx: position for position, idx in enumerate(targets)}
-        item_order = {item: position for position, item in enumerate(stock_by_item)}
+        for position, target_idx in enumerate(group["targets"]):
+            proposed[target_idx] = None
+            target_order[target_idx] = position
 
-        while unassigned:
-            candidates = [
-                (
-                    min(
+    unassigned = set(proposed)
+    while unassigned:
+        candidates: list[tuple[float, int, int, int, int, str, str]] = []
+        for group in groups:
+            store = group["store"]
+            key = group["key"]
+            item_order = item_order_by_group[key]
+            for target_idx in group["targets"]:
+                if target_idx not in unassigned:
+                    continue
+                for item in group["stock_by_item"]:
+                    if store_capacity.get((store, item), 0) <= 0:
+                        continue
+                    distance = min(
                         (
                             abs(location - df.at[target_idx, "_location"])
-                            for location in source_locations[item]
+                            for location in group["source_locations"][item]
                             if not pd.isna(location)
                             and not pd.isna(df.at[target_idx, "_location"])
                         ),
                         default=float("inf"),
-                    ),
-                    target_order[target_idx],
-                    item_order[item],
-                    target_idx,
-                    item,
-                )
-                for target_idx in unassigned
-                for item, count in capacity.items()
-                if count > 0
-            ]
-            if not candidates:
-                break
-            _, _, _, target_idx, item = min(candidates)
-            proposed[target_idx] = item
-            capacity[item] -= 1
-            store_capacity[(store, item)] = capacity[item]
-            unassigned.remove(target_idx)
+                    )
+                    candidates.append((
+                        distance,
+                        group_order[key],
+                        target_order[target_idx],
+                        item_order[item],
+                        target_idx,
+                        item,
+                        store,
+                    ))
+
+        if not candidates:
+            break
+
+        _, _, _, _, target_idx, item, store = min(candidates)
+        proposed[target_idx] = item
+        store_capacity[(store, item)] -= 1
+        unassigned.remove(target_idx)
+
+    for group in groups:
+        ordered = group["ordered"]
+        targets = group["targets"]
+        stock_by_item = group["stock_by_item"]
+        if not targets:
+            continue
 
         final_codes = [
             df.at[idx, "_item_key"] if idx in covered_rows else proposed.get(idx)
@@ -447,7 +478,7 @@ def build_tem_r_plan(
             )
 
         needs_rearrangement = (
-            df.at[ordered[0], "_group"] not in invalid_groups
+            group["key"] not in invalid_groups
             and any(
                 not is_contiguous(code)
                 for code in {code for code in final_codes if code is not None}
