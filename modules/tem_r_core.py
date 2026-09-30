@@ -407,6 +407,11 @@ def build_tem_r_plan(
             "targets": targets,
         })
 
+    # Canonicalize shelf order before any global capacity tie-break. Without this,
+    # equal-distance targets could consume the last spare unit based only on
+    # worksheet encounter order (groupby(..., sort=False)).
+    groups.sort(key=lambda group: group["key"])
+
     proposed: dict[int, str | None] = {}
     group_order = {group["key"]: position for position, group in enumerate(groups)}
     target_order: dict[int, int] = {}
