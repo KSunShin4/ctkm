@@ -60,8 +60,7 @@ def build_tem_r_plan(
     )
 
 
-# ``create_tem_r_workbook`` uses the corrected store-level allocator above.
-_core.build_tem_r_plan = build_tem_r_plan
+# create_tem_r_workbook calls the hardened core allocator through this facade.
 
 
 def create_tem_r_workbook(
