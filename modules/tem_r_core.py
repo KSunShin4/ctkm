@@ -463,7 +463,7 @@ def build_tem_r_plan(
                     continue
                 df.at[target_idx, "TEM R"] = representative
                 df.at[target_idx, "TEM_R_REPRESENTATIVE"] = representative
-                df.at[target_idx, "TEM_R_STATUS"] = "Tồn thiếu/0 - mã thay đã nằm liền nhóm"
+                df.at[target_idx, "TEM_R_STATUS"] = "Tồn 0 - mã thay đã nằm liền nhóm"
             continue
 
         arranged_items: list[str] = []
