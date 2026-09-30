@@ -206,6 +206,8 @@ def build_tem_r_plan(frame: pd.DataFrame, *, max_location_distance: float = 1, s
     """Gán mã còn tồn cho vị trí tồn 0 và gom các mã thay giống nhau liền kề."""
     if max_location_distance <= 0:
         raise ValueError("max_location_distance phải lớn hơn 0")
+    # Giữ tham số để tương thích API/workbook cũ. Đây không còn là hard cap;
+    # khoảng cách LOCATIONID chỉ dùng để xếp ưu tiên ứng viên gần trước.
     df = _clean_input(frame, stock_column)
     df["TEM R"] = pd.NA
     df["TEM_R_STATUS"] = pd.NA
