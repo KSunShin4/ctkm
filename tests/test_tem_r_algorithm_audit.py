@@ -186,3 +186,36 @@ def test_min_cost_helper_matches_bruteforce_on_250_small_cases():
         )
         expected = _brute_objective(target_positions, source_locations, capacities)
         assert actual == expected
+
+
+def test_invalid_stock_row_blocks_auto_rearrangement_across_unknown_slot():
+    tem_r = _module()
+    frame = pd.DataFrame([
+        _row(1, "PA", 3),
+        _row(2, "PX", "#N/A"),
+        _row(3, "PB", 1),
+        _row(4, "P0", 0),
+    ])
+
+    plan = tem_r.build_tem_r_plan(frame)
+
+    assert plan.rows.loc[1, "TEM R"] == "BỎ QUA - TỒN KHO LỖI #N/A"
+    assert plan.rows.loc[3, "TEM R"] == "PA"
+    assert plan.rows.loc[3, "TEM_R_STATUS"] == "Tồn 0 - mã thay; kệ có dòng cần review"
+    # Positive rows must not be rewritten as a full-shelf rearrangement across
+    # the unknown physical slot.
+    assert pd.isna(plan.rows.loc[0, "TEM R"])
+    assert pd.isna(plan.rows.loc[2, "TEM R"])
+
+
+def test_missing_token_variants_are_not_accepted_as_real_shelf_keys():
+    tem_r = _module()
+    frame = pd.DataFrame([
+        _row(1, "PA", 2, store="N/A"),
+        _row(2, "P0", 0, store="N/A"),
+    ])
+
+    plan = tem_r.build_tem_r_plan(frame)
+
+    assert set(plan.rows["TEM_R_STATUS"]) == {"Thiếu mã cửa hàng"}
+    assert plan.rows["TEM R"].isna().all()
