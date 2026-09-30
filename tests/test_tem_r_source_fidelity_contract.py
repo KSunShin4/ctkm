@@ -129,3 +129,36 @@ def test_contract_installation_is_idempotent():
     once = tem_r.build_tem_r_plan
     install_tem_r_source_fidelity_contract(core)
     assert tem_r.build_tem_r_plan is once
+
+
+def test_tem_r_core_itself_preserves_raw_itemid_without_backend_wrapper():
+    tem_r = _module()
+    frame = pd.DataFrame([
+        _row(" p00123 ", 2, location=1),
+        _row("P00999", 0, location=2),
+    ])
+    original = frame.copy(deep=True)
+
+    # Call the core allocator directly so this invariant cannot depend on the
+    # backend installation order or compatibility wrapper.
+    plan = tem_r._core.build_tem_r_plan(frame)
+
+    pd.testing.assert_frame_equal(frame, original)
+    assert plan.rows.loc[0, "ITEMID"] == " p00123 "
+    assert plan.rows.loc[0, "_item_key"] == "P00123"
+    assert plan.audit.loc[0, "ITEMID"] == " p00123 "
+    assert plan.rows.loc[1, "TEM R"] == "P00123"
+
+
+def test_source_fidelity_wrapper_does_not_replace_core_technical_item_key():
+    tem_r = _module()
+    _install(tem_r)
+    frame = pd.DataFrame([
+        _row(" p00123 ", 2, location=1),
+        _row("P00999", 0, location=2),
+    ])
+
+    plan = tem_r.build_tem_r_plan(frame)
+
+    assert plan.rows.loc[0, "ITEMID"] == " p00123 "
+    assert plan.rows.loc[0, "_item_key"] == "P00123"
