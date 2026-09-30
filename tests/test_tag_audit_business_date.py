@@ -191,7 +191,7 @@ def test_known_other_report_month_still_blocks(monkeypatch):
     assert "2026-08" in str(exc_info.value.detail)
 
 
-def test_legacy_workbook_without_metadata_remains_backward_compatible(monkeypatch):
+def test_workbook_without_metadata_is_fail_closed(monkeypatch):
     monkeypatch.setattr(business_date, "current_vn_business_date", lambda: "2026-09-06")
     rows = tag_audit_contract._parse_action_workbook(
         BytesIO(_workbook_bytes(include_guide=False))
@@ -200,8 +200,29 @@ def test_legacy_workbook_without_metadata_remains_backward_compatible(monkeypatc
     payload = tag_audit_contract._context_payload({
         "source": "uploaded-workbook", "job_id": None, "month": None, "rows": rows,
     })
-    result = tag_audit_contract.compare_observation(rows, _observed())
-
     assert payload["business_date"] is None
-    assert payload["business_date_blocked"] is False
-    assert result["verdict"]["code"] == "correct"
+    assert payload["business_date_blocked"] is True
+    assert payload["business_date_block_reason"] == "missing_report_metadata"
+    assert payload["scanner_reclassifies_actions"] is False
+
+    with pytest.raises(HTTPException) as exc_info:
+        tag_audit_contract.compare_observation(rows, _observed())
+    assert exc_info.value.status_code == 409
+    assert "metadata" in str(exc_info.value.detail).lower()
+
+
+def test_incomplete_report_metadata_is_fail_closed(monkeypatch):
+    monkeypatch.setattr(business_date, "current_vn_business_date", lambda: "2026-09-06")
+    raw = _workbook_bytes(report_date="", report_month="2026-09")
+    rows = tag_audit_contract._parse_action_workbook(BytesIO(raw))
+
+    payload = tag_audit_contract._context_payload({
+        "source": "uploaded-workbook", "job_id": None, "month": None, "rows": rows,
+    })
+
+    assert payload["business_date_blocked"] is True
+    assert payload["business_date_block_reason"] == "missing_report_metadata"
+    assert payload["scanner_reclassifies_actions"] is False
+    with pytest.raises(HTTPException) as exc_info:
+        tag_audit_contract.compare_observation(rows, _observed())
+    assert exc_info.value.status_code == 409
