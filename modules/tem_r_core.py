@@ -348,11 +348,10 @@ def _clean_input(frame: pd.DataFrame, stock_column: str) -> pd.DataFrame:
     df["_stock_skip_marker"] = stock_skip_details.map(lambda details: details[0])
     df["_stock_skip_reason"] = stock_skip_details.map(lambda details: details[1])
     df["_location"] = df["LOCATIONID"].map(_as_location)
-    df["_group"] = list(zip(
-        df["STOREID"].fillna("").astype(str).str.strip(),
-        df["POGCODE"].fillna("").astype(str).str.strip(),
-        df["FIXELID"].fillna("").astype(str).str.strip(),
-    ))
+    df["_store_key"] = df["STOREID"].map(_normalize_key)
+    df["_pog_key"] = df["POGCODE"].map(_normalize_key)
+    df["_fixel_key"] = df["FIXELID"].map(_normalize_key)
+    df["_group"] = list(zip(df["_store_key"], df["_pog_key"], df["_fixel_key"]))
     df["_input_error"] = pd.NA
     required_checks = (
         ("STOREID", "Thiếu mã cửa hàng"),
@@ -366,7 +365,8 @@ def _clean_input(frame: pd.DataFrame, stock_column: str) -> pd.DataFrame:
     df.loc[df["_location"].isna() & df["_input_error"].isna(), "_input_error"] = "Thiếu hoặc sai vị trí kệ"
     invalid_stock = df["_stock"].isna() & df["_input_error"].isna()
     df.loc[invalid_stock, "_input_error"] = df.loc[invalid_stock, "_stock_skip_reason"]
-    return df.reset_index(drop=True)
+    df = df.reset_index(drop=True)
+    return _apply_tem_r_input_invariants(df)
 
 
 def build_tem_r_plan(frame: pd.DataFrame, *, max_location_distance: float = 1, stock_column: str = "TỒN") -> TemRPlan:
