@@ -28,6 +28,8 @@ const ARTICLES=[
     "Tải file Tem R .xlsx.",
     "Chọn sheet và xác nhận mapping cột nếu file có cấu trúc khác.",
     "Chọn cột tồn kho đang hiển thị trong file.",
+    "Trong cùng STOREID + POGCODE + FIXELID, hệ thống ưu tiên mã còn tồn gần vị trí trống nhất; mã xa hơn vẫn được dùng nếu mã gần không đủ.",
+    "Nếu cùng một mã bị chia thành nhiều cụm, hệ thống có thể sắp xếp lại toàn kệ để gom mã liền nhau mà không tăng số vị trí vượt năng lực tồn.",
     "Chạy phân bổ và tải file kết quả."
   ]},
   {id:"schedule",group:"Xếp lịch",title:"Tạo lịch tuần",summary:"Tạo phương án rồi chỉnh thủ công khi cần.",steps:[
