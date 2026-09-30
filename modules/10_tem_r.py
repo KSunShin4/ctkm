@@ -102,7 +102,7 @@ def build_tem_r_plan(
         stock = int(row["_stock"])
         if stock <= 0:
             continue
-        store = str(row["STOREID"]).strip()
+        store = str(row["_store_key"])
         item = str(row["ITEMID"])
         key = (store, item)
         store_stock_by_item[key] = max(store_stock_by_item.get(key, 0), stock)
@@ -127,7 +127,7 @@ def build_tem_r_plan(
         if not ordered:
             continue
 
-        store = str(df.at[ordered[0], "STOREID"]).strip()
+        store = str(df.at[ordered[0], "_store_key"])
         stock_by_item: dict[str, int] = {}
         source_locations: dict[str, list[float]] = {}
 
@@ -151,40 +151,13 @@ def build_tem_r_plan(
             item: store_capacity.get((store, item), 0)
             for item in stock_by_item
         }
-        proposed: dict[int, str | None] = {idx: None for idx in targets}
-        unassigned = set(targets)
-        target_order = {idx: position for position, idx in enumerate(targets)}
-        item_order = {item: position for position, item in enumerate(stock_by_item)}
-
-        while unassigned:
-            candidates = [
-                (
-                    min(
-                        (
-                            abs(location - df.at[target_idx, "_location"])
-                            for location in source_locations[item]
-                            if not pd.isna(location)
-                            and not pd.isna(df.at[target_idx, "_location"])
-                        ),
-                        default=float("inf"),
-                    ),
-                    target_order[target_idx],
-                    item_order[item],
-                    target_idx,
-                    item,
-                )
-                for target_idx in unassigned
-                for item, count in capacity.items()
-                if count > 0
-            ]
-            if not candidates:
-                break
-
-            _, _, _, target_idx, item = min(candidates)
-            proposed[target_idx] = item
-            capacity[item] -= 1
+        proposed = _allocate_same_shelf_min_cost(
+            targets, source_locations, capacity, df,
+        )
+        for item in capacity:
+            used = sum(1 for value in proposed.values() if value == item)
+            capacity[item] -= used
             store_capacity[(store, item)] = capacity[item]
-            unassigned.remove(target_idx)
 
         final_codes = [
             proposed.get(idx)
@@ -262,7 +235,7 @@ def build_tem_r_plan(
     for idx, row in valid_df.iterrows():
         if int(row["_stock"]) <= 0:
             continue
-        key = (str(row["STOREID"]).strip(), str(row["ITEMID"]))
+        key = (str(row["_store_key"]), str(row["ITEMID"]))
         remaining[idx] = store_capacity.get(key, 0)
 
     audit_columns = [
