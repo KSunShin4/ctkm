@@ -330,15 +330,19 @@ def build_tem_r_plan(
     for key, stock in store_stock_by_item.items():
         if stock <= 0:
             continue
-        valid_native_positions: list[tuple[int, int]] = []
+        valid_native_positions: list[tuple[tuple[str, str, str], float, int]] = []
         for rows in positions_by_item.get(key, {}).values():
             valid_rows = [idx for idx in rows if pd.isna(df.at[idx, "_input_error"])]
             if not valid_rows:
                 continue
             representative = min(valid_rows)
-            valid_native_positions.append((representative, representative))
-        valid_native_positions.sort()
-        for _, idx in valid_native_positions[: min(stock, len(valid_native_positions))]:
+            valid_native_positions.append((
+                df.at[representative, "_group"],
+                df.at[representative, "_location"],
+                representative,
+            ))
+        valid_native_positions.sort(key=lambda value: (value[0], value[1], value[2]))
+        for _, _, idx in valid_native_positions[: min(stock, len(valid_native_positions))]:
             covered_rows.add(idx)
             df.at[idx, "TEM_R_STATUS"] = "Còn tồn - không cần Tem R"
 
