@@ -432,34 +432,11 @@ def build_tem_r_plan(frame: pd.DataFrame, *, max_location_distance: float = 1, s
         # trái sang phải vì vị trí xa có thể chiếm mất đơn vị tồn cuối cùng trước
         # vị trí nằm sát sản phẩm nguồn. Khoảng cách chỉ xếp ưu tiên, không loại
         # ứng viên còn tồn trên cùng kệ.
-        proposed: dict[int, str | None] = {idx: None for idx in targets}
-        unassigned = set(targets)
-        target_order = {idx: position for position, idx in enumerate(targets)}
-        item_order = {item: position for position, item in enumerate(stock_by_item)}
-        while unassigned:
-            candidates = [
-                (
-                    min(
-                        (abs(location - df.at[target_idx, "_location"])
-                         for location in source_locations[item]
-                         if not pd.isna(location) and not pd.isna(df.at[target_idx, "_location"])),
-                        default=float("inf"),
-                    ),
-                    target_order[target_idx],
-                    item_order[item],
-                    target_idx,
-                    item,
-                )
-                for target_idx in unassigned
-                for item, count in capacity.items()
-                if count > 0
-            ]
-            if not candidates:
-                break
-            _, _, _, target_idx, item = min(candidates)
-            proposed[target_idx] = item
-            capacity[item] -= 1
-            unassigned.remove(target_idx)
+        proposed = _allocate_same_shelf_min_cost(
+            targets, source_locations, capacity, df,
+        )
+        for item in capacity:
+            capacity[item] -= sum(1 for value in proposed.values() if value == item)
 
         final_codes = [
             proposed.get(idx) if df.at[idx, "_stock"] == 0 else str(df.at[idx, "ITEMID"])
