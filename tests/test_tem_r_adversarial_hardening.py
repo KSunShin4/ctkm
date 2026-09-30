@@ -225,7 +225,7 @@ def test_placeholder_business_keys_are_quarantined():
     plan = tem_r.build_tem_r_plan(frame)
 
     assert plan.exceptions["reason"].str.contains("Thiếu mã cửa hàng").all()
-    assert plan.rows["TEM R"].fillna("").str.startswith("BỎ QUA").all()
+    assert plan.rows["TEM R"].isna().all()
 
 
 def test_boolean_location_is_not_accepted_as_location_one():
