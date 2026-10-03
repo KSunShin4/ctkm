@@ -12,7 +12,7 @@ permissions:
 
 concurrency:
   group: ctkm-cloud-run-production
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   deploy:
@@ -65,6 +65,8 @@ jobs:
             --min-instances=1
             --max-instances=1
             --no-cpu-throttling
+            --cpu=2
+            --memory=2Gi
           revision_traffic: 'LATEST=100'
 
       - name: Verify hardened production health

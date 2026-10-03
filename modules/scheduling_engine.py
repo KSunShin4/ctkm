@@ -713,7 +713,7 @@ def _build_and_solve(config: dict[str, Any], variant: str) -> dict[str, Any] | N
                 soft_terms.append((miss, weights["pairing"]))
 
     solver = cp_model.CpSolver()
-    solver.parameters.max_time_in_seconds = 4.0
+    solver.parameters.max_time_in_seconds = 8.0
     solver.parameters.num_search_workers = 1
     solver.parameters.random_seed = 0
 
