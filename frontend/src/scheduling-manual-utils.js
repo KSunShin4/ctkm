@@ -367,3 +367,165 @@ export function getExportDockState({validation, dirty, message=""}={}){
   }
 }
 
+function addDaysUtil(iso, n) {
+  const [y, m, d] = String(iso).split("-").map(Number)
+  const dt = new Date(y, m - 1, d)
+  dt.setDate(dt.getDate() + n)
+  const yr = dt.getFullYear(), mo = String(dt.getMonth() + 1).padStart(2, "0"), da = String(dt.getDate()).padStart(2, "0")
+  return `${yr}-${mo}-${da}`
+}
+
+function fmtDateUtil(iso) {
+  const parts = String(iso).split("-")
+  return parts.length >= 3 ? `${parts[2]}/${parts[1]}` : iso
+}
+
+export function validateConfigPreflight(config) {
+  const errors = []
+  if (!config) return { valid: true, errors }
+
+  const employees = config.employees || []
+  const active = employees.filter(e => e.active)
+  if (active.length === 0) {
+    errors.push("Cần ít nhất 1 nhân viên đang hoạt động.")
+    return { valid: false, errors }
+  }
+
+  const managers = active.filter(e => e.role === "STORE_MANAGER")
+  if (managers.length === 0) {
+    errors.push("Chưa có Cửa hàng trưởng (CHT) nào đang hoạt động. Vui lòng chọn đúng 1 CHT.")
+  } else if (managers.length > 1) {
+    errors.push(`Có ${managers.length} CHT đang hoạt động. Hệ thống yêu cầu phải có đúng 1 CHT.`)
+  }
+
+  const activeIds = new Set(active.map(e => e.id))
+  const staffing = config.staffing || []
+  const receivingDays = config.receiving_days || []
+
+  for (const s of staffing) {
+    const m = Number(s.morning || 0)
+    const a = Number(s.afternoon || 0)
+    const dLabel = dayLabel(config, s.date)
+    const fDate = fmtDateUtil(s.date)
+    if (m > 3) {
+      errors.push(`${dLabel} (${fDate}): Ca Sáng tối đa 3 người (hiện đặt ${m}).`)
+    }
+    if (m + a > active.length) {
+      errors.push(
+        `${dLabel} (${fDate}): Nhu cầu ${m} Sáng + ${a} Chiều (${m + a} người) vượt số nhân viên đang có (${active.length} người).`
+      )
+    }
+  }
+
+  for (const r of receivingDays) {
+    const s = staffing.find(item => item.date === r.date)
+    const aft = Number(s?.afternoon || 0)
+    const rCount = Number(r.count || 0)
+    const dLabel = dayLabel(config, r.date)
+    const fDate = fmtDateUtil(r.date)
+    if (rCount > aft) {
+      errors.push(
+        `Ngày nhận hàng ${dLabel} (${fDate}): Số người nhận hàng (${rCount}) vượt quá quân số ca Chiều (${aft}).`
+      )
+    }
+  }
+
+  for (const [idx, p] of (config.pairing_rules || []).entries()) {
+    const type = p.relation_type || (p.max_same_shifts_per_week != null ? "MAX" : "UNLIMITED")
+    if (["MAX", "MIN", "EXACT", "PREFER_TOGETHER"].includes(type)) {
+      const count = p.count ?? p.max_same_shifts_per_week
+      if (count === null || count === "" || isNaN(count)) {
+        errors.push(`Quan hệ #${idx + 1} (${employeeName(config, p.employee_a)} ↔ ${employeeName(config, p.employee_b)}): Thiếu số ca/tuần cho loại ${type}.`)
+      }
+    }
+  }
+
+  const hardByEmpDate = new Map()
+  for (const f of config.fixed_weekday_rules || []) {
+    if (f.level === "HARD" && activeIds.has(f.employee_id)) {
+      const d = addDaysUtil(config.week_start, Number(f.weekday))
+      const k = `${f.employee_id}|${d}`
+      if (!hardByEmpDate.has(k)) hardByEmpDate.set(k, [])
+      hardByEmpDate.get(k).push({
+        source: f.source === "REGIONAL" ? "QLKV" : "Ca cố định",
+        shift: f.shift,
+      })
+    }
+  }
+
+  for (const req of config.requests || []) {
+    if (["OFF", "MUST_MORNING", "MUST_AFTERNOON"].includes(req.type) && activeIds.has(req.employee_id)) {
+      const shift = req.type === "OFF" ? "OFF" : req.type === "MUST_MORNING" ? "MORNING" : "AFTERNOON"
+      const k = `${req.employee_id}|${req.date}`
+      if (!hardByEmpDate.has(k)) hardByEmpDate.set(k, [])
+      hardByEmpDate.get(k).push({
+        source: "Nguyện vọng",
+        shift,
+      })
+    }
+  }
+
+  for (const [k, entries] of hardByEmpDate.entries()) {
+    const distinct = new Set(entries.map(e => e.shift))
+    if (distinct.size > 1) {
+      const [empId, d] = k.split("|")
+      const name = employeeName(config, empId)
+      const dLabel = dayLabel(config, d)
+      const fDate = fmtDateUtil(d)
+      const desc = entries.map(e => `${e.source} (${e.shift === "MORNING" ? "Sáng" : e.shift === "AFTERNOON" ? "Chiều" : "OFF"})`).join(" vs ")
+      errors.push(`Xung đột ca bắt buộc: ${name} ngày ${dLabel} (${fDate}) có ${desc}.`)
+    }
+  }
+
+  return { valid: errors.length === 0, errors }
+}
+
+export const DRAFT_STORAGE_KEY = "ctkm.scheduling.draft.v1"
+
+export function saveDraft(data, storage = typeof localStorage !== "undefined" ? localStorage : null) {
+  if (!storage || !data || !data.config) return false
+  try {
+    const payload = {
+      version: 1,
+      savedAt: Date.now(),
+      config: data.config,
+      assignments: Array.isArray(data.assignments) ? data.assignments : [],
+      manualTouched: Array.from(data.manualTouched || []),
+      variant: data.variant || "manual",
+    }
+    storage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(payload))
+    return true
+  } catch {
+    return false
+  }
+}
+
+export function loadDraft(storage = typeof localStorage !== "undefined" ? localStorage : null) {
+  if (!storage) return null
+  try {
+    const raw = storage.getItem(DRAFT_STORAGE_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw)
+    if (!parsed || typeof parsed !== "object" || !parsed.config) return null
+    return {
+      config: parsed.config,
+      assignments: Array.isArray(parsed.assignments) ? parsed.assignments : [],
+      manualTouched: new Set(Array.isArray(parsed.manualTouched) ? parsed.manualTouched : []),
+      variant: parsed.variant || "manual",
+      savedAt: parsed.savedAt || null,
+    }
+  } catch {
+    return null
+  }
+}
+
+export function clearDraft(storage = typeof localStorage !== "undefined" ? localStorage : null) {
+  if (!storage) return false
+  try {
+    storage.removeItem(DRAFT_STORAGE_KEY)
+    return true
+  } catch {
+    return false
+  }
+}
+

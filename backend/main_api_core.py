@@ -511,7 +511,7 @@ def admin_login(
     if not _ADMIN_PASSWORD:
         raise HTTPException(
             status_code=503,
-            detail="Admin chưa được cấu hình. Hãy đặt ADMIN_PASSWORD trên Render.",
+            detail="Admin chưa được cấu hình. Hãy đặt ADMIN_PASSWORD trên Cloud Run.",
         )
     valid_user = hmac.compare_digest(username.strip(), _ADMIN_USERNAME)
     valid_password = hmac.compare_digest(password, _ADMIN_PASSWORD)

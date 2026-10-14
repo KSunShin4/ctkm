@@ -1,6 +1,6 @@
 import test from "node:test"
 import assert from "node:assert/strict"
-import { applySmartSuggestion, buildLockedOptimizationConfig, buildSmartSuggestions, getExportDockState, rebalanceManualMorningTimes, restoreTouchedReceiving, summarizeCurrentSchedule } from "./scheduling-manual-utils.js"
+import { applySmartSuggestion, buildLockedOptimizationConfig, buildSmartSuggestions, clearDraft, DRAFT_STORAGE_KEY, getExportDockState, loadDraft, rebalanceManualMorningTimes, restoreTouchedReceiving, saveDraft, summarizeCurrentSchedule, validateConfigPreflight } from "./scheduling-manual-utils.js"
 
 function baseConfig(){
   return {
@@ -191,5 +191,103 @@ test("export dock surfaces the last export error next to the action button",()=>
   assert.equal(state.tone,"invalid")
   assert.equal(state.label,"Xuất Excel chưa thành công")
   assert.match(state.detail,/workbook invalid/)
+})
+
+test("validateConfigPreflight passes on valid configuration",()=>{
+  const config = smartConfig()
+  const result = validateConfigPreflight(config)
+  assert.equal(result.valid, true)
+  assert.equal(result.errors.length, 0)
+})
+
+test("validateConfigPreflight catches receiving count exceeding afternoon staffing",()=>{
+  const config = smartConfig()
+  config.receiving_days = [{date: "2026-09-21", count: 3}]
+  // Afternoon staffing on 2026-09-21 is 2
+  const result = validateConfigPreflight(config)
+  assert.equal(result.valid, false)
+  assert.ok(result.errors.some(e => e.includes("Số người nhận hàng") && e.includes("vượt quá quân số ca Chiều")))
+})
+
+test("validateConfigPreflight catches hard conflict between QLKV rule and requests",()=>{
+  const config = smartConfig()
+  config.fixed_weekday_rules = [
+    {employee_id: "phuong", weekday: 0, shift: "MORNING", level: "HARD", source: "REGIONAL"}
+  ]
+  config.requests = [
+    {employee_id: "phuong", date: "2026-09-21", type: "OFF"}
+  ]
+  const result = validateConfigPreflight(config)
+  assert.equal(result.valid, false)
+  assert.ok(result.errors.some(e => e.includes("Xung đột ca bắt buộc") && e.includes("QLKV") && e.includes("Nguyện vọng")))
+})
+
+test("validateConfigPreflight catches missing or multiple store managers",()=>{
+  const config = smartConfig()
+  config.employees[0].role = "EMPLOYEE"
+  const noManager = validateConfigPreflight(config)
+  assert.equal(noManager.valid, false)
+  assert.ok(noManager.errors.some(e => e.includes("Chưa có Cửa hàng trưởng")))
+
+  config.employees[0].role = "STORE_MANAGER"
+  config.employees[1].role = "STORE_MANAGER"
+  const multiManager = validateConfigPreflight(config)
+  assert.equal(multiManager.valid, false)
+  assert.ok(multiManager.errors.some(e => e.includes("Có 2 CHT đang hoạt động")))
+})
+
+test("validateConfigPreflight catches morning staffing exceeding 3",()=>{
+  const config = smartConfig()
+  config.staffing[0].morning = 4
+  const result = validateConfigPreflight(config)
+  assert.equal(result.valid, false)
+  assert.ok(result.errors.some(e => e.includes("tối đa 3 người")))
+})
+
+function createMockStorage() {
+  const store = new Map()
+  return {
+    getItem: k => (store.has(k) ? store.get(k) : null),
+    setItem: (k, v) => store.set(k, String(v)),
+    removeItem: k => store.delete(k),
+  }
+}
+
+test("saveDraft and loadDraft roundtrips configuration, assignments and manualTouched", () => {
+  const storage = createMockStorage()
+  const config = smartConfig()
+  const assignments = [{ employee_id: "phuong", date: "2026-09-21", shift: "MORNING", start_time: "07:00" }]
+  const manualTouched = new Set(["phuong|2026-09-21"])
+
+  const saved = saveDraft({ config, assignments, manualTouched, variant: "preferences" }, storage)
+  assert.equal(saved, true)
+
+  const loaded = loadDraft(storage)
+  assert.ok(loaded)
+  assert.equal(loaded.config.week_start, "2026-09-21")
+  assert.equal(loaded.assignments.length, 1)
+  assert.equal(loaded.assignments[0].employee_id, "phuong")
+  assert.ok(loaded.manualTouched instanceof Set)
+  assert.ok(loaded.manualTouched.has("phuong|2026-09-21"))
+  assert.equal(loaded.variant, "preferences")
+  assert.ok(typeof loaded.savedAt === "number")
+})
+
+test("clearDraft removes the stored draft", () => {
+  const storage = createMockStorage()
+  saveDraft({ config: smartConfig() }, storage)
+  assert.ok(loadDraft(storage))
+
+  clearDraft(storage)
+  assert.equal(loadDraft(storage), null)
+})
+
+test("loadDraft safely handles invalid JSON or missing fields", () => {
+  const storage = createMockStorage()
+  storage.setItem(DRAFT_STORAGE_KEY, "invalid json {")
+  assert.equal(loadDraft(storage), null)
+
+  storage.setItem(DRAFT_STORAGE_KEY, JSON.stringify({ wrong: true }))
+  assert.equal(loadDraft(storage), null)
 })
 

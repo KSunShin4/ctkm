@@ -2,6 +2,7 @@
 """Stateless staff-scheduling API and exact-template Excel export."""
 from __future__ import annotations
 
+from copy import copy
 from datetime import datetime, timedelta
 from io import BytesIO
 import re
@@ -76,7 +77,10 @@ def _write_group_to_slots(ws, column: int, rows: list[dict], slot_rows: list[int
         remaining = names[index:]
         ws.cell(row_number, column).value = "\n".join(remaining) if remaining else None
         if len(remaining) > 1:
-            ws.cell(row_number, column).alignment = ws.cell(row_number, column).alignment.copy(wrapText=True)
+            cell = ws.cell(row_number, column)
+            alignment = copy(cell.alignment)
+            alignment.wrapText = True
+            cell.alignment = alignment
 
 
 def export_schedule_to_template(core_module, item: dict) -> tuple[bytes, str]:
