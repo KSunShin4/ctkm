@@ -462,6 +462,9 @@ def install_slim_output_contract(core_module) -> None:
                 ("CTKM thieu vi tri ke", location_issues),
                 ("POG cần kiểm tra", location_review),
             )
+            for sheet_name in ("Gắn tem", "Tháo tem", "Chờ gắn", "Cần review"):
+                exporter._configure_action_inputs(writer.sheets[sheet_name])
+
             for sheet_name, frame in styled_frames:
                 ws = writer.sheets[sheet_name]
                 exporter._apply_professional_style(ws, sheet_name, frame)
@@ -479,9 +482,6 @@ def install_slim_output_contract(core_module) -> None:
                 "POG cần review", "POG không có CTKM",
             ):
                 _lightweight_audit_style(writer.sheets[sheet_name], exporter)
-
-            for sheet_name in ("Gắn tem", "Tháo tem", "Chờ gắn", "Cần review"):
-                exporter._configure_action_inputs(writer.sheets[sheet_name])
 
             _lightweight_audit_style(writer.sheets["Audit hành động"], exporter)
             _lightweight_audit_style(writer.sheets["Mapping log"], exporter)

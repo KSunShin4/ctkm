@@ -1,8 +1,14 @@
 import pandas as pd
 import asyncio
 import pytest
+import main
 
-from backend import main_api
+
+@pytest.fixture(autouse=True)
+def _preserve_exporter():
+    original = main.EX.export_final_report
+    yield
+    main.EX.export_final_report = original
 
 
 class FakeUpload:
@@ -14,12 +20,14 @@ class FakeUpload:
 
 
 def test_upload_limit_rejects_oversized_file():
+    from backend import main_api
     with pytest.raises(main_api.HTTPException) as exc:
         asyncio.run(main_api._read_upload_limited(FakeUpload(b"12345"), 4, "Test"))
     assert exc.value.status_code == 413
 
 
 def test_identical_expiration_file_is_parsed_once(monkeypatch):
+    from backend import main_api
     calls = []
     frame = pd.DataFrame({"ITEMID": ["P1"], "BATCHNUMER": ["B1"], "EXPDATE": ["01/01/2030"]})
 

@@ -183,10 +183,25 @@ def _hide_technical_columns(ws, *, action_sheet: bool = False) -> None:
 
 def _configure_action_inputs(ws) -> None:
     headers = [str(cell.value or "") for cell in ws[1]]
-    if "processing_status" not in headers:
+    status_header = (
+        "processing_status" if "processing_status" in headers
+        else "Đã xử lý" if "Đã xử lý" in headers
+        else None
+    )
+    if status_header is None:
         return
-    status_col = headers.index("processing_status") + 1
-    editable = [name for name in ["processing_status", "processed_by", "processed_at", "staff_note"] if name in headers]
+    status_col = headers.index(status_header) + 1
+    editable_names = {
+        "processing_status": "Đã xử lý",
+        "processed_by": "Người thực hiện",
+        "processed_at": "Thời gian xử lý",
+        "staff_note": "Ghi chú tại quầy",
+    }
+    editable_cols = [
+        headers.index(name) + 1 if name in headers else headers.index(translated) + 1
+        for name, translated in editable_names.items()
+        if name in headers or translated in headers
+    ]
     validation = DataValidation(
         type="list",
         formula1='"Chưa xử lý,Đã xong,Không tìm thấy,Không thực hiện được"',
@@ -210,12 +225,12 @@ def _configure_action_inputs(ws) -> None:
                         fill=PatternFill(fill_type="solid", fgColor="FFC7CE")),
         )
 
-    for name in editable:
-        col_idx = headers.index(name) + 1
+    for col_idx in editable_cols:
         for row_idx in range(2, ws.max_row + 1):
             ws.cell(row=row_idx, column=col_idx).protection = Protection(locked=False)
             ws.cell(row=row_idx, column=col_idx).fill = PatternFill(fill_type="solid", fgColor="FFF2CC")
-            if name == "processed_at":
+            # 3rd editable column is processed_at (canonical or translated)
+            if col_idx == headers.index("processed_at") + 1 if "processed_at" in headers else (headers.index("Thời gian xử lý") + 1 if "Thời gian xử lý" in headers else -1):
                 ws.cell(row=row_idx, column=col_idx).number_format = "dd/mm/yyyy hh:mm"
     ws.protection.autoFilter = True
     ws.protection.sort = True

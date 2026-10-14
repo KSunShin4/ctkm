@@ -7,7 +7,14 @@ from collections import Counter
 import pandas as pd
 
 
+# Keep this set deliberately identical to normalizer.UNPIVOTABLE_FIELDS.
+# These two fields are the only canonical targets whose repeated source columns
+# intentionally become ``field__1``, ``field__2`` and are later unpivoted into
+# separate logical promotion slots. Repeated required identity/date fields remain
+# ambiguous and must be rejected.
 MULTI_SOURCE_CANONICAL_FIELDS = {"campaign_detail", "promo_price"}
+
+__all__ = ["MULTI_SOURCE_CANONICAL_FIELDS", "validate_manual_mapping"]
 
 
 def _required_fields(schema_section: dict) -> set[str]:

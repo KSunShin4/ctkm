@@ -5,9 +5,29 @@ import sys
 import pandas as pd
 import pytest
 
-from backend import main_api
 from backend.contract_suite import CONTRACT_ORDER, install_contract_suite, verify_contract_suite
 from modules.facade_contracts import registered_post_facade_hooks
+
+main_api = None
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _preserve_exporter():
+    global main_api
+    import main
+    core = getattr(main, "_core", None)
+    original_exporter = getattr(getattr(main, "EX", None), "export_final_report", None)
+
+    from backend import main_api as _main_api
+    main_api = _main_api
+
+    yield
+
+    if original_exporter:
+        main.EX.export_final_report = original_exporter
+        if core and hasattr(core, "EX"):
+            core.EX.export_final_report = original_exporter
+
 
 
 def _load_main_again(alias: str):
