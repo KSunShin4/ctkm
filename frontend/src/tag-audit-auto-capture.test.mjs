@@ -4,6 +4,7 @@ import {
   AUTO_CAPTURE_CONFIG,
   analyzeLuma,
   createAutoCaptureController,
+  getFrameRoi,
   meanAbsDiff,
 } from "./tag-audit-auto-capture.js"
 
@@ -82,3 +83,36 @@ test("captured scene stays locked until a materially different scene appears", (
   assert.equal(rearmed.status, "rearmed")
   assert.equal(rearmed.armed, true)
 })
+
+test("getFrameRoi handles missing or unready video gracefully", () => {
+  assert.equal(getFrameRoi(null), null)
+  assert.equal(getFrameRoi({ videoWidth: 0, videoHeight: 0 }), null)
+})
+
+test("getFrameRoi falls back to safe default when frame element is not provided", () => {
+  const roi = getFrameRoi({ videoWidth: 1920, videoHeight: 1080 })
+  assert.deepEqual(roi, {
+    sx: 154,
+    sy: 162,
+    sw: 1613,
+    sh: 756,
+  })
+})
+
+test("getFrameRoi calculates exact source coordinates with object-fit: cover scaling", () => {
+  const video = {
+    videoWidth: 1920,
+    videoHeight: 1080,
+    getBoundingClientRect: () => ({ left: 0, top: 0, width: 400, height: 600 }),
+  }
+  const frameEl = {
+    getBoundingClientRect: () => ({ left: 32, top: 90, width: 336, height: 420 }),
+  }
+  const roi = getFrameRoi(video, frameEl)
+  assert.ok(roi)
+  assert.ok(roi.sx >= 0 && roi.sx < 1920)
+  assert.ok(roi.sy >= 0 && roi.sy < 1080)
+  assert.ok(roi.sw > 0 && roi.sx + roi.sw <= 1920)
+  assert.ok(roi.sh > 0 && roi.sy + roi.sh <= 1080)
+})
+

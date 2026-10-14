@@ -17,6 +17,50 @@ export const AUTO_CAPTURE_CONFIG = Object.freeze({
 
 function clamp(value, min, max) { return Math.max(min, Math.min(max, value)) }
 
+export function getFrameRoi(video, frameEl) {
+  if (!video?.videoWidth || !video?.videoHeight) return null
+  const vw = video.videoWidth
+  const vh = video.videoHeight
+  if (!frameEl) {
+    return {
+      sx: Math.round(vw * 0.08),
+      sy: Math.round(vh * 0.15),
+      sw: Math.round(vw * 0.84),
+      sh: Math.round(vh * 0.70),
+    }
+  }
+  const videoRect = typeof video.getBoundingClientRect === "function" ? video.getBoundingClientRect() : null
+  const frameRect = typeof frameEl.getBoundingClientRect === "function" ? frameEl.getBoundingClientRect() : null
+  if (!videoRect?.width || !videoRect?.height || !frameRect?.width || !frameRect?.height) {
+    return {
+      sx: Math.round(vw * 0.08),
+      sy: Math.round(vh * 0.15),
+      sw: Math.round(vw * 0.84),
+      sh: Math.round(vh * 0.70),
+    }
+  }
+  const scale = Math.max(videoRect.width / vw, videoRect.height / vh)
+  const renderedW = vw * scale
+  const renderedH = vh * scale
+  const videoLeft = (videoRect.width - renderedW) / 2
+  const videoTop = (videoRect.height - renderedH) / 2
+
+  const frameLeft = frameRect.left - (videoRect.left + videoLeft)
+  const frameTop = frameRect.top - (videoRect.top + videoTop)
+  const frameWidth = frameRect.width
+  const frameHeight = frameRect.height
+
+  const marginX = frameWidth * 0.06
+  const marginY = frameHeight * 0.06
+
+  const sx = Math.max(0, Math.round((frameLeft - marginX) / scale))
+  const sy = Math.max(0, Math.round((frameTop - marginY) / scale))
+  const sw = Math.min(vw - sx, Math.round((frameWidth + marginX * 2) / scale))
+  const sh = Math.min(vh - sy, Math.round((frameHeight + marginY * 2) / scale))
+
+  return { sx, sy, sw, sh }
+}
+
 export function meanAbsDiff(a, b) {
   if (!a || !b || a.length !== b.length || !a.length) return Infinity
   let total = 0
@@ -161,7 +205,7 @@ export function createAutoCaptureController(config = AUTO_CAPTURE_CONFIG) {
   return { inspect, lockCurrent, reset, snapshot }
 }
 
-export function createVideoSampler(config = AUTO_CAPTURE_CONFIG) {
+export function createVideoSampler(config = AUTO_CAPTURE_CONFIG, getRoi = null) {
   const canvas = document.createElement("canvas")
   canvas.width = config.sampleWidth
   canvas.height = config.sampleHeight
@@ -170,11 +214,20 @@ export function createVideoSampler(config = AUTO_CAPTURE_CONFIG) {
 
   return video => {
     if (!video?.videoWidth || !video?.videoHeight) throw new Error("Camera chưa sẵn sàng")
-    const roi = config.roi
-    const sx = clamp(Math.round(video.videoWidth * roi.x), 0, video.videoWidth - 1)
-    const sy = clamp(Math.round(video.videoHeight * roi.y), 0, video.videoHeight - 1)
-    const sw = clamp(Math.round(video.videoWidth * roi.width), 1, video.videoWidth - sx)
-    const sh = clamp(Math.round(video.videoHeight * roi.height), 1, video.videoHeight - sy)
+    let sx, sy, sw, sh
+    const custom = typeof getRoi === "function" ? getRoi(video) : null
+    if (custom && custom.sw > 0 && custom.sh > 0) {
+      sx = clamp(custom.sx, 0, video.videoWidth - 1)
+      sy = clamp(custom.sy, 0, video.videoHeight - 1)
+      sw = clamp(custom.sw, 1, video.videoWidth - sx)
+      sh = clamp(custom.sh, 1, video.videoHeight - sy)
+    } else {
+      const roi = config.roi
+      sx = clamp(Math.round(video.videoWidth * roi.x), 0, video.videoWidth - 1)
+      sy = clamp(Math.round(video.videoHeight * roi.y), 0, video.videoHeight - 1)
+      sw = clamp(Math.round(video.videoWidth * roi.width), 1, video.videoWidth - sx)
+      sh = clamp(Math.round(video.videoHeight * roi.height), 1, video.videoHeight - sy)
+    }
     ctx.drawImage(video, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height)
     const rgba = ctx.getImageData(0, 0, canvas.width, canvas.height).data
     const luma = new Uint8Array(canvas.width * canvas.height)

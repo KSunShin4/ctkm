@@ -4,7 +4,9 @@ import {
   autoCaptureStatusText,
   createAutoCaptureController,
   createVideoSampler,
+  getFrameRoi,
 } from "./tag-audit-auto-capture.js"
+import { chooseBarcodeCandidate } from "./tag-audit-barcode.js"
 
 const API = import.meta.env.VITE_API_BASE_URL || ""
 
@@ -45,22 +47,54 @@ function money(value) {
 }
 function resultClass(severity) { return severity === "success" ? "ok" : severity === "error" ? "bad" : "warn" }
 
-async function frameToBlob(video) {
+async function detectBarcodeFromCanvas(canvas) {
+  if (!("BarcodeDetector" in window) || !canvas) return ""
+  try {
+    const supported = await window.BarcodeDetector.getSupportedFormats()
+    const preferred = ["ean_13", "ean_8", "upc_a", "upc_e", "code_128", "code_39"].filter(x => supported.includes(x))
+    if (!preferred.length) return ""
+    const detector = new window.BarcodeDetector({ formats: preferred })
+    const values = await detector.detect(canvas)
+    return chooseBarcodeCandidate(values)
+  } catch {
+    return ""
+  }
+}
+
+async function frameToBlob(video, frameEl) {
   if (!video?.videoWidth || !video?.videoHeight) throw new Error("Camera chưa sẵn sàng")
+  const roi = getFrameRoi(video, frameEl)
+  const sx = roi ? roi.sx : 0
+  const sy = roi ? roi.sy : 0
+  const sw = roi ? roi.sw : video.videoWidth
+  const sh = roi ? roi.sh : video.videoHeight
+
   const canvas = document.createElement("canvas")
-  const maxWidth = 1600
-  const scale = Math.min(1, maxWidth / video.videoWidth)
-  canvas.width = Math.max(1, Math.round(video.videoWidth * scale))
-  canvas.height = Math.max(1, Math.round(video.videoHeight * scale))
+  const maxDim = 1200
+  const scale = Math.min(1, maxDim / Math.max(sw, sh))
+  canvas.width = Math.max(1, Math.round(sw * scale))
+  canvas.height = Math.max(1, Math.round(sh * scale))
   const ctx = canvas.getContext("2d", { alpha: false })
   if (!ctx) throw new Error("Không tạo được ảnh camera")
-  ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
-  return await new Promise((resolve, reject) => canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error("Không chụp được ảnh camera")), "image/jpeg", .92))
+  ctx.drawImage(video, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height)
+
+  const barcodePromise = detectBarcodeFromCanvas(canvas)
+  const blobPromise = new Promise((resolve, reject) =>
+    canvas.toBlob(
+      blob => (blob ? resolve(blob) : reject(new Error("Không chụp được ảnh camera"))),
+      "image/jpeg",
+      0.88
+    )
+  )
+
+  const [blob, barcode] = await Promise.all([blobPromise, barcodePromise])
+  return { blob, barcode }
 }
 
 export default function TagAuditQuickCamera() {
   const token = sessionStorage.getItem("ctkm.admin.token") || ""
   const videoRef = useRef(null)
+  const frameRef = useRef(null)
   const streamRef = useRef(null)
   const controllerRef = useRef(null)
   const samplerRef = useRef(null)
@@ -77,7 +111,15 @@ export default function TagAuditQuickCamera() {
 
   useEffect(() => {
     controllerRef.current = createAutoCaptureController()
-    try { samplerRef.current = createVideoSampler() } catch (exc) { setError(exc.message); setAutoEnabled(false) }
+    try {
+      samplerRef.current = createVideoSampler(
+        AUTO_CAPTURE_CONFIG,
+        video => getFrameRoi(video, frameRef.current)
+      )
+    } catch (exc) {
+      setError(exc.message)
+      setAutoEnabled(false)
+    }
     return () => { controllerRef.current = null; samplerRef.current = null }
   }, [])
 
@@ -111,6 +153,17 @@ export default function TagAuditQuickCamera() {
         })
         if (cancelled) { stream.getTracks().forEach(track => track.stop()); return }
         streamRef.current = stream
+        const track = stream.getVideoTracks()[0]
+        if (track) {
+          try {
+            const caps = track.getCapabilities ? track.getCapabilities() : {}
+            const adv = []
+            if (caps.focusMode && caps.focusMode.includes("continuous")) {
+              adv.push({ focusMode: "continuous" })
+            }
+            if (adv.length) await track.applyConstraints({ advanced: adv })
+          } catch {}
+        }
         if (videoRef.current) {
           videoRef.current.srcObject = stream
           await videoRef.current.play()
@@ -135,11 +188,11 @@ export default function TagAuditQuickCamera() {
     loadingRef.current = true
     setLoading(true); setError("")
     try {
-      const blob = await frameToBlob(videoRef.current)
+      const { blob, barcode } = await frameToBlob(videoRef.current, frameRef.current)
       const form = new FormData()
       form.append("image", new File([blob], `tag-${Date.now()}.jpg`, {type:"image/jpeg"}))
       form.append("manual_item_id", "")
-      form.append("barcode_hint", "")
+      form.append("barcode_hint", barcode || "")
       form.append("manual_promo_price", "")
       form.append("manual_normal_price", "")
       form.append("manual_promo_from", "")
@@ -199,15 +252,50 @@ export default function TagAuditQuickCamera() {
   return <><style>{styles}</style><div className="quick">
     <header className="quick-top"><button className="quick-back" onClick={()=>location.href="/scan-tem"}>← Thường</button><div className="quick-progress"><span>Đã kiểm</span><strong>{checked} / {total}</strong><span>Còn {remaining}</span></div></header>
     <main className="quick-main">
-      <div className="quick-camera"><video ref={videoRef} autoPlay playsInline muted/><div className={frameClass}/><div className="quick-hint">{autoText}</div></div>
+      <div className="quick-camera"><video ref={videoRef} autoPlay playsInline muted/><div ref={frameRef} className={frameClass}/><div className="quick-hint">{autoText}</div></div>
       <section className="quick-panel">
         <div className="auto-row"><div><strong>Auto-capture an toàn</strong><div className="auto-state">{autoEnabled?"Bật · chỉ chụp khi ảnh đủ rõ và đứng yên":"Tắt · quét hoàn toàn bằng nút"}</div></div><button className={`auto-toggle ${autoEnabled?"on":""}`} onClick={toggleAuto}>{autoEnabled?"AUTO BẬT":"AUTO TẮT"}</button></div>
         {autoEnabled&&autoDecision?.quality&&<div className="auto-metrics"><span className="auto-chip">Sáng {autoDecision.quality.mean}</span><span className="auto-chip">Tương phản {autoDecision.quality.stdDev}</span><span className="auto-chip">Nét {autoDecision.quality.edgeEnergy}</span><span className="auto-chip">Vùng nét {autoDecision.quality.activeTiles}/9</span></div>}
         <button className="quick-btn" disabled={!cameraReady||loading||!context?.ready} onClick={()=>scan({source:"manual"})} style={{marginTop:10}}>{loading?<><span className="spinner"/>Đang đọc tem…</>:cameraReady?"QUÉT TEM NÀY":"Đang mở camera…"}</button>
         {error&&<div className="quick-error">{error}</div>}
         {!context?.ready&&<div className="quick-note">Chưa có workbook CTKM. Về chế độ thường để tải workbook; nếu thiết bị đã cache workbook, hệ thống sẽ thử tự khôi phục.</div>}
-        {result&&<div className={`quick-result ${resultClass(result.verdict?.severity)}`}><h2>{result.verdict?.title||"Kết quả"}</h2><p>{result.verdict?.detail||""}</p><div className="quick-facts"><span>ITEMID</span><strong>{result.observed?.item_id||result.expected?.item_id||"—"}</strong><span>Giá tem</span><strong>{money(result.observed?.promo_price)}</strong><span>Giá chuẩn</span><strong>{money(result.expected?.promo_price)}</strong><span>Tiến độ</span><strong>{checked} / {total} · còn {remaining}</strong></div>{!result.progress_eligible&&<div className="quick-note">Lần quét này chưa được cộng tiến độ vì chưa xác định chắc task/ITEMID. Có thể chuyển về chế độ thường để nhập tay.</div>}</div>}
-        <div className="quick-note">Auto-capture chỉ quyết định thời điểm chụp dựa trên tín hiệu camera cục bộ. PASS/FAIL/REVIEW vẫn do backend deterministic hiện tại quyết định. Sau mỗi lần chụp, auto bị khóa cho đến khi bạn đưa một cảnh/tem khác vào khung; nút quét tay luôn dùng được.</div>
+        {result&&<div className={`quick-result ${resultClass(result.verdict?.severity)}`}>
+          <h2>{result.verdict?.title||"Kết quả"}</h2>
+          <p>{result.verdict?.detail||""}</p>
+          <div className="quick-facts">
+            <span>ITEMID</span><strong>{result.observed?.item_id||result.expected?.item_id||"—"}</strong>
+            <span>Giá tem</span><strong>{money(result.observed?.promo_price)}</strong>
+            <span>Giá chuẩn</span><strong>{money(result.expected?.promo_price)}</strong>
+            <span>Tiến độ</span><strong>{checked} / {total} · còn {remaining}</strong>
+          </div>
+          {result.observed?.item_id_candidates?.length > 1 && (
+            <div style={{marginTop:8,color:"#fdb022",fontSize:11,background:"rgba(253,176,34,0.12)",padding:"6px 8px",borderRadius:8}}>
+              ⚠ Nhận diện được {result.observed.item_id_candidates.length} mã: <strong>{result.observed.item_id_candidates.join(", ")}</strong>. Hãy đưa camera lại gần hơn để khung xanh chỉ chứa đúng 1 tem.
+            </div>
+          )}
+          {result.vision_warning && (
+            <div style={{marginTop:8,color:"#fda29b",fontSize:11,background:"rgba(249,112,102,0.12)",padding:"6px 8px",borderRadius:8}}>
+              ⚠ Thông báo OCR: {result.vision_warning}
+            </div>
+          )}
+          {result.observed?.ocr_warning && (
+            <div style={{marginTop:8,color:"#fda29b",fontSize:11,background:"rgba(249,112,102,0.12)",padding:"6px 8px",borderRadius:8}}>
+              ⚠ Cảnh báo: {result.observed.ocr_warning}
+            </div>
+          )}
+          {result.observed?.raw_text && (
+            <details style={{marginTop:10,background:"#16191f",border:"1px solid #292f38",borderRadius:8,padding:"7px 10px"}}>
+              <summary style={{cursor:"pointer",fontSize:11,color:"#98a2b3"}}>
+                Xem chữ đọc được trên tem ({result.observed.raw_text.length} ký tự)
+              </summary>
+              <pre style={{whiteSpace:"pre-wrap",fontSize:11,color:"#8ce5c7",margin:"6px 0 0",maxHeight:120,overflow:"auto",fontFamily:"monospace"}}>
+                {result.observed.raw_text}
+              </pre>
+            </details>
+          )}
+          {!result.progress_eligible&&<div className="quick-note">Lần quét này chưa được cộng tiến độ vì chưa xác định chắc task/ITEMID. Có thể chuyển về chế độ thường để nhập tay.</div>}
+        </div>}
+        <div className="quick-note">Mẹo: Giữ camera cách tem khoảng 20cm, căn đúng 1 tem vào khung xanh và tránh ánh đèn chiếu trực tiếp làm lóa tem. Auto-capture chỉ chụp khi ảnh đủ rõ và đứng yên.</div>
       </section>
     </main>
   </div></>
