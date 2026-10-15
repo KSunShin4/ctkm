@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react"
 import { chooseBarcodeCandidate } from "./tag-audit-barcode.js"
+import { triggerHapticFeedback } from "./tag-audit-perception.js"
 
 const API = import.meta.env.VITE_API_BASE_URL || ""
 
@@ -123,7 +124,7 @@ export default function TagAudit() {
     if (!imageFile || !ready) return
     setChecking(true); setCheckError(""); setResult(null)
     const form = new FormData(); form.append("image",imageFile); form.append("manual_item_id",manualItemId.trim()); form.append("barcode_hint",barcodeHint.trim()); form.append("manual_promo_price",manualPrice.trim()); form.append("manual_normal_price",manualNormalPrice.trim()); form.append("manual_promo_from",manualFrom.trim()); form.append("manual_promo_to",manualTo.trim()); form.append("manual_promo_text",manualPromoText.trim())
-    try { const data = await apiJson("/api/tag-audit/check", {method:"POST",headers:authHeaders(token),body:form}); setResult(data); recordProgress(data); if (!manualItemId && data.observed?.item_id) setManualItemId(data.observed.item_id); if (!barcodeHint && data.observed?.barcode) setBarcodeHint(data.observed.barcode) }
+    try { const data = await apiJson("/api/tag-audit/check", {method:"POST",headers:authHeaders(token),body:form}); setResult(data); recordProgress(data); triggerHapticFeedback(data.verdict || data); if (!manualItemId && data.observed?.item_id) setManualItemId(data.observed.item_id); if (!barcodeHint && data.observed?.barcode) setBarcodeHint(data.observed.barcode) }
     catch (error) { setCheckError(error.message) } finally { setChecking(false) }
   }
   const resetScan = () => {

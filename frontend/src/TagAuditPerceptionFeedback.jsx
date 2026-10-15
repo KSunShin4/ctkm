@@ -1,4 +1,13 @@
-import { confidencePercent, perceptionSummary } from "./tag-audit-perception.js"
+import { useEffect } from "react"
+import {
+  confidencePercent,
+  perceptionSummary,
+  triggerHapticFeedback,
+  resolveHapticPattern,
+  HAPTIC_PATTERNS,
+} from "./tag-audit-perception.js"
+
+export { triggerHapticFeedback, resolveHapticPattern, HAPTIC_PATTERNS }
 
 const boxStyle = {
   maxWidth: 720,
@@ -11,7 +20,13 @@ const boxStyle = {
   font: "12px/1.45 Inter, ui-sans-serif, sans-serif",
 }
 
-export default function TagAuditPerceptionFeedback({ result, browserBarcode = "" }) {
+export default function TagAuditPerceptionFeedback({ result, browserBarcode = "", triggerHaptic = false }) {
+  useEffect(() => {
+    if (triggerHaptic && result) {
+      triggerHapticFeedback(result.verdict || result)
+    }
+  }, [result, triggerHaptic])
+
   if (!result) return null
   const feedback = perceptionSummary(result, browserBarcode)
   const confidence = confidencePercent(feedback.confidence)

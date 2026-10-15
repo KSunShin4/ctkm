@@ -3,6 +3,7 @@ import ProductNav from "./ProductNav.jsx"
 import { cacheUploadedWorkbook, readCachedWorkbook } from "./tag-audit-context-cache.js"
 import {
   SHELF_FAIL_REASONS,
+  buildShelfCameraUrl,
   extraTagStorageKey,
   firstUncheckedIndex,
   markExtraResolved,
@@ -152,13 +153,29 @@ export default function TagAuditShelfCheck() {
 
   const acceptSession = data => {
     setSession(data)
-    setProgress(readStored(progressStorageKey(data?.context_id), normalizeProgress, {}))
-    setRemovalProgress(readStored(removalStorageKey(data?.store_scope_id), normalizeRemovalProgress, {}))
+    const initialProg = readStored(progressStorageKey(data?.context_id), normalizeProgress, {})
+    const initialRem = readStored(removalStorageKey(data?.store_scope_id), normalizeRemovalProgress, {})
+    setProgress(initialProg)
+    setRemovalProgress(initialRem)
     setExtraTags(readStored(extraTagStorageKey(data?.workbook_scope_id), normalizeExtraTags, []))
     if (data?.session_id) localStorage.setItem(SESSION_KEY, data.session_id)
     setShelfQuery(""); setShelfFilter("todo"); setShelfLimit(INITIAL_SHELF_LIMIT); setSearchFocused(false)
-    setShelfKey(""); setShowProgressMenu(false); setExtraError("")
-    setError("")
+    setShowProgressMenu(false); setExtraError(""); setError("")
+
+    const urlParams = typeof window !== "undefined" ? new URLSearchParams(window.location.search) : null
+    const targetShelf = urlParams?.get("shelf") || ""
+    if (targetShelf && Array.isArray(data?.shelves) && data.shelves.some(s => s.shelf_key === targetShelf)) {
+      const targetItems = (Array.isArray(data?.items) ? data.items : []).filter(item => item.shelf_key === targetShelf)
+      let resume = firstUncheckedIndex(targetItems, initialProg, 0, initialRem)
+      if (resume < 0) {
+        resume = targetItems.findIndex(item => item.expected_action === "thao_tem" && initialRem[item.removal_key]?.state !== "removed")
+      }
+      setShelfKey(targetShelf)
+      setIndex(resume >= 0 ? resume : 0)
+      setView("check")
+    } else {
+      setShelfKey("")
+    }
   }
 
   const uploadWorkbook = async file => {
@@ -411,7 +428,7 @@ export default function TagAuditShelfCheck() {
         <div className="shelf-reason-grid">{SHELF_FAIL_REASONS.map(reason=><button key={reason} onClick={()=>decide("fail",reason)}>{reason}</button>)}</div>
       </div>}
       <div className="shelf-current-state">{current.expected_action === "thao_tem" ? `Trạng thái: ${removalLabel(currentRemoval?.state)}` : progress[current.check_key] ? `Đã lưu: ${progress[current.check_key].state === "pass" ? "Đúng" : progress[current.check_key].reason || "Review"}` : "Chưa kiểm"}</div>
-      <a className="shelf-camera-beta" href="/scan-tem?mode=quick">📷 Quét nhanh (Beta) · chỉ hỗ trợ tìm/đọc tem</a>
+      <a className="shelf-camera-beta" href={buildShelfCameraUrl(current?.shelf_key, current?.item_id, current?.check_key)}>📷 Quét nhanh (Beta) · chỉ hỗ trợ tìm/đọc tem</a>
     </main>}
 
     {view === "shelfDone" && <main className="shelf-done">

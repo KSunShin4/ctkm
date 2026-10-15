@@ -47,7 +47,65 @@ export function perceptionSummary(result, browserBarcode = "") {
 }
 
 export function confidencePercent(value) {
+  if (value === null || value === undefined || value === "") return null
   const number = Number(value)
   if (!Number.isFinite(number)) return null
   return Math.max(0, Math.min(100, Math.round(number * 100)))
 }
+
+export const HAPTIC_PATTERNS = Object.freeze({
+  pass: Object.freeze([40]),
+  review: Object.freeze([50, 60, 50]),
+  ambiguous: Object.freeze([50, 60, 50]),
+  fail: Object.freeze([120, 80, 120]),
+})
+
+export function resolveHapticPattern(verdict) {
+  if (!verdict) return null
+
+  let key = ""
+  if (typeof verdict === "object") {
+    if (verdict.verdict && typeof verdict.verdict === "object") {
+      verdict = verdict.verdict
+    }
+    const code = String(verdict.code || "").trim().toLowerCase()
+    const severity = String(verdict.severity || "").trim().toLowerCase()
+    const state = String(verdict.progress_state || "").trim().toLowerCase()
+    key = code || severity || state
+  } else if (typeof verdict === "string") {
+    key = verdict.trim().toLowerCase()
+  }
+
+  if (!key) return null
+
+  if (key === "pass" || key === "success" || key === "ok") {
+    return HAPTIC_PATTERNS.pass
+  }
+  if (key === "fail" || key === "error" || key === "bad" || key === "danger") {
+    return HAPTIC_PATTERNS.fail
+  }
+  if (key === "review" || key === "warning" || key === "warn" || key === "ambiguous") {
+    return HAPTIC_PATTERNS.review
+  }
+
+  return HAPTIC_PATTERNS.review
+}
+
+export function triggerHapticFeedback(verdict, options = {}) {
+  if (options?.enabled === false) return false
+  const nav = options?.navigator !== undefined
+    ? options.navigator
+    : (typeof navigator !== "undefined" ? navigator : null)
+  if (!nav || typeof nav.vibrate !== "function") return false
+
+  const pattern = resolveHapticPattern(verdict)
+  if (!pattern) return false
+
+  try {
+    const success = nav.vibrate(pattern)
+    return Boolean(success !== false)
+  } catch {
+    return false
+  }
+}
+

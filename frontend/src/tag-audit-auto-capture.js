@@ -13,6 +13,7 @@ export const AUTO_CAPTURE_CONFIG = Object.freeze({
   rearmMotion: 15,
   rearmFrames: 2,
   minCaptureGapMs: 1800,
+  maxGlareRatio: 0.35,
 })
 
 function clamp(value, min, max) { return Math.max(min, Math.min(max, value)) }
@@ -40,6 +41,14 @@ export function getFrameRoi(video, frameEl) {
     }
   }
   const scale = Math.max(videoRect.width / vw, videoRect.height / vh)
+  if (!Number.isFinite(scale) || scale <= 0) {
+    return {
+      sx: Math.round(vw * 0.08),
+      sy: Math.round(vh * 0.15),
+      sw: Math.round(vw * 0.84),
+      sh: Math.round(vh * 0.70),
+    }
+  }
   const renderedW = vw * scale
   const renderedH = vh * scale
   const videoLeft = (videoRect.width - renderedW) / 2
@@ -53,10 +62,19 @@ export function getFrameRoi(video, frameEl) {
   const marginX = frameWidth * 0.06
   const marginY = frameHeight * 0.06
 
-  const sx = Math.max(0, Math.round((frameLeft - marginX) / scale))
-  const sy = Math.max(0, Math.round((frameTop - marginY) / scale))
-  const sw = Math.min(vw - sx, Math.round((frameWidth + marginX * 2) / scale))
-  const sh = Math.min(vh - sy, Math.round((frameHeight + marginY * 2) / scale))
+  const sx = Math.max(0, Math.min(vw - 1, Math.round((frameLeft - marginX) / scale)))
+  const sy = Math.max(0, Math.min(vh - 1, Math.round((frameTop - marginY) / scale)))
+  const sw = Math.max(1, Math.min(vw - sx, Math.round((frameWidth + marginX * 2) / scale)))
+  const sh = Math.max(1, Math.min(vh - sy, Math.round((frameHeight + marginY * 2) / scale)))
+
+  if (sw <= 10 || sh <= 10) {
+    return {
+      sx: Math.round(vw * 0.08),
+      sy: Math.round(vh * 0.15),
+      sw: Math.round(vw * 0.84),
+      sh: Math.round(vh * 0.70),
+    }
+  }
 
   return { sx, sy, sw, sh }
 }
@@ -77,19 +95,24 @@ function tileIndex(x, y, width, height) {
 export function analyzeLuma(pixels, width, height, config = AUTO_CAPTURE_CONFIG) {
   const count = pixels?.length || 0
   if (!count || width <= 1 || height <= 1) {
-    return { mean: 0, stdDev: 0, edgeEnergy: 0, activeTiles: 0, usable: false, reason: "camera_not_ready" }
+    return { mean: 0, stdDev: 0, edgeEnergy: 0, activeTiles: 0, glareRatio: 0, usable: false, reason: "camera_not_ready" }
   }
 
   let sum = 0
   let sumSq = 0
+  let glareCount = 0
   for (let i = 0; i < count; i += 1) {
     const value = pixels[i]
     sum += value
     sumSq += value * value
+    if (value >= 248) {
+      glareCount += 1
+    }
   }
   const mean = sum / count
   const variance = Math.max(0, sumSq / count - mean * mean)
   const stdDev = Math.sqrt(variance)
+  const glareRatio = count ? glareCount / count : 0
 
   let edgeTotal = 0
   let edgeCount = 0
@@ -118,9 +141,11 @@ export function analyzeLuma(pixels, width, height, config = AUTO_CAPTURE_CONFIG)
     return total + (energy >= config.minEdgeEnergy * 0.55 ? 1 : 0)
   }, 0)
 
+  const maxGlareRatio = config.maxGlareRatio ?? 0.35
   let reason = "ready"
   if (mean < config.minMean) reason = "too_dark"
   else if (mean > config.maxMean) reason = "too_bright"
+  else if (glareRatio > maxGlareRatio) reason = "glare"
   else if (stdDev < config.minStdDev) reason = "low_contrast"
   else if (edgeEnergy < config.minEdgeEnergy) reason = "not_sharp_enough"
   else if (activeTiles < config.minActiveTiles) reason = "center_not_filled"
@@ -130,10 +155,13 @@ export function analyzeLuma(pixels, width, height, config = AUTO_CAPTURE_CONFIG)
     stdDev: Math.round(stdDev * 10) / 10,
     edgeEnergy: Math.round(edgeEnergy * 10) / 10,
     activeTiles,
+    glareRatio: Math.round(glareRatio * 1000) / 1000,
     usable: reason === "ready",
     reason,
   }
 }
+
+export const evaluateFrameQuality = analyzeLuma
 
 export function createAutoCaptureController(config = AUTO_CAPTURE_CONFIG) {
   let previous = null
@@ -242,6 +270,7 @@ export function autoCaptureStatusText(decision, config = AUTO_CAPTURE_CONFIG) {
   switch (decision?.status) {
     case "too_dark": return "Ảnh đang tối · đưa tem ra vùng sáng hơn"
     case "too_bright": return "Ảnh quá sáng/phản chiếu · đổi góc camera"
+    case "glare": return "Tem bị chói sáng · vui lòng nghiêng nhẹ góc chụp"
     case "low_contrast": return "Tem chưa nổi rõ · đưa camera gần hơn"
     case "not_sharp_enough": return "Ảnh chưa đủ nét · lấy nét rồi giữ yên"
     case "center_not_filled": return "Đưa một tem lấp phần lớn khung xanh"

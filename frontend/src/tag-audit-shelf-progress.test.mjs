@@ -2,9 +2,13 @@ import test from "node:test"
 import assert from "node:assert/strict"
 
 import {
+  applyCameraScanToShelfProgress,
+  buildShelfCameraUrl,
+  buildShelfReturnUrl,
   firstUncheckedIndex,
   markExtraResolved,
   markResolved,
+  parseShelfCameraContext,
   progressStats,
   recordDecision,
   recordRemovalDecision,
@@ -137,3 +141,63 @@ test("extra-tag report can be marked resolved without deleting evidence", () => 
   assert.equal(resolved[0].id,"x")
   assert.equal(resolved[0].resolved,true)
 })
+
+test("buildShelfCameraUrl and parseShelfCameraContext roundtrip context parameters", () => {
+  const url = buildShelfCameraUrl("POG_01", "P30766", "CK_100")
+  assert.equal(url, "/scan-tem?mode=quick&shelf=POG_01&item_id=P30766&check_key=CK_100")
+
+  const parsed = parseShelfCameraContext("?mode=quick&shelf=POG_01&item_id=P30766&check_key=CK_100")
+  assert.equal(parsed.shelf, "POG_01")
+  assert.equal(parsed.itemId, "P30766")
+  assert.equal(parsed.checkKey, "CK_100")
+  assert.equal(parsed.hasContext, true)
+
+  const emptyParsed = parseShelfCameraContext("")
+  assert.equal(emptyParsed.hasContext, false)
+  assert.equal(emptyParsed.shelf, "")
+
+  const returnUrl = buildShelfReturnUrl("POG_01")
+  assert.equal(returnUrl, "/scan-tem?mode=shelf&shelf=POG_01")
+})
+
+test("applyCameraScanToShelfProgress maps camera PASS, FAIL, and REVIEW to shelf decisions", () => {
+  const shelfItems = [
+    { check_key: "ck_a", item_id: "P100", shelf_key: "S1" },
+    { check_key: "ck_b", item_id: "P200", shelf_key: "S1" },
+  ]
+  const now = new Date("2026-10-15T08:00:00.000Z")
+
+  // Case 1: Match PASS by observed.item_id
+  const passScan = {
+    observed: { item_id: "P100" },
+    verdict: { code: "PASS", severity: "success" },
+  }
+  const passResult = applyCameraScanToShelfProgress({}, shelfItems, passScan, now)
+  assert.equal(passResult.matched, true)
+  assert.equal(passResult.matchedItem?.check_key, "ck_a")
+  assert.equal(passResult.progress.ck_a?.state, "pass")
+  assert.equal(passResult.progress.ck_a?.reason, "")
+
+  // Case 2: Match FAIL by check_key
+  const failScan = {
+    check_key: "ck_b",
+    observed: { item_id: "P200" },
+    verdict: { code: "FAIL", severity: "error", title: "Sai giá khuyến mãi" },
+  }
+  const failResult = applyCameraScanToShelfProgress(passResult.progress, shelfItems, failScan, now)
+  assert.equal(failResult.matched, true)
+  assert.equal(failResult.matchedItem?.check_key, "ck_b")
+  assert.equal(failResult.progress.ck_b?.state, "fail")
+  assert.equal(failResult.progress.ck_b?.reason, "Sai giá khuyến mãi")
+
+  // Case 3: No match
+  const unmatchScan = {
+    observed: { item_id: "P999" },
+    verdict: { code: "PASS", severity: "success" },
+  }
+  const unmatchResult = applyCameraScanToShelfProgress(failResult.progress, shelfItems, unmatchScan, now)
+  assert.equal(unmatchResult.matched, false)
+  assert.equal(unmatchResult.matchedItem, null)
+  assert.deepEqual(unmatchResult.progress, failResult.progress)
+})
+

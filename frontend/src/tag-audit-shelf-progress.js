@@ -238,3 +238,92 @@ export function resetRemovalToday(removalProgress, day = localDay()) {
 export function markExtraResolved(extraTags, id, resolved = true) {
   return normalizeExtraTags(extraTags).map(row => row.id === id ? {...row, resolved:Boolean(resolved)} : row)
 }
+
+export function buildShelfCameraUrl(shelfKey, itemId = "", checkKey = "") {
+  const params = new URLSearchParams({ mode: "quick" })
+  if (shelfKey) params.set("shelf", String(shelfKey).trim())
+  if (itemId) params.set("item_id", String(itemId).trim().toUpperCase())
+  if (checkKey) params.set("check_key", String(checkKey).trim())
+  return `/scan-tem?${params.toString()}`
+}
+
+export function parseShelfCameraContext(search = "") {
+  const query = typeof search === "string" ? search : ""
+  const params = new URLSearchParams(query.startsWith("?") ? query : `?${query}`)
+  const shelf = String(params.get("shelf") || "").trim()
+  const itemId = String(params.get("item_id") || "").trim().toUpperCase()
+  const checkKey = String(params.get("check_key") || "").trim()
+  return {
+    shelf,
+    itemId,
+    checkKey,
+    hasContext: Boolean(shelf || itemId),
+  }
+}
+
+export function buildShelfReturnUrl(shelfKey = "") {
+  const params = new URLSearchParams({ mode: "shelf" })
+  if (shelfKey) params.set("shelf", String(shelfKey).trim())
+  return `/scan-tem?${params.toString()}`
+}
+
+export function applyCameraScanToShelfProgress(progress, shelfItems, scanResult, now = new Date()) {
+  const safeProgress = normalizeProgress(progress)
+  const safeItems = Array.isArray(shelfItems) ? shelfItems : []
+  if (!scanResult || !safeItems.length) {
+    return { progress: safeProgress, matchedItem: null, matched: false }
+  }
+
+  const observedId = String(
+    scanResult.observed?.item_id ||
+    scanResult.expected?.item_id ||
+    scanResult.item_id ||
+    ""
+  ).trim().toUpperCase()
+
+  const scanCheckKey = String(scanResult.check_key || "").trim()
+
+  let matchedItem = null
+  if (scanCheckKey) {
+    matchedItem = safeItems.find(item => item.check_key === scanCheckKey) || null
+  }
+  if (!matchedItem && observedId) {
+    matchedItem = safeItems.find(item => String(item.item_id || "").trim().toUpperCase() === observedId) || null
+  }
+
+  if (!matchedItem || !matchedItem.check_key) {
+    return { progress: safeProgress, matchedItem: null, matched: false }
+  }
+
+  const verdictCode = String(scanResult.verdict?.code || "").toUpperCase()
+  const severity = String(scanResult.verdict?.severity || "").toLowerCase()
+  let state = "review"
+  let reason = ""
+
+  if (verdictCode === "PASS" || severity === "success") {
+    state = "pass"
+    reason = ""
+  } else if (verdictCode === "FAIL" || severity === "error") {
+    state = "fail"
+    reason = String(scanResult.verdict?.title || scanResult.verdict?.detail || "Sai theo camera")
+  } else {
+    state = "review"
+    reason = String(scanResult.verdict?.title || scanResult.verdict?.detail || "Review từ camera")
+  }
+
+  const updatedProgress = recordDecision(
+    safeProgress,
+    matchedItem.check_key,
+    state,
+    reason,
+    "Camera check",
+    now
+  )
+
+  return {
+    progress: updatedProgress,
+    matchedItem,
+    matched: true,
+  }
+}
+

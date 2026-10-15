@@ -3,7 +3,9 @@ import assert from "node:assert/strict"
 import {
   AUTO_CAPTURE_CONFIG,
   analyzeLuma,
+  autoCaptureStatusText,
   createAutoCaptureController,
+  evaluateFrameQuality,
   getFrameRoi,
   meanAbsDiff,
 } from "./tag-audit-auto-capture.js"
@@ -114,5 +116,61 @@ test("getFrameRoi calculates exact source coordinates with object-fit: cover sca
   assert.ok(roi.sy >= 0 && roi.sy < 1080)
   assert.ok(roi.sw > 0 && roi.sx + roi.sw <= 1920)
   assert.ok(roi.sh > 0 && roi.sy + roi.sh <= 1080)
+})
+
+test("evaluateFrameQuality is an alias for analyzeLuma", () => {
+  assert.equal(evaluateFrameQuality, analyzeLuma)
+})
+
+test("quality gate rejects frame with severe glare (> 35% pixels >= 248)", () => {
+  const width = 10
+  const height = 10
+  const pixels = new Uint8Array(width * height)
+  // Fill 40% with glare (252) and 60% with normal luma (120)
+  for (let i = 0; i < 40; i += 1) pixels[i] = 252
+  for (let i = 40; i < 100; i += 1) pixels[i] = 120
+  const result = evaluateFrameQuality(pixels, width, height)
+  assert.equal(result.usable, false)
+  assert.equal(result.reason, "glare")
+  assert.equal(result.glareRatio, 0.4)
+})
+
+test("quality gate accepts frame with mild highlights below glare threshold", () => {
+  const frame = textured()
+  // Add 10 highlight pixels out of 108 pixels (~9.2% glare)
+  for (let i = 0; i < 10; i += 1) {
+    frame.pixels[i] = 250
+  }
+  const result = evaluateFrameQuality(frame.pixels, frame.width, frame.height, {
+    ...AUTO_CAPTURE_CONFIG,
+    minEdgeEnergy: 5,
+    minActiveTiles: 2,
+  })
+  assert.equal(result.usable, true)
+  assert.equal(result.reason, "ready")
+  assert.ok(result.glareRatio > 0 && result.glareRatio <= 0.35)
+})
+
+test("autoCaptureStatusText provides guidance when glare is detected", () => {
+  const text = autoCaptureStatusText({ status: "glare" })
+  assert.equal(text, "Tem bị chói sáng · vui lòng nghiêng nhẹ góc chụp")
+})
+
+test("getFrameRoi safely handles edge case dimensions or invalid scale", () => {
+  const tinyFrame = {
+    getBoundingClientRect: () => ({ left: 100, top: 100, width: 5, height: 5 }),
+  }
+  const videoEl = {
+    videoWidth: 1920,
+    videoHeight: 1080,
+    getBoundingClientRect: () => ({ left: 0, top: 0, width: 400, height: 600 }),
+  }
+  const fallbackRoi = getFrameRoi(videoEl, tinyFrame)
+  assert.deepEqual(fallbackRoi, {
+    sx: 154,
+    sy: 162,
+    sw: 1613,
+    sh: 756,
+  })
 })
 
