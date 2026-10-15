@@ -17,6 +17,8 @@ import os
 import re
 import threading
 
+from backend.tag_audit_itemid_contract import extract_itemid_candidates
+
 _ENGINE = None
 _ENGINE_LOCK = threading.Lock()
 
@@ -50,14 +52,7 @@ def _get_engine():
 
 
 def _canonical_itemids(text: str) -> list[str]:
-    found: list[str] = []
-    seen: set[str] = set()
-    for match in _ITEM_RE.finditer(str(text or "").upper()):
-        item = f"P{match.group(1)}"
-        if item not in seen:
-            seen.add(item)
-            found.append(item)
-    return found
+    return extract_itemid_candidates(text)
 
 
 def _year(value: str | None) -> int:
@@ -164,7 +159,7 @@ def _line_evidence(lines: list[dict]) -> dict:
     valid_scores: list[float] = []
     for line in lines:
         text = str(line.get("text") or "")
-        if not _ITEM_RE.search(text):
+        if not _canonical_itemids(text) and not _ITEM_RE.search(text):
             money_count += len(_parse_money(text))
         if _PROMO_RE.search(text):
             promo_hint = True
@@ -323,7 +318,7 @@ def extract_tag_with_rapidocr(image: bytes, month: str | None) -> dict:
     # Never treat the numeric part of ITEMID (P20383) as a money candidate.
     price_candidates: list[tuple[float, float, int]] = []
     for line in lines:
-        if _ITEM_RE.search(line["text"]):
+        if _canonical_itemids(line["text"]) or _ITEM_RE.search(line["text"]):
             continue
         for value in _parse_money(line["text"]):
             price_candidates.append((line["height"], line["score"], value))

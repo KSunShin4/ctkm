@@ -33,6 +33,7 @@ import requests
 
 from modules.config_loader import GEMINI_CONFIG
 from modules.channel_scope import scope_identity_key
+from backend.tag_audit_itemid_contract import resolve_context_aware_itemid
 
 
 _MAX_IMAGE_BYTES = max(1, int(os.getenv("MAX_TAG_AUDIT_IMAGE_MB", "8"))) * 1024 * 1024
@@ -474,6 +475,26 @@ def compare_observation(rows: list[dict], observed: dict, manual_item_id: str = 
 
     if item_key:
         candidates = [row for row in rows if _norm_item(row.get("item_id")) == item_key]
+        if not candidates and not manual_key:
+            known_ids = {_norm_item(r.get("item_id")) for r in rows if r.get("item_id")}
+            item_price_map: dict[str, list] = {}
+            for r in rows:
+                k = _norm_item(r.get("item_id"))
+                p = r.get("promo_price")
+                if k and p is not None:
+                    item_price_map.setdefault(k, []).append(p)
+            resolved = resolve_context_aware_itemid(
+                [item_key],
+                known_ids,
+                observed_price=observed.get("promo_price"),
+                item_price_map=item_price_map,
+            )
+            if resolved and resolved[0] != item_key:
+                observed["item_id_candidates"] = resolved
+                observed["item_id_resolved_from_context"] = item_key
+                observed["item_id"] = resolved[0]
+                item_key = resolved[0]
+                candidates = [row for row in rows if _norm_item(row.get("item_id")) == item_key]
         if not candidates:
             return {
                 "verdict": _verdict(

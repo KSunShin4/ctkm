@@ -91,6 +91,24 @@ def _upscale_for_itemid(image, *, target_long_edge: int = 2000):
     )
 
 
+def is_complete_observation(observed: dict | None) -> bool:
+    """Return True when an observation contains complete deterministic evidence.
+
+    Complete evidence consists of:
+    1. Exactly one valid ITEMID (or non-empty item_id with unique candidates).
+    2. Promotion price (promo_price is not None).
+    3. Promo date range (both promo_from and promo_to present).
+    """
+    if not observed or not isinstance(observed, dict):
+        return False
+    candidates = list(observed.get("item_id_candidates") or [])
+    item_id = str(observed.get("item_id") or "").strip()
+    has_single_item = len(candidates) == 1 or (not candidates and bool(item_id))
+    has_price = observed.get("promo_price") is not None
+    has_dates = bool(observed.get("promo_from") and observed.get("promo_to"))
+    return bool(has_single_item and has_price and has_dates)
+
+
 def _score(observed: dict) -> tuple:
     itemids = list(observed.get("item_id_candidates") or [])
     unique_item = len(itemids) == 1
@@ -221,10 +239,10 @@ def rescue_with_focused_local_ocr(image_bytes: bytes, month: str | None) -> dict
         observed["ocr_rescue"] = True
         candidates.append(observed)
 
-        # Only short-circuit when one crop independently contains the full
-        # deterministic evidence. ITEMID-only candidates are retained so they can
-        # later fuse with price/date from a compatible wider target-cell crop.
-        if _score(observed)[0]:
+        # Fast-Path OCR Short-Circuit: When OCR on primary focus crop yields complete evidence
+        # (1 valid ITEMID + promo_price + promo_from/to dates), return immediately without
+        # evaluating subsequent secondary crop profiles or rotations.
+        if is_complete_observation(observed) or _score(observed)[0]:
             return observed
 
     fused = _fuse_target_cell_candidates(candidates)
