@@ -7,7 +7,7 @@ function ShelfRoute() {
     <TagAuditShelfCheck />
     <a
       href="/"
-      aria-label="Thoát kiểm tra kệ và về các chức năng chính"
+      aria-label="Thoát soát tem kệ và về các chức năng chính"
       style={{
         position:"fixed",
         left:14,

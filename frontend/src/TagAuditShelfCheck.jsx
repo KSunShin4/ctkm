@@ -317,13 +317,13 @@ export default function TagAuditShelfCheck() {
     setExtraError(""); setView("errors")
   }
 
-  if (loading) return <><style>{styles}</style><ProductNav current="shelf"/><div className="shelf-shell"><div className="shelf-loading">Đang mở Kiểm toàn kệ…</div></div></>
+  if (loading) return <><style>{styles}</style><ProductNav current="shelf"/><div className="shelf-shell"><div className="shelf-loading">Đang mở Soát tem toàn kệ…</div></div></>
 
   if (!session) return <><style>{styles}</style><ProductNav current="shelf"/><div className="shelf-shell">
-    <header className="shelf-head"><div><span className="shelf-kicker">CTKM · VẬN HÀNH CỬA HÀNG</span><h1>Kiểm toàn kệ</h1><p>Kiểm tem đang chạy, tháo tem hết hạn và lưu tiến độ ngay trên thiết bị.</p></div></header>
+    <header className="shelf-head"><div><span className="shelf-kicker">StoreOps · VẬN HÀNH CỬA HÀNG</span><h1>Soát tem toàn kệ</h1><p>Soát tem đang chạy, tháo tem hết hạn và lưu tiến độ ngay trên thiết bị.</p></div></header>
     <main className="shelf-upload-card">
       <div className="shelf-upload-icon">▤</div><h2>Tải workbook CTKM</h2>
-      <p>Không cần tài khoản Admin. Phiên kiểm kệ tách riêng khỏi cấu hình Admin.</p>
+      <p>Không cần tài khoản Admin. Phiên soát tem tách riêng khỏi cấu hình Admin.</p>
       <label className="shelf-upload-button">Chọn file .xlsx<input type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={event=>uploadWorkbook(event.target.files?.[0])} /></label>
       {error && <div className="shelf-error">{error}</div>}
       <a className="shelf-subtle-link" href="/">← Chức năng khác</a>
@@ -334,7 +334,7 @@ export default function TagAuditShelfCheck() {
     <header className="shelf-sticky">
       <div className="shelf-topline">
         <button onClick={()=>{setView("shelves");setSearchFocused(false);setShowProgressMenu(false)}}>☰ Kệ</button>
-        <strong>Kiểm toàn kệ</strong>
+        <strong>Soát tem toàn kệ</strong>
         <div className="shelf-head-actions"><button onClick={()=>openExtraReport(shelfKey)}>+ Tem dư</button><button onClick={()=>setShowProgressMenu(value=>!value)}>⋮ Tiến độ</button><button onClick={()=>{setView("errors");setSearchFocused(false);setShowProgressMenu(false)}}>Sai & Review <b>{issueCount}</b></button></div>
       </div>
       <ProgressBar stats={overall} />

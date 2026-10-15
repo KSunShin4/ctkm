@@ -5,7 +5,7 @@ const read=p=>readFile(new URL(p,import.meta.url),"utf8")
 
 test("shared store shell makes CTKM the home and keeps four primary mobile tabs plus More",async()=>{
   const s=await read("./ProductNav.jsx")
-  for(const x of ["CTKM","Kiểm kệ","Tem R","Kiểm tồn kho","Kiểm hạn dùng","Xếp lịch","Hướng dẫn","portal-mobile-nav","portal-mobile-more-sheet"])assert.match(s,new RegExp(x))
+  for(const x of ["CTKM","Soát tem kệ","Tem R","Kiểm tồn kho","Kiểm hạn dùng","Xếp lịch","Hướng dẫn","portal-mobile-nav","portal-mobile-more-sheet"])assert.match(s,new RegExp(x))
   for(const x of ["/?module=ctkm","/scan-tem?mode=shelf","/?module=temr","/?module=inventory","/?module=expiration","/schedule","/guide"])assert.ok(s.includes(x))
   assert.doesNotMatch(s,/id:"history"|label:"Lịch sử"|id:"settings"|label:"Cài đặt"/)
   assert.doesNotMatch(s,/id:"overview"|label:"Tổng quan"|href:"\/overview"/)
@@ -25,7 +25,7 @@ test("ctkm root keeps approved workspace and relies on the shared vertical modul
   assert.match(app,/ProductNav current=\{activeModule\}/)
   assert.doesNotMatch(app,/<nav className="ops-tool-tabs"/)
   assert.doesNotMatch(app,/<div className="topbar">/);assert.doesNotMatch(app,/<nav className="module-nav"/)
-  for(const x of ["CTKM","Kiểm kệ","Tem R","Kiểm tồn kho","Kiểm hạn dùng"])assert.match(nav,new RegExp(x))
+  for(const x of ["CTKM","Soát tem kệ","Tem R","Kiểm tồn kho","Kiểm hạn dùng"])assert.match(nav,new RegExp(x))
 })
 test("ctkm root installs the same UI preference root as portal pages",async()=>{const main=await read("./main.jsx");assert.match(main,/UiPreferenceRoot/);assert.match(main,/uiPreferenceCss/)})
 

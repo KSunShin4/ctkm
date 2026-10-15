@@ -147,10 +147,10 @@ function BusinessDateBanner({ state, quickMode = false }) {
     color: "#b42318",
     font: "650 12px/1.5 Inter, ui-sans-serif, sans-serif",
   }}>
-    <strong>Không dùng workbook cũ để kiểm tem.</strong><br />
+    <strong>Không dùng workbook cũ để soát tem.</strong><br />
     {message}
     {quickMode && <div style={{marginTop:10}}>
-      <a href="/scan-tem" style={{color:"#b42318",fontWeight:800}}>← Về Kiểm tem để tải workbook mới</a>
+      <a href="/scan-tem" style={{color:"#b42318",fontWeight:800}}>← Về Soát tem để tải workbook mới</a>
     </div>}
   </div>
 }
@@ -164,7 +164,7 @@ function QuickModeLink() {
 function GlobalExitButton() {
   return <a
     href="/"
-    aria-label="Thoát kiểm tem và về các chức năng chính"
+    aria-label="Thoát soát tem và về các chức năng chính"
     style={{
       position:"fixed",
       left:14,

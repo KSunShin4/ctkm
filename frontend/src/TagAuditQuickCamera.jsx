@@ -320,7 +320,7 @@ export default function TagAuditQuickCamera() {
       <button
         className="quick-back"
         onClick={() => location.href = shelfContext.hasContext ? buildShelfReturnUrl(shelfContext.shelf) : "/scan-tem"}
-        title={shelfContext.shelf ? `Quay lại kiểm kệ ${shelfContext.shelf}` : "Quay lại chế độ thường"}
+        title={shelfContext.shelf ? `Quay lại soát tem kệ ${shelfContext.shelf}` : "Quay lại chế độ thường"}
       >
         {shelfContext.shelf ? `← Kệ ${shelfContext.shelf}` : "← Thường"}
       </button>

@@ -2,7 +2,7 @@ import React,{useState} from "react"
 
 export const PORTAL_MODULES=[
   {id:"ctkm",label:"CTKM",short:"CTKM",href:"/?module=ctkm",icon:"✦"},
-  {id:"shelf",label:"Kiểm kệ",short:"Kiểm kệ",href:"/scan-tem?mode=shelf",icon:"✓"},
+  {id:"shelf",label:"Soát tem kệ",short:"Soát tem",href:"/scan-tem?mode=shelf",icon:"✓"},
   {id:"temr",label:"Tem R",short:"Tem R",href:"/?module=temr",icon:"◇"},
   {id:"inventory",label:"Kiểm tồn kho",short:"Kiểm tồn",href:"/?module=inventory",icon:"▣"},
   {id:"expiration",label:"Kiểm hạn dùng",short:"Hạn dùng",href:"/?module=expiration",icon:"◷"},
@@ -16,7 +16,7 @@ const css=[
 ".portal-nav{position:fixed;inset:0 auto 0 0;width:88px;z-index:100;background:linear-gradient(180deg,#fff 0%,#f7fbff 72%,#f1f7ff 100%);border-right:1px solid var(--ops-line);display:flex;flex-direction:column;align-items:center;padding:14px 8px 16px;box-shadow:8px 0 28px rgba(31,79,140,.06)}",
 ".portal-nav-brand{width:68px;display:flex;flex-direction:column;align-items:center;gap:5px;color:var(--ops-ink);text-decoration:none;white-space:nowrap;margin-bottom:12px}",
 ".portal-brand-mark{width:44px;height:44px;border-radius:15px;background:linear-gradient(145deg,#e8f1ff,#fff);border:1px solid #d8e6ff;color:var(--ops-blue);display:grid;place-items:center;font-size:24px;font-weight:950;box-shadow:0 7px 18px rgba(23,105,255,.12)}",
-".portal-brand-name{font-size:9px;font-weight:950;letter-spacing:-.02em}.portal-brand-name span{color:#61b846}",
+".portal-brand-name{font-size:9px;font-weight:950;letter-spacing:-.02em}.portal-brand-name span{color:var(--ops-blue)}",
 ".portal-nav-links{display:flex;flex-direction:column;gap:4px;width:100%;overflow-y:auto;scrollbar-width:none}.portal-nav-links::-webkit-scrollbar{display:none}",
 ".portal-nav-link{position:relative;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;min-height:58px;padding:7px 4px;border-radius:14px;color:#5b6f8f;text-decoration:none;font-size:9px;font-weight:800;text-align:center;line-height:1.15}",
 ".portal-nav-link:hover{background:#f0f6ff;color:#1d4f91}.portal-nav-link.active{background:linear-gradient(145deg,#e8f2ff,#f4f8ff);color:var(--ops-blue);box-shadow:inset 3px 0 0 var(--ops-blue)}",
@@ -51,10 +51,10 @@ export default function ProductNav({current}){
   return <>
     <style>{css}</style>
     <nav className="portal-nav" aria-label="Điều hướng vận hành">
-      <a className="portal-nav-brand" href="/?module=ctkm"><span className="portal-brand-mark">✚</span><span className="portal-brand-name">Pharma<span>city</span></span></a>
+      <a className="portal-nav-brand" href="/?module=ctkm"><span className="portal-brand-mark">⚡</span><span className="portal-brand-name">Store<span>Ops</span></span></a>
       <div className="portal-nav-links">{PORTAL_MODULES.map(x=><a key={x.id} aria-current={active===x.id?"page":undefined} className={"portal-nav-link "+(active===x.id?"active":"")} href={x.href}><span className="portal-nav-icon">{x.icon}</span><span>{x.label}</span></a>)}</div>
       <div className="portal-nav-spacer"/>
-      <div className="portal-nav-cute" aria-hidden="true"><b>💊</b>Hôm nay<br/>cố lên nhé ✨</div>
+      <div className="portal-nav-cute" aria-hidden="true"><b>✨</b>Hôm nay<br/>cố lên nhé ✨</div>
     </nav>
     {moreOpen&&<div className="portal-mobile-more-layer" onClick={()=>setMoreOpen(false)} role="presentation">
       <section className="portal-mobile-more-sheet" onClick={event=>event.stopPropagation()} aria-label="Thêm chức năng">

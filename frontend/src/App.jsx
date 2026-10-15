@@ -1676,7 +1676,7 @@ export default function App() {
               <div className="ops-hero-titleline">
                 {activeModule !== "ctkm" && <Mascot state={backendStatus === "offline" ? "warning" : step === STEPS.running ? "thinking" : step === STEPS.done ? "success" : "idle"} />}
                 <div>
-                  <div className="ops-kicker">PharmaOps · Vận hành cửa hàng</div>
+                  <div className="ops-kicker">StoreOps · Vận hành cửa hàng</div>
                   <h1 id="ops-page-title">
                 {activeModule === "ctkm" && "Tổng hợp chương trình khuyến mãi"}
                 {activeModule === "expiration" && "Kiểm tra hạn dùng"}
@@ -1691,7 +1691,7 @@ export default function App() {
                 {activeModule === "temr" && "Đọc đúng giá trị đang hiển thị trong file nguồn và tạo file phân bổ Tem R."}
                 {activeModule === "inventory" && "Kiểm tồn store-level và coverage POG mà không cộng lặp tồn giữa nhiều vị trí kệ."}
               </p>
-              {activeModule === "ctkm" && <div className="ctkm-hero-flow" aria-label="Quy trình CTKM"><span><b>1</b> Upload</span><i>→</i><span><b>2</b> Mapping</span><i>→</i><span><b>3</b> Xử lý</span><i>→</i><span><b>4</b> Kiểm kệ</span></div>}
+              {activeModule === "ctkm" && <div className="ctkm-hero-flow" aria-label="Quy trình CTKM"><span><b>1</b> Upload</span><i>→</i><span><b>2</b> Mapping</span><i>→</i><span><b>3</b> Xử lý</span><i>→</i><span><b>4</b> Soát tem kệ</span></div>}
             </div>
             {activeModule === "ctkm" && <div className="ctkm-hero-art" aria-hidden="true"><Mascot state={backendStatus === "offline" ? "warning" : step === STEPS.running ? "thinking" : step === STEPS.done ? "success" : "guide"} /><div className="ctkm-hero-speech"><b>CTKM tháng này ✦</b><span>Chọn file đúng, phần còn lại để hệ thống xử lý.</span></div></div>}
             <div className="ops-hero-side">
@@ -1741,7 +1741,7 @@ export default function App() {
                   <p>Chọn 3 nguồn dữ liệu bên dưới. Hệ thống tự nhận diện mapping chuẩn; chỉ hỏi lại khi thật sự cần.</p>
                 </div>
                 <div className="ctkm-mini-steps" aria-label="Quy trình CTKM">
-                  <span><b>1</b> Upload</span><i>→</i><span><b>2</b> Mapping</span><i>→</i><span><b>3</b> Xử lý</span><i>→</i><span><b>4</b> Kiểm kệ</span>
+                  <span><b>1</b> Upload</span><i>→</i><span><b>2</b> Mapping</span><i>→</i><span><b>3</b> Xử lý</span><i>→</i><span><b>4</b> Soát tem kệ</span>
                 </div>
               </div>
             )}
@@ -2455,12 +2455,12 @@ export default function App() {
                 <div className="ctkm-welcome-copy">
                   <span className="welcome-pill">✨ Sẵn sàng cho tháng mới</span>
                   <h2>Upload xong là hệ thống lo phần còn lại</h2>
-                  <p>CTKM và POG là bắt buộc. Clearance chỉ cần khi tháng này có chương trình clearance. Sau khi xử lý, bạn có thể đi thẳng sang Kiểm kệ mà không cần mở Excel.</p>
+                  <p>CTKM và POG là bắt buộc. Clearance chỉ cần khi tháng này có chương trình clearance. Sau khi xử lý, bạn có thể đi thẳng sang Soát tem kệ mà không cần mở Excel.</p>
                   <div className="ctkm-welcome-grid">
                     <div><b>①</b><span>Nhận diện cột</span><small>Tự map khi file đúng chuẩn</small></div>
                     <div><b>②</b><span>Ghép POG</span><small>Giữ đầy đủ vị trí kệ</small></div>
                     <div><b>③</b><span>Tạo hành động</span><small>Gắn · Tháo · Review</small></div>
-                    <div><b>④</b><span>Đi kiểm kệ</span><small>Camera chỉ là Beta phụ trợ</small></div>
+                    <div><b>④</b><span>Soát tem kệ</span><small>Camera chỉ là Beta phụ trợ</small></div>
                   </div>
                 </div>
                 <div className="ctkm-welcome-mascot">
